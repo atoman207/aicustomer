@@ -1,0 +1,296 @@
+"use client";
+
+import { Bot, ClipboardCheck, Loader2, Send, Sparkles, UserRound } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import EstimateForm from "./EstimateForm";
+import { DemoNotice, Modal, ModeBadge } from "./ui";
+import type { ChatMessage, EstimateRequest } from "@/lib/types";
+import { uid } from "@/lib/utils";
+
+interface UiMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: { title: string; category: string }[];
+  mode?: string;
+  pending?: boolean;
+}
+
+const SUGGESTIONS = [
+  "6畳の畳の表替えはいくらですか？",
+  "襖の張替えは何日くらいかかりますか？",
+  "ペットがいても破れにくい障子はありますか？",
+  "網戸の張替えは即日できますか？",
+  "対応エリアを教えてください",
+  "和室を洋室にリフォームしたい",
+];
+
+export default function ChatConsole({
+  mode,
+  company,
+  lineUrl,
+  knowledgeLabel,
+}: {
+  mode: "openai" | "demo";
+  company: string;
+  lineUrl: string;
+  knowledgeLabel: string;
+}) {
+  const [sessionId] = useState(() => uid());
+  const [messages, setMessages] = useState<UiMessage[]>([
+    {
+      id: "greeting",
+      role: "assistant",
+      content: `こんにちは。${company}のAI相談員です。\n畳・襖・障子・網戸・リフォームについて、お気軽にご質問ください。料金の目安や工期、対応エリアなどにお答えします。\nお見積りをご希望の際は、「LINEで見積依頼」ボタンからお進みください。`,
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [lastMode, setLastMode] = useState<string>(mode);
+  const [estimateOpen, setEstimateOpen] = useState(false);
+  const [summary, setSummary] = useState("");
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [lastEstimate, setLastEstimate] = useState<EstimateRequest | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages]);
+
+  const toHistory = (list: UiMessage[]): ChatMessage[] =>
+    list.filter((m) => !m.pending && m.content.trim()).map((m) => ({ role: m.role, content: m.content }));
+
+  const send = useCallback(
+    async (text: string) => {
+      const t = text.trim();
+      if (!t || busy) return;
+      setInput("");
+      const userMsg: UiMessage = { id: uid(), role: "user", content: t };
+      const pendingId = uid();
+      const history = toHistory([...messages, userMsg]);
+      setMessages((prev) => [...prev, userMsg, { id: pendingId, role: "assistant", content: "", pending: true }]);
+      setBusy(true);
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, channel: "web_text", messages: history }),
+        });
+        if (!res.ok || !res.body) {
+          const j = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(j.error ?? `HTTP ${res.status}`);
+        }
+        const m = res.headers.get("X-Mode") ?? "openai";
+        setLastMode(m);
+        let sources: { title: string; category: string }[] = [];
+        try {
+          sources = JSON.parse(decodeURIComponent(res.headers.get("X-Sources") ?? "%5B%5D")) as typeof sources;
+        } catch {
+          sources = [];
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let acc = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          acc += decoder.decode(value, { stream: true });
+          const snapshot = acc;
+          setMessages((prev) => prev.map((x) => (x.id === pendingId ? { ...x, content: snapshot } : x)));
+        }
+        setMessages((prev) =>
+          prev.map((x) =>
+            x.id === pendingId ? { ...x, content: acc || "（応答がありませんでした）", pending: false, sources, mode: m } : x,
+          ),
+        );
+      } catch (e) {
+        setMessages((prev) =>
+          prev.map((x) =>
+            x.id === pendingId
+              ? {
+                  ...x,
+                  content: `申し訳ありません、通信エラーが発生しました（${(e as Error).message}）。時間をおいて再度お試しください。`,
+                  pending: false,
+                  mode: "error",
+                }
+              : x,
+          ),
+        );
+      } finally {
+        setBusy(false);
+        textareaRef.current?.focus();
+      }
+    },
+    [busy, messages, sessionId],
+  );
+
+  async function openEstimate() {
+    setEstimateOpen(true);
+    setSummaryLoading(true);
+    try {
+      const res = await fetch("/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: toHistory(messages) }),
+      });
+      const j = (await res.json()) as { ok: boolean; summary?: string };
+      if (j.ok) setSummary(j.summary ?? "");
+    } catch {
+      // 要約失敗時は空のまま（お客様が入力）
+    } finally {
+      setSummaryLoading(false);
+    }
+  }
+
+  function onSubmitted(est: EstimateRequest) {
+    setLastEstimate(est);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: uid(),
+        role: "assistant",
+        content: `見積依頼を受付しました（受付番号：${est.id}）。\n担当者より折り返しご連絡し、訪問日程を確定いたします。ありがとうございました。`,
+      },
+    ]);
+  }
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
+      <section className="card flex h-[70vh] min-h-[520px] flex-col overflow-hidden">
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-washi-200 bg-washi-100/70 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="grid h-8 w-8 place-items-center rounded-full bg-ai-600 text-white">
+              <Bot className="h-4 w-4" />
+            </span>
+            <div className="leading-tight">
+              <p className="text-sm font-semibold text-sumi-800">AI相談員</p>
+              <p className="text-[11px] text-sumi-400">回答根拠：{knowledgeLabel}</p>
+            </div>
+          </div>
+          <ModeBadge mode={lastMode === "openai" ? "openai" : "demo"} />
+        </header>
+
+        <div ref={listRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+          {messages.map((m) => (
+            <div key={m.id} className={`flex gap-3 ${m.role === "user" ? "flex-row-reverse" : ""}`}>
+              <span
+                className={`mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full ${
+                  m.role === "user" ? "bg-washi-300 text-sumi-700" : "bg-ai-600 text-white"
+                }`}
+              >
+                {m.role === "user" ? <UserRound className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+              </span>
+              <div className={`max-w-[85%] ${m.role === "user" ? "text-right" : ""}`}>
+                <div
+                  className={`bubble inline-block rounded-2xl px-4 py-3 text-left text-sm leading-relaxed shadow-sm ${
+                    m.role === "user" ? "rounded-tr-sm bg-ai-600 text-white" : "rounded-tl-sm border border-washi-200 bg-white text-sumi-800"
+                  }`}
+                >
+                  {m.pending && !m.content ? (
+                    <span className="flex items-center gap-1 text-sumi-400">
+                      <span className="h-1.5 w-1.5 animate-blink rounded-full bg-sumi-400" />
+                      <span className="h-1.5 w-1.5 animate-blink rounded-full bg-sumi-400 [animation-delay:0.2s]" />
+                      <span className="h-1.5 w-1.5 animate-blink rounded-full bg-sumi-400 [animation-delay:0.4s]" />
+                    </span>
+                  ) : (
+                    m.content
+                  )}
+                </div>
+                {m.sources && m.sources.length > 0 ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {m.sources.map((s) => (
+                      <span key={s.title} className="chip">
+                        <Sparkles className="h-3 w-3 text-ai-500" />
+                        参照：{s.title}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {messages.length <= 2 ? (
+          <div className="flex gap-2 overflow-x-auto border-t border-washi-200 px-4 py-2">
+            {SUGGESTIONS.map((s) => (
+              <button key={s} type="button" className="chip shrink-0 hover:border-ai-300 hover:bg-ai-50" onClick={() => send(s)} disabled={busy}>
+                {s}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        <form
+          className="flex items-end gap-2 border-t border-washi-200 bg-white/70 p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send(input);
+          }}
+        >
+          <textarea
+            ref={textareaRef}
+            className="input max-h-32 min-h-[44px] flex-1 resize-none"
+            rows={1}
+            value={input}
+            placeholder="ご質問を入力（Enterで送信 / Shift+Enterで改行）"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                send(input);
+              }
+            }}
+            disabled={busy}
+          />
+          <button type="submit" className="btn-primary h-[44px] px-4" disabled={busy || !input.trim()} aria-label="送信">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          </button>
+        </form>
+      </section>
+
+      <aside className="space-y-4">
+        <div className="card p-4">
+          <p className="font-serif text-base font-bold text-sumi-800">お見積りのご依頼</p>
+          <p className="mt-1 text-xs text-sumi-500">
+            相談内容はAIが要約し、お名前・ご住所・お電話番号・ご希望日（第1〜第3）とあわせて、送信前にご確認いただきます。
+          </p>
+          <button type="button" className="btn-line mt-3 w-full" onClick={openEstimate}>
+            <ClipboardCheck className="h-4 w-4" />
+            LINEで見積依頼
+          </button>
+          {lastEstimate ? (
+            <p className="mt-3 rounded-xl bg-tatami-50 px-3 py-2 text-xs text-tatami-700">
+              受付済み：{lastEstimate.id}
+              <br />
+              担当者より折り返しご連絡します。
+            </p>
+          ) : null}
+        </div>
+        {lastMode !== "openai" ? <DemoNotice compact /> : null}
+        <div className="card p-4 text-xs text-sumi-500">
+          <p className="font-semibold text-sumi-700">この窓口でできること</p>
+          <ul className="mt-2 list-disc space-y-1 pl-4">
+            <li>社内ナレッジ（スプレッドシートの指定シート）だけを根拠に回答</li>
+            <li>ナレッジにない質問は推測せず、担当者の折り返しをご案内</li>
+            <li>会話をAIが要約し、見積依頼フォームに自動入力</li>
+            <li>送信前にお客様ご自身で内容を確認・修正</li>
+          </ul>
+        </div>
+      </aside>
+
+      <Modal open={estimateOpen} onClose={() => setEstimateOpen(false)} title="見積依頼（内容の確認・送信）">
+        <EstimateForm
+          channel="web_text"
+          sessionId={sessionId}
+          initial={{ summary }}
+          summaryLoading={summaryLoading}
+          lineUrl={lineUrl}
+          onSubmitted={onSubmitted}
+          onCancel={() => setEstimateOpen(false)}
+        />
+      </Modal>
+    </div>
+  );
+}
