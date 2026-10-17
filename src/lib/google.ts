@@ -35,6 +35,7 @@ export async function getGoogleAccessToken(): Promise<string> {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: jwt }),
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Google認証エラー ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const json = (await res.json()) as { access_token: string; expires_in: number };
@@ -47,7 +48,7 @@ export async function sheetsGetValues(sheetId: string, range: string): Promise<s
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(
     range,
   )}?majorDimension=ROWS`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: AbortSignal.timeout(15_000) });
   if (!res.ok) throw new Error(`Sheets API error ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const json = (await res.json()) as { values?: string[][] };
   return json.values ?? [];
@@ -63,6 +64,7 @@ export async function sheetsAppendRow(sheetId: string, sheetName: string, row: (
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ values: [row] }),
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Sheets append error ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
@@ -75,13 +77,14 @@ export async function gasRequest<T>(payload: Record<string, unknown>, method: "G
   if (method === "GET") {
     const u = new URL(base);
     Object.entries(payload).forEach(([k, v]) => u.searchParams.set(k, String(v)));
-    res = await fetch(u.toString(), { redirect: "follow", cache: "no-store" });
+    res = await fetch(u.toString(), { redirect: "follow", cache: "no-store", signal: AbortSignal.timeout(15_000) });
   } else {
     res = await fetch(base, {
       method: "POST",
       redirect: "follow",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
     });
   }
   const text = await res.text();

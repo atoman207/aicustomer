@@ -104,7 +104,7 @@ export default function AdminDashboard({
         </div>
       </div>
 
-      {tab === "receptions" ? <ReceptionsTab /> : null}
+      {tab === "receptions" ? <ReceptionsTab storage={initialStatus.storage} /> : null}
       {tab === "conversations" ? <ConversationsTab /> : null}
       {tab === "phone" ? <PhoneSettingsTab initialSettings={initialSettings} /> : null}
       {tab === "knowledge" ? <KnowledgeTab /> : null}
@@ -115,7 +115,7 @@ export default function AdminDashboard({
 
 // ---------------- 受付一覧 ----------------
 
-function ReceptionsTab() {
+function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage"] }) {
   const [items, setItems] = useState<EstimateRequest[]>([]);
   const [sinkLabel, setSinkLabel] = useState("");
   const [loading, setLoading] = useState(true);
@@ -229,6 +229,12 @@ function ReceptionsTab() {
         </div>
       </div>
       {error ? <p className="px-4 py-2 text-sm text-shu-600">{error}</p> : null}
+      {!storage.persistent ? (
+        <p className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+          現在の保存先は「{storage.label}」です。{storage.detail ?? ""}
+          スプレッドシート連携（GAS）を設定すると、受付は常にシートへ記録されます。
+        </p>
+      ) : null}
       <div className="max-h-[70vh] overflow-auto">
         <table className="table-base">
           <thead>
@@ -939,6 +945,13 @@ function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus }) {
         <Card title="受付情報の記録先（スプレッドシート）" ok={status.reception.sink !== "local"}>
           <p>{status.reception.label}</p>
           <p className="text-xs text-sumi-400">3窓口（テキスト・音声・電話）＋LINE の受付を1つのシートに一元管理します。</p>
+        </Card>
+        <Card title="アプリ内データの保存先（受付・会話・設定・セッション）" ok={status.storage.persistent}>
+          <p>{status.storage.label}</p>
+          {status.storage.detail ? <p className="text-xs text-amber-700">{status.storage.detail}</p> : null}
+          <p className="text-xs text-sumi-400">
+            Vercel では Storage › Upstash Redis を追加すると UPSTASH_REDIS_REST_URL / TOKEN が自動設定され、再デプロイ後に永続化されます。
+          </p>
         </Card>
         <Card title="Twilio（AI電話受付）" ok={status.twilio.configured}>
           <p>Twilio 番号：{status.twilio.number || "未設定"}</p>

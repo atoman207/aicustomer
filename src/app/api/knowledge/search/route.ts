@@ -1,11 +1,14 @@
-import { error, json, readJson } from "@/lib/http";
+import { error, json, rateLimited, readJson } from "@/lib/http";
 import { getKnowledge } from "@/lib/knowledge";
 import { hybridSearch } from "@/lib/retrieval";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
+  const limited = rateLimited(req, "search", 60);
+  if (limited) return limited;
   const body = await readJson<{ query?: string; k?: number }>(req);
   const query = (body?.query ?? "").toString().trim().slice(0, 500);
   if (!query) return error("query が必要です");

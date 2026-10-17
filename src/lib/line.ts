@@ -39,6 +39,7 @@ async function lineApi(path: string, body: unknown): Promise<void> {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.lineChannelAccessToken}` },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`LINE API error ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }

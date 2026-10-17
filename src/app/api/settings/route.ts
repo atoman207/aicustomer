@@ -5,6 +5,7 @@ import type { AppSettings, PhoneMode, PhoneSettings } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const MODES: PhoneMode[] = ["ai_always", "ai_off_hours", "human_always"];
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;

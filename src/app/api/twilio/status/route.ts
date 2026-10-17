@@ -3,6 +3,7 @@ import { getSession, saveSession, upsertConversation } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 /** Twilio 通話ステータスコールバック（通話終了などを会話履歴に記録） */
 export async function POST(req: Request) {

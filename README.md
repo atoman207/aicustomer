@@ -41,6 +41,28 @@ npm run smoke
 
 ---
 
+## 1.5 Vercel へのデプロイ
+
+GitHub リポジトリを Vercel にインポートするだけでビルド・デプロイできます（追加設定なしで `next build` が通ります）。公開後は以下を推奨します。
+
+| 設定 | 目的 |
+| --- | --- |
+| `OPENAI_API_KEY` | AI 応答・音声・要約（未設定時はデモモード） |
+| `ADMIN_PASSWORD` | **公開 URL では必須。** 管理画面（受付一覧＝お客様情報、AI／人間切替）を保護 |
+| `PUBLIC_BASE_URL` | `https://<your-app>.vercel.app`。Twilio/LINE の署名検証と OGP に使用 |
+| Storage › **Upstash Redis** | 受付・会話・設定・会話セッションの永続化。追加すると `UPSTASH_REDIS_REST_URL/TOKEN` が自動設定されます |
+| `GAS_WEBHOOK_URL` | ナレッジの読み取りと受付のスプレッドシート記録（§3） |
+
+**サーバーレスでの保存について**：Vercel ではファイル書き込みが一時的（インスタンスごとの `/tmp`）です。Redis 未設定でも次の工夫で動作しますが、受付一覧・会話履歴・管理画面の設定変更は再デプロイやスリープで消えます。
+
+- ブラウザの電話シミュレーター／音声相談（デモモード）は会話セッションをクライアントと往復させるため、インスタンスが変わっても途切れません
+- Twilio の電話受付は通話ごとの Cookie に会話状態を圧縮して持たせるため、Redis なしでも 1 通話内の状態が保たれます
+- LINE と管理画面の設定・受付一覧の永続化には Upstash Redis（無料枠あり）の接続を推奨します。受付そのものは `GAS_WEBHOOK_URL` を設定すればスプレッドシートに必ず記録されます
+
+管理画面の「接続状況」タブに、現在の保存先（Redis／ファイル／一時保存）が表示されます。
+
+---
+
 ## 2. 環境変数（`.env.example` 参照）
 
 | 変数 | 必須 | 説明 |
@@ -62,7 +84,9 @@ npm run smoke
 | `PUBLIC_BASE_URL` | 電話/LINE | 公開 URL（Webhook 署名検証に使用） |
 | `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN` | LINE | Messaging API |
 | `NEXT_PUBLIC_LINE_ADD_FRIEND_URL` | | 「LINEで見積依頼」ボタンの遷移先 |
-| `ADMIN_PASSWORD` | 推奨 | 管理画面の保護（未設定時は誰でも閲覧可） |
+| `ADMIN_PASSWORD` | 推奨 | 管理画面の保護（未設定時は誰でも閲覧可。公開 URL では必ず設定） |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Vercel 推奨 | アプリ内データ（受付・会話・設定・セッション）の永続化。旧 `KV_REST_API_URL/TOKEN` も可 |
+| `OPENAI_BASE_URL` | | 互換 API／プロキシ／モック用（既定 `https://api.openai.com/v1`） |
 | `COMPANY_NAME` / `COMPANY_PHONE` | | 会社名・0120 番号（管理画面でも変更可） |
 
 ナレッジ連携は **A（GAS）→ B（Sheets API）→ C（CSV）→ ローカルのサンプル** の優先順で自動選択されます。
@@ -192,8 +216,10 @@ public/images           画像（すべて日本の風景・住まい）
 
 ---
 
-## 10. 注意事項
+## 10. 運用上の注意
 
 - 表示される価格・工期・会社情報はすべて**デモ用サンプル**です。
 - `data/runtime/` は実行時データ（受付・会話・設定）で Git 管理外です。本番ではスプレッドシートが正となります。
-- Vercel 等の読み取り専用環境ではローカル保存がメモリ動作になるため、受付記録には GAS または Sheets API 連携を設定してください。
+- Vercel 等のサーバーレス環境では §1.5 のとおり Upstash Redis と GAS 連携を設定してください。
+- 公開 API（チャット・音声・要約など）には IP ごとの簡易レートリミットを設けています（1 分あたり：チャット 20 回、音声セッション 10 回など）。OpenAI への各リクエストには 15〜55 秒のタイムアウトを設定し、関数の最大実行時間は 60 秒です。
+- 画像は `scripts/optimize-images.mjs` で Web 向けに再圧縮済み（合計 約5.5MB）。Next.js の画像最適化（AVIF/WebP・レスポンシブ）が有効です。

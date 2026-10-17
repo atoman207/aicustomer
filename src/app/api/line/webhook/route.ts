@@ -6,6 +6,7 @@ import { deleteSession, getSession } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const CONSULT_QUICK = ["見積を依頼したい", "料金の目安を知りたい", "対応エリアを知りたい"];
 const CONFIRM_QUICK = ["はい、この内容で", "お名前を修正", "ご住所を修正", "お電話番号を修正", "希望日を修正", "相談内容を修正"];

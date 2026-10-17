@@ -96,11 +96,14 @@ await check("電話受付フロー（agent start → 受付完了）", async () 
   const start = await json("/api/agent/start", { method: "POST", body: JSON.stringify({ channel: "phone" }) });
   if (!start.res.ok) throw new Error(`start ${start.res.status}`);
   const sid = start.body.sessionId;
-  const turns = ["襖の張替えは何日かかりますか", "見積をお願いします", "山田花子です", "熊本市中央区水前寺1-2-3", "09012345678", "10月20日の午前", "なし", "はい"];
+  // 実モデルでは質問の順序が多少変わるため、復唱確認（confirming）には「はい」を追加で返す
+  const turns = ["襖の張替えは何日かかりますか", "見積をお願いします", "山田花子です", "熊本市中央区水前寺1-2-3", "09012345678", "10月20日の午前", "なし", "なし", "はい", "はい", "はい"];
   let last;
+  let session;
   for (const t of turns) {
-    last = await json("/api/agent/turn", { method: "POST", body: JSON.stringify({ sessionId: sid, text: t }) });
+    last = await json("/api/agent/turn", { method: "POST", body: JSON.stringify({ sessionId: sid, text: t, session }) });
     if (!last.res.ok) throw new Error(`turn "${t}" → ${last.res.status} ${JSON.stringify(last.body)}`);
+    session = last.body.session;
     if (last.body.stage === "completed") break;
   }
   if (last.body.stage !== "completed" || !last.body.estimate) throw new Error(`stage=${last.body.stage} mode=${last.body.mode} reply=${last.body.reply}`);

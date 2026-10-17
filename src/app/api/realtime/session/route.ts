@@ -1,6 +1,6 @@
 import { env } from "@/lib/env";
 import { japanNow } from "@/lib/hours";
-import { json } from "@/lib/http";
+import { json, rateLimited } from "@/lib/http";
 import { getKnowledge, knowledgeToPromptText } from "@/lib/knowledge";
 import { createRealtimeSecret } from "@/lib/openai";
 import { buildRealtimeInstructions } from "@/lib/prompts";
@@ -8,6 +8,7 @@ import { getSettings } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const REALTIME_TOOLS = [
   {
@@ -41,7 +42,9 @@ const REALTIME_TOOLS = [
 ];
 
 /** HP上の音声相談（Realtime API / WebRTC）用の一時キーを発行 */
-export async function POST() {
+export async function POST(req: Request) {
+  const limited = rateLimited(req, "realtime", 10);
+  if (limited) return limited;
   if (!env.hasOpenAI) {
     return json({ ok: true, mode: "demo", reason: "OPENAI_API_KEY が未設定のため、ブラウザ音声認識によるデモモードで動作します" });
   }

@@ -1,10 +1,11 @@
 import { createEstimate, receptionSink, receptionSinkLabel, validateEstimateInput } from "@/lib/estimates";
-import { error, json, readJson, requireAdmin } from "@/lib/http";
-import { getConversation, listEstimates, upsertConversation } from "@/lib/store";
+import { error, json, rateLimited, readJson, requireAdmin } from "@/lib/http";
+import { getConversation, listEstimates, storageInfo, upsertConversation } from "@/lib/store";
 import type { Channel } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const CHANNELS: Channel[] = ["web_text", "web_voice", "phone", "line"];
 
@@ -24,10 +25,12 @@ export async function GET() {
   if (denied) return denied;
   const estimates = await listEstimates();
   const sink = receptionSink();
-  return json({ ok: true, estimates, sink, sinkLabel: receptionSinkLabel(sink) });
+  return json({ ok: true, estimates, sink, sinkLabel: receptionSinkLabel(sink), storage: storageInfo() });
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimited(req, "estimates", 10);
+  if (limited) return limited;
   const body = await readJson<Body>(req);
   if (!body) return error("リクエスト本文が不正です");
   if (body.confirmed !== true) return error("送信前にお客様による内容確認（confirmed=true）が必要です");

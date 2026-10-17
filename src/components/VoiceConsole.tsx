@@ -77,6 +77,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   const speakingRef = useRef(false);
   const sessionIdRef = useRef("");
   const agentSessionRef = useRef("");
+  const agentSessionObjRef = useRef<unknown>(null); // デモモード：セッションを往復させる（サーバーレス対策）
   const handledCalls = useRef<Set<string>>(new Set());
   const linesRef = useRef<Line[]>([]);
   const estimateIdRef = useRef<string | undefined>(undefined);
@@ -370,7 +371,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
       const res = await fetch("/api/agent/turn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: agentSessionRef.current, text }),
+        body: JSON.stringify({ sessionId: agentSessionRef.current, text, session: agentSessionObjRef.current }),
       });
       const j = (await res.json()) as {
         ok: boolean;
@@ -378,9 +379,11 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         done?: boolean;
         estimate?: EstimateRequest | null;
         sources?: { title: string }[];
+        session?: unknown;
         error?: string;
       };
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
+      if (j.session) agentSessionObjRef.current = j.session;
       setSources((j.sources ?? []).map((s) => s.title));
       if (j.estimate) {
         setLastEstimate(j.estimate);
@@ -406,9 +409,10 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ channel: "web_voice" }),
     });
-    const j = (await res.json()) as { ok: boolean; sessionId?: string; greeting?: string; error?: string };
+    const j = (await res.json()) as { ok: boolean; sessionId?: string; session?: unknown; greeting?: string; error?: string };
     if (!res.ok || !j.ok || !j.sessionId) throw new Error(j.error ?? "セッションを開始できませんでした");
     agentSessionRef.current = j.sessionId;
+    agentSessionObjRef.current = j.session ?? null;
     liveRef.current = true;
     setStatus("live");
     await say(j.greeting ?? `こんにちは。${company}のAI相談員です。ご用件をどうぞ。`);

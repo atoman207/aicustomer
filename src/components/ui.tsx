@@ -62,6 +62,15 @@ export function Spinner({ className = "h-4 w-4" }: { className?: string }) {
   return <Loader2 className={`animate-spin ${className}`} />;
 }
 
+/** 朱印（はんこ）風のアクセント */
+export function Hanko({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return (
+    <span className={`hanko ${className}`} aria-hidden>
+      {children}
+    </span>
+  );
+}
+
 export function Modal({
   open,
   onClose,

@@ -4,6 +4,7 @@ import type { EstimateStatus } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const STATUSES: EstimateStatus[] = ["new", "contacted", "scheduled", "closed"];
 

@@ -1,6 +1,6 @@
 import { env } from "@/lib/env";
 import { fallbackAnswer } from "@/lib/fallback";
-import { error, readJson } from "@/lib/http";
+import { error, rateLimited, readJson } from "@/lib/http";
 import { getKnowledge, knowledgeToPromptText } from "@/lib/knowledge";
 import { streamChatCompletion } from "@/lib/openai";
 import { buildChatSystemPrompt } from "@/lib/prompts";
@@ -11,6 +11,7 @@ import { truncate, uid } from "@/lib/utils";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 interface Body {
   sessionId?: string;
@@ -19,6 +20,8 @@ interface Body {
 }
 
 export async function POST(req: Request) {
+  const limited = rateLimited(req, "chat", 20);
+  if (limited) return limited;
   const body = await readJson<Body>(req);
   if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return error("messages が必要です");
   const sessionId = (body.sessionId ?? "").toString().slice(0, 80) || uid();
@@ -48,17 +51,21 @@ export async function POST(req: Request) {
   };
 
   const persist = async (reply: string, mode: string) => {
-    const now = new Date().toISOString();
-    const existing = await getConversation(sessionId);
-    await upsertConversation({
-      id: sessionId,
-      channel,
-      startedAt: existing?.startedAt ?? now,
-      updatedAt: now,
-      messages: [...messages, { role: "assistant", content: reply, at: now }],
-      estimateId: existing?.estimateId,
-      meta: { mode, knowledgeSource: snapshot.source },
-    });
+    try {
+      const now = new Date().toISOString();
+      const existing = await getConversation(sessionId);
+      await upsertConversation({
+        id: sessionId,
+        channel,
+        startedAt: existing?.startedAt ?? now,
+        updatedAt: now,
+        messages: [...messages, { role: "assistant", content: reply, at: now }],
+        estimateId: existing?.estimateId,
+        meta: { mode, knowledgeSource: snapshot.source },
+      });
+    } catch {
+      // ログ保存失敗は応答に影響させない
+    }
   };
 
   if (!env.hasOpenAI) {
@@ -74,23 +81,15 @@ export async function POST(req: Request) {
         .map((h) => `- ${h.entry.title}: ${h.entry.content}`)
         .join("\n")}`;
     }
-    const upstream = await streamChatCompletion({
-      messages: [{ role: "system", content: system }, ...messages.map((m) => ({ role: m.role, content: m.content }))],
-      temperature: 0.3,
-      maxTokens: 700,
-    });
-    let acc = "";
-    const decoder = new TextDecoder();
-    const tap = new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        acc += decoder.decode(chunk, { stream: true });
-        controller.enqueue(chunk);
+    const stream = await streamChatCompletion(
+      {
+        messages: [{ role: "system", content: system }, ...messages.map((m) => ({ role: m.role, content: m.content }))],
+        temperature: 0.3,
+        maxTokens: 700,
       },
-      async flush() {
-        await persist(acc, "openai");
-      },
-    });
-    return new Response(upstream.pipeThrough(tap), { headers: { ...baseHeaders, "X-Mode": "openai" } });
+      (full) => persist(full, "openai"),
+    );
+    return new Response(stream, { headers: { ...baseHeaders, "X-Mode": "openai" } });
   } catch (e) {
     const reason = truncate((e as Error).message, 160);
     const reply = `${fallbackAnswer(search.hits)}\n\n（AI応答でエラーが発生したため、ナレッジ検索の結果を表示しています：${reason}）`;

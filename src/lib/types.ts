@@ -122,8 +122,16 @@ export interface AgentTurnResult {
   sources?: SearchHit[];
 }
 
+export interface StorageInfo {
+  backend: "redis" | "file" | "memory";
+  persistent: boolean;
+  label: string;
+  detail?: string;
+}
+
 export interface IntegrationStatus {
   openai: { configured: boolean; model: string; realtimeModel: string; ok?: boolean; detail?: string };
+  storage: StorageInfo;
   knowledge: { source: KnowledgeSource; label: string; entries: number; fetchedAt: string; warning?: string };
   reception: { sink: "gas" | "sheets_api" | "local"; label: string };
   twilio: { configured: boolean; number: string; webhookUrl: string };

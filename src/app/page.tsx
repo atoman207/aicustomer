@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { Badge } from "@/components/ui";
+import { Badge, Hanko } from "@/components/ui";
 import { IMAGES } from "@/lib/images";
 import { serverBaseUrl } from "@/lib/server-url";
 import { getIntegrationStatus } from "@/lib/status";
@@ -55,26 +55,41 @@ const SERVICES = [
   { title: "襖", sub: "張替え・新調", image: IMAGES.fusuma, text: "約200種類の襖紙サンプルからお選びいただけます。強化襖紙でペット対策も。" },
   { title: "障子", sub: "張替え・新調", image: IMAGES.shoji, text: "破れにくい強化障子紙やワーロンなど、暮らしに合わせた紙をご提案します。" },
   { title: "網戸", sub: "張替え・新調", image: IMAGES.amido, text: "その場で15〜20分。ブラックネットや細かい目のネット、ペット対応ネットも。" },
-  { title: "リフォーム", sub: "和室の洋室化・内装・水回り", image: IMAGES.reform, text: "押入れのクローゼット化、クロス、内窓、バリアフリーまで住まいの困りごとに対応。" },
+  { title: "改", sub: "リフォーム：和室の洋室化・内装・水回り", image: IMAGES.reform, text: "押入れのクローゼット化、クロス、内窓、バリアフリーまで住まいの困りごとに対応。", label: "リフォーム" },
+];
+
+const WASHITSU_GALLERY = [
+  { image: IMAGES.shojiRoom, caption: "障子と押入れのある和室" },
+  { image: IMAGES.fusumaDragon, caption: "龍の襖絵" },
+  { image: IMAGES.engawaGarden, caption: "縁側から眺める庭" },
+  { image: IMAGES.shoji, caption: "雪見障子" },
+  { image: IMAGES.washitsuLight, caption: "光の入る和室" },
+  { image: IMAGES.reform, caption: "床の間のある座敷" },
 ];
 
 const GALLERY = [IMAGES.fujiSakura, IMAGES.kyotoPagoda, IMAGES.hakoneTorii, IMAGES.meguroSakura, IMAGES.chureitoFuji, IMAGES.fushimiInari, IMAGES.kimonoShrine, IMAGES.kyotoDusk, IMAGES.tokyoAlley, IMAGES.kyotoStreet];
 
 const FLOW = [
-  { icon: Headphones, title: "ご相談", text: "テキスト・音声・電話のどこからでも、同じAI相談員が対応します。" },
-  { icon: BookOpenCheck, title: "ナレッジで回答", text: "Googleスプレッドシート「社内総合マニュアル」の指定1シートだけを根拠に回答。推測や一般知識での誤案内を防ぎます。" },
-  { icon: ClipboardCheck, title: "確認してから登録", text: "氏名・住所・電話・希望日（第1〜第3）とAI要約をお客様に提示し、確認・修正いただいてから登録します。" },
-  { icon: FileSpreadsheet, title: "一元管理・折り返し", text: "受付日時・経路・内容をスプレッドシートに記録。担当者が折り返して日程を確定します。" },
+  { kanji: "一", icon: Headphones, title: "ご相談", text: "テキスト・音声・電話のどこからでも、同じAI相談員が対応します。" },
+  { kanji: "二", icon: BookOpenCheck, title: "ナレッジで回答", text: "Googleスプレッドシート「社内総合マニュアル」の指定1シートだけを根拠に回答。推測や一般知識での誤案内を防ぎます。" },
+  { kanji: "三", icon: ClipboardCheck, title: "確認してから登録", text: "氏名・住所・電話・希望日（第1〜第3）とAI要約をお客様に提示し、確認・修正いただいてから登録します。" },
+  { kanji: "四", icon: FileSpreadsheet, title: "一元管理・折り返し", text: "受付日時・経路・内容をスプレッドシートに記録。担当者が折り返して日程を確定します。" },
 ];
 
 const PHASES = [
-  { phase: "Phase 1", title: "テキストAI相談から開始", text: "HPにチャット窓口を設置。ナレッジシートの整備と回答品質の確認を行います。", done: true },
-  { phase: "Phase 2", title: "音声AI相談へ拡張", text: "同じナレッジ・同じ受付フローのまま、ブラウザ音声会話を追加します。", done: true },
-  { phase: "Phase 3", title: "AI電話受付へ拡張", text: "0120番号をTwilioへ転送し、休日・営業時間外の電話をAIが受付。管理画面で人間対応と切替。", done: true },
+  { phase: "第一段階", title: "テキストAI相談から開始", text: "HPにチャット窓口を設置。ナレッジシートの整備と回答品質の確認を行います。" },
+  { phase: "第二段階", title: "音声AI相談へ拡張", text: "同じナレッジ・同じ受付フローのまま、ブラウザ音声会話を追加します。" },
+  { phase: "第三段階", title: "AI電話受付へ拡張", text: "0120番号をTwilioへ転送し、休日・営業時間外の電話をAIが受付。管理画面で人間対応と切替。" },
 ];
 
 export default async function HomePage() {
   const [status, settings] = await Promise.all([getIntegrationStatus(await serverBaseUrl()), getSettings()]);
+  const recordLabel =
+    status.reception.sink !== "local"
+      ? "Googleスプレッドシート"
+      : status.storage.persistent
+        ? "ローカル保存（シート未接続）"
+        : "一時保存（シート・Redis 未接続）";
   return (
     <div>
       {/* Hero */}
@@ -109,10 +124,18 @@ export default async function HomePage() {
             </Link>
           </div>
           <div className="mt-8 flex flex-wrap gap-2">
-            <Badge tone={status.openai.configured ? "green" : "amber"}>{status.openai.configured ? `OpenAI API 接続中（${status.openai.model}）` : "デモモード：OpenAIキー未設定（テンプレート応答）"}</Badge>
-            <Badge tone={status.knowledge.source === "local" ? "amber" : "green"}>ナレッジ：{status.knowledge.label}（{status.knowledge.entries}件）</Badge>
-            <Badge tone={status.reception.sink === "local" ? "amber" : "green"}>記録先：{status.reception.sink === "local" ? "ローカル（シート未接続）" : "Googleスプレッドシート"}</Badge>
+            <Badge tone={status.openai.configured ? "green" : "amber"}>
+              {status.openai.configured ? `OpenAI API 接続中（${status.openai.model}）` : "デモモード：OpenAIキー未設定（テンプレート応答）"}
+            </Badge>
+            <Badge tone={status.knowledge.source === "local" ? "amber" : "green"}>
+              ナレッジ：{status.knowledge.label}（{status.knowledge.entries}件）
+            </Badge>
+            <Badge tone={status.reception.sink === "local" ? "amber" : "green"}>記録先：{recordLabel}</Badge>
           </div>
+        </div>
+        <div className="absolute bottom-10 right-8 hidden items-start gap-4 lg:flex" aria-hidden>
+          <span className="vertical-rl border-l border-washi-200/50 pl-3 font-serif text-xl text-washi-100/90">畳・襖・障子・網戸・リフォーム</span>
+          <Hanko>熊本</Hanko>
         </div>
       </section>
 
@@ -151,23 +174,23 @@ export default async function HomePage() {
       </section>
 
       {/* Flow */}
-      <section className="border-y border-washi-300/70 bg-white/60 py-16">
+      <section className="pattern-seigaiha border-y border-washi-300/70 py-16">
         <div className="container-x">
           <p className="eyebrow">仕組み</p>
           <h2 className="section-title mt-2">ナレッジに忠実に答え、確認してから記録する</h2>
           <div className="mt-8 grid gap-4 md:grid-cols-4">
-            {FLOW.map((f, i) => (
-              <div key={f.title} className="card relative p-5">
-                <span className="absolute right-4 top-4 font-serif text-3xl text-washi-300">{String(i + 1).padStart(2, "0")}</span>
-                <span className="grid h-10 w-10 place-items-center rounded-full bg-ai-50 text-ai-600">
+            {FLOW.map((f) => (
+              <div key={f.title} className="card relative overflow-hidden p-5">
+                <span className="kanji-watermark">{f.kanji}</span>
+                <span className="relative grid h-10 w-10 place-items-center rounded-full bg-ai-50 text-ai-600">
                   <f.icon className="h-5 w-5" />
                 </span>
-                <p className="mt-3 font-semibold text-sumi-800">{f.title}</p>
-                <p className="mt-1 text-sm leading-relaxed text-sumi-600">{f.text}</p>
+                <p className="relative mt-3 font-semibold text-sumi-800">{f.title}</p>
+                <p className="relative mt-1 text-sm leading-relaxed text-sumi-600">{f.text}</p>
               </div>
             ))}
           </div>
-          <div className="mt-6 grid gap-3 rounded-2xl border border-ai-100 bg-ai-50/60 p-5 text-sm text-ai-900 md:grid-cols-3">
+          <div className="mt-6 grid gap-3 rounded-2xl border border-ai-100 bg-white/80 p-5 text-sm text-ai-900 md:grid-cols-3">
             <p className="flex items-start gap-2">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
               ナレッジにない質問は推測せず「担当者より折り返し」へ誘導
@@ -190,22 +213,49 @@ export default async function HomePage() {
         <h2 className="section-title mt-2">畳・襖・障子・網戸・リフォーム</h2>
         <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-5">
           {SERVICES.map((s) => (
-            <div key={s.title} className="card overflow-hidden">
+            <div key={s.sub} className="card relative overflow-hidden">
               <div className="relative h-40">
                 <Image src={s.image.src} alt={s.image.alt} fill sizes="(max-width: 640px) 100vw, 20vw" className="object-cover" />
               </div>
-              <div className="p-4">
-                <p className="font-serif text-xl font-bold text-sumi-800">{s.title}</p>
-                <p className="text-xs text-ai-600">{s.sub}</p>
-                <p className="mt-2 text-xs leading-relaxed text-sumi-600">{s.text}</p>
+              <div className="relative p-4">
+                <span className="kanji-watermark">{s.title}</span>
+                <p className="relative font-serif text-xl font-bold text-sumi-800">{s.label ?? s.title}</p>
+                <p className="relative text-xs text-ai-600">{s.sub}</p>
+                <p className="relative mt-2 text-xs leading-relaxed text-sumi-600">{s.text}</p>
               </div>
             </div>
           ))}
         </div>
       </section>
 
+      {/* Washitsu gallery */}
+      <section className="pattern-kumiko border-y border-washi-300/70 py-16">
+        <div className="container-x">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="eyebrow">和室の意匠</p>
+              <h2 className="section-title mt-2">障子の光、襖の絵、畳の香り</h2>
+              <p className="mt-3 max-w-2xl text-sm text-sumi-600">
+                日本の住まいが受け継いできた建具と床の美しさ。張替えひとつで部屋の表情は見違えます。
+              </p>
+            </div>
+            <Hanko className="hidden sm:inline-grid">和</Hanko>
+          </div>
+          <div className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-3">
+            {WASHITSU_GALLERY.map((g) => (
+              <figure key={g.caption} className="group relative h-44 overflow-hidden rounded-2xl shadow-card sm:h-56">
+                <Image src={g.image.src} alt={g.image.alt} fill sizes="(max-width: 768px) 50vw, 33vw" className="object-cover transition duration-700 group-hover:scale-105" />
+                <figcaption className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-sumi-900/75 to-transparent px-4 pb-3 pt-10 font-serif text-sm text-white">
+                  {g.caption}
+                </figcaption>
+              </figure>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* Kumamoto */}
-      <section className="container-x pb-16">
+      <section className="container-x py-16">
         <div className="card grid overflow-hidden md:grid-cols-2">
           <div className="relative min-h-[280px]">
             <Image src={IMAGES.kumamoto.src} alt={IMAGES.kumamoto.alt} fill sizes="(max-width: 768px) 100vw, 50vw" className="object-cover" />
@@ -223,7 +273,7 @@ export default async function HomePage() {
       </section>
 
       {/* Phases */}
-      <section className="border-y border-washi-300/70 bg-white/60 py-16">
+      <section className="pattern-seigaiha border-y border-washi-300/70 py-16">
         <div className="container-x">
           <p className="eyebrow">段階的な導入</p>
           <h2 className="section-title mt-2">まずテキストから。音声・電話へ同じ土台で拡張</h2>
@@ -231,7 +281,7 @@ export default async function HomePage() {
             {PHASES.map((p) => (
               <div key={p.phase} className="card p-5">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold uppercase tracking-widest text-ai-500">{p.phase}</span>
+                  <span className="font-serif text-sm font-bold tracking-widest text-ai-600">{p.phase}</span>
                   <Badge tone="green">このデモで実装済み</Badge>
                 </div>
                 <p className="mt-2 font-semibold text-sumi-800">{p.title}</p>
@@ -242,7 +292,7 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* Gallery */}
+      {/* Japan gallery */}
       <section className="container-x py-16">
         <p className="eyebrow">日本の住まいと風景</p>
         <h2 className="section-title mt-2">受け継がれてきた和の暮らしを、次の世代へ</h2>
@@ -257,9 +307,7 @@ export default async function HomePage() {
 
       {/* CTA */}
       <section className="container-x pb-8">
-        <div className="relative overflow-hidden rounded-3xl bg-ai-700 px-8 py-12 text-white shadow-soft">
-          <div className="absolute -right-10 -top-10 h-48 w-48 rounded-full bg-white/10" />
-          <div className="absolute -bottom-16 right-24 h-56 w-56 rounded-full bg-white/5" />
+        <div className="pattern-shippo relative overflow-hidden rounded-3xl bg-ai-700 px-8 py-12 text-white shadow-soft">
           <p className="eyebrow text-ai-100">まずは試してみてください</p>
           <h2 className="mt-2 font-serif text-2xl font-bold sm:text-3xl">「6畳の畳の表替えはいくら？」と聞いてみる</h2>
           <p className="mt-3 max-w-xl text-sm text-ai-100">

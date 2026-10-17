@@ -1,17 +1,20 @@
 import { createSession, greetingFor } from "@/lib/agent";
 import { env } from "@/lib/env";
 import { describeBusinessHours, japanNow, resolvePhoneRouting } from "@/lib/hours";
-import { error, json, readJson } from "@/lib/http";
+import { error, json, rateLimited, readJson } from "@/lib/http";
 import { getSettings, saveSession } from "@/lib/store";
 import type { Channel } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const CHANNELS: Channel[] = ["phone", "web_voice", "web_text", "line"];
 
 /** ブラウザ電話シミュレーター／音声フォールバック用のセッション開始 */
 export async function POST(req: Request) {
+  const limited = rateLimited(req, "agent-start", 20);
+  if (limited) return limited;
   const body = await readJson<{ channel?: Channel; sessionId?: string; meta?: Record<string, string> }>(req);
   const channel = CHANNELS.includes(body?.channel as Channel) ? (body?.channel as Channel) : "phone";
   const meta: Record<string, string> = {};
@@ -32,6 +35,7 @@ export async function POST(req: Request) {
   return json({
     ok: true,
     sessionId: session.id,
+    session,
     greeting,
     mode: env.hasOpenAI ? "openai" : "demo",
     routing,

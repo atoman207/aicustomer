@@ -3,6 +3,7 @@ import { env } from "./env";
 import { receptionSink, receptionSinkLabel } from "./estimates";
 import { getKnowledge } from "./knowledge";
 import { verifyOpenAI } from "./openai";
+import { storageInfo } from "./store";
 import type { IntegrationStatus } from "./types";
 
 export async function getIntegrationStatus(baseUrl: string, check = false): Promise<IntegrationStatus> {
@@ -19,6 +20,7 @@ export async function getIntegrationStatus(baseUrl: string, check = false): Prom
       ok: openaiCheck.ok,
       detail: openaiCheck.detail,
     },
+    storage: storageInfo(),
     knowledge: {
       source: knowledge.source,
       label: knowledge.sourceLabel,

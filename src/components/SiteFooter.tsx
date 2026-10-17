@@ -1,10 +1,15 @@
 import Link from "next/link";
+import { Hanko } from "@/components/ui";
 import { IMAGE_CREDITS } from "@/lib/images";
 
 export default function SiteFooter({ company, phone }: { company: string; phone: string }) {
   return (
-    <footer className="mt-16 border-t border-washi-300/70 bg-washi-100/80">
-      <div className="container-x grid gap-8 py-10 md:grid-cols-3">
+    <footer className="pattern-seigaiha mt-16 border-t border-washi-300/70">
+      <div className="container-x grid gap-8 py-12 md:grid-cols-[auto_1fr_1fr_1.2fr]">
+        <div className="hidden items-start gap-4 md:flex">
+          <span className="vertical-rl font-serif text-lg font-bold text-sumi-700">{company}</span>
+          <Hanko>熊本</Hanko>
+        </div>
         <div>
           <p className="font-serif text-lg font-bold text-sumi-800">{company}</p>
           <p className="mt-2 text-sm text-sumi-500">

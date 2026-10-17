@@ -3,6 +3,7 @@ import { getKnowledge, invalidateKnowledgeCache, remoteKnowledgeConfigured } fro
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 /** スプレッドシートからナレッジを再読み込み（キャッシュ破棄） */
 export async function POST() {

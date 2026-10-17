@@ -16,9 +16,23 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
   return { Authorization: `Bearer ${env.openaiKey}`, "Content-Type": "application/json", ...extra };
 }
 
-async function post(path: string, body: unknown, extra?: Record<string, string>): Promise<Response> {
+async function post(path: string, body: unknown, extra?: Record<string, string>, timeoutMs = 30_000): Promise<Response> {
   if (!env.hasOpenAI) throw new OpenAIError("OPENAI_API_KEY が設定されていません", 401);
-  const res = await fetch(`${base()}${path}`, { method: "POST", headers: headers(extra), body: JSON.stringify(body) });
+  let res: Response;
+  try {
+    res = await fetch(`${base()}${path}`, {
+      method: "POST",
+      headers: headers(extra),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e) {
+    const name = (e as Error).name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new OpenAIError(`OpenAI API がタイムアウトしました（${Math.round(timeoutMs / 1000)}秒）`, 504);
+    }
+    throw new OpenAIError(`OpenAI API に接続できません: ${(e as Error).message}`, 502);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new OpenAIError(`OpenAI API error ${res.status}: ${text.slice(0, 600)}`, res.status);
@@ -67,7 +81,7 @@ interface ChatCompletionResponse {
 }
 
 export async function chatCompletion(o: ChatOptions): Promise<string> {
-  const res = await post("/chat/completions", chatBody(o, false));
+  const res = await post("/chat/completions", chatBody(o, false), undefined, 45_000);
   const json = (await res.json()) as ChatCompletionResponse;
   return json.choices?.[0]?.message?.content ?? "";
 }
@@ -83,47 +97,99 @@ export async function chatCompletionJson<T>(
   }
 }
 
-/** テキスト差分だけを流す ReadableStream を返す */
-export async function streamChatCompletion(o: ChatOptions): Promise<ReadableStream<Uint8Array>> {
-  const res = await post("/chat/completions", chatBody(o, true));
-  if (!res.body) throw new OpenAIError("ストリーム応答がありません", 502);
-  const reader = res.body.getReader();
+/**
+ * テキスト差分だけを流す ReadableStream を返す。
+ * 注意：pull 方式 + AbortSignal.timeout + pipeThrough の組み合わせは Next.js の Node ランタイムで
+ * 応答がヘッダー送出前に止まる事象を確認したため、push 方式（start 内で読み切る）＋明示的な
+ * AbortController タイマーで実装し、完了時の全文は onComplete で通知する。
+ */
+export async function streamChatCompletion(
+  o: ChatOptions,
+  onComplete?: (fullText: string) => void | Promise<void>,
+): Promise<ReadableStream<Uint8Array>> {
+  if (!env.hasOpenAI) throw new OpenAIError("OPENAI_API_KEY が設定されていません", 401);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 55_000);
+  let res: Response;
+  try {
+    res = await fetch(`${base()}/chat/completions`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify(chatBody(o, true)),
+      signal: ac.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    throw new OpenAIError(`OpenAI API に接続できません: ${(e as Error).message}`, 502);
+  }
+  if (!res.ok) {
+    clearTimeout(timer);
+    const text = await res.text().catch(() => "");
+    throw new OpenAIError(`OpenAI API error ${res.status}: ${text.slice(0, 600)}`, res.status);
+  }
+  if (!res.body) {
+    clearTimeout(timer);
+    throw new OpenAIError("ストリーム応答がありません", 502);
+  }
+  const upstream = res.body;
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
-  let buffer = "";
   return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const { done, value } = await reader.read();
-      if (done) {
-        controller.close();
-        return;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith("data:")) continue;
-        const data = t.slice(5).trim();
-        if (data === "[DONE]") continue;
-        try {
-          const j = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] };
-          const delta = j.choices?.[0]?.delta?.content;
-          if (delta) controller.enqueue(encoder.encode(delta));
-        } catch {
-          // 不完全なJSONは無視
+    async start(controller) {
+      const reader = upstream.getReader();
+      let buffer = "";
+      let full = "";
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            const t = line.trim();
+            if (!t.startsWith("data:")) continue;
+            const data = t.slice(5).trim();
+            if (data === "[DONE]") continue;
+            try {
+              const j = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] };
+              const delta = j.choices?.[0]?.delta?.content;
+              if (delta) {
+                full += delta;
+                controller.enqueue(encoder.encode(delta));
+              }
+            } catch {
+              // 不完全なJSONは無視
+            }
+          }
+        }
+      } catch (e) {
+        clearTimeout(timer);
+        if (full) {
+          controller.enqueue(encoder.encode("\n（通信が途中で切断されました）"));
+        } else {
+          controller.error(e);
+          return;
         }
       }
+      clearTimeout(timer);
+      try {
+        await onComplete?.(full);
+      } catch {
+        // 完了処理の失敗は応答に影響させない
+      }
+      controller.close();
     },
     cancel() {
-      reader.cancel().catch(() => undefined);
+      clearTimeout(timer);
+      ac.abort();
     },
   });
 }
 
 export async function embed(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
-  const res = await post("/embeddings", { model: env.embeddingModel, input: texts });
+  const res = await post("/embeddings", { model: env.embeddingModel, input: texts }, undefined, 20_000);
   const json = (await res.json()) as { data: { embedding: number[]; index: number }[] };
   return json.data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
 }
@@ -139,7 +205,7 @@ export async function synthesizeSpeech(
     response_format: opts.format ?? "mp3",
   };
   if (opts.instructions && /tts/.test(env.ttsModel)) body.instructions = opts.instructions;
-  const res = await post("/audio/speech", body);
+  const res = await post("/audio/speech", body, undefined, 30_000);
   return res.arrayBuffer();
 }
 
@@ -160,7 +226,9 @@ export async function createRealtimeSecret(opts: {
   const voice = opts.voice ?? env.realtimeVoice;
   let gaError: OpenAIError | null = null;
   try {
-    const res = await post("/realtime/client_secrets", {
+    const res = await post(
+      "/realtime/client_secrets",
+      {
       expires_after: { anchor: "created_at", seconds: 600 },
       session: {
         type: "realtime",
@@ -177,7 +245,10 @@ export async function createRealtimeSecret(opts: {
           output: { voice },
         },
       },
-    });
+      },
+      undefined,
+      15_000,
+    );
     const json = (await res.json()) as { value: string; expires_at: number };
     return { value: json.value, expiresAt: json.expires_at, model, api: "ga" };
   } catch (e) {
@@ -197,6 +268,7 @@ export async function createRealtimeSecret(opts: {
         turn_detection: { type: "server_vad" },
       },
       { "OpenAI-Beta": "realtime=v1" },
+      15_000,
     );
     const json = (await res.json()) as { client_secret: { value: string; expires_at: number } };
     return { value: json.client_secret.value, expiresAt: json.client_secret.expires_at, model, api: "beta" };
@@ -208,7 +280,10 @@ export async function createRealtimeSecret(opts: {
 export async function verifyOpenAI(): Promise<{ ok: boolean; detail: string }> {
   if (!env.hasOpenAI) return { ok: false, detail: "OPENAI_API_KEY 未設定（デモモードで動作中）" };
   try {
-    const res = await fetch(`${base()}/models/${encodeURIComponent(env.chatModel)}`, { headers: headers() });
+    const res = await fetch(`${base()}/models/${encodeURIComponent(env.chatModel)}`, {
+      headers: headers(),
+      signal: AbortSignal.timeout(10_000),
+    });
     if (res.ok) return { ok: true, detail: `接続OK（${env.chatModel}）` };
     const t = await res.text();
     return { ok: false, detail: `HTTP ${res.status}: ${t.slice(0, 200)}` };

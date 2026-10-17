@@ -51,7 +51,11 @@ body {
     @apply font-serif text-2xl font-bold tracking-wide text-sumi-800 sm:text-3xl;
   }
   .eyebrow {
-    @apply text-xs font-semibold uppercase tracking-[0.25em] text-ai-500;
+    @apply inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.25em] text-ai-500;
+  }
+  .eyebrow::before {
+    content: "";
+    @apply inline-block h-3 w-0.5 bg-shu-500;
   }
   .table-base {
     @apply w-full border-collapse text-left text-sm;
@@ -62,6 +66,48 @@ body {
   .table-base td {
     @apply border-b border-washi-200 px-3 py-2 align-top text-sumi-700;
   }
+
+  /* ---- 和のモチーフ ---- */
+  .hanko {
+    @apply inline-grid h-12 w-12 place-items-center rounded-md bg-shu-500 font-serif text-xl font-bold leading-none text-white;
+    box-shadow:
+      inset 0 0 0 2px #fdf1ed,
+      inset 0 0 0 3px #c8432a,
+      0 6px 16px -8px rgba(200, 67, 42, 0.6);
+    transform: rotate(-6deg);
+  }
+  .vertical-rl {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    letter-spacing: 0.35em;
+  }
+  .kanji-watermark {
+    @apply pointer-events-none absolute -right-2 -top-3 select-none font-serif text-7xl font-bold leading-none text-washi-300/60;
+  }
+  .bubble-washi {
+    background: linear-gradient(135deg, #ffffff 0%, #fdfbf7 100%);
+    border-left: 3px solid #527eab;
+  }
+}
+
+/* 青海波（せいがいは） */
+.pattern-seigaiha {
+  background-color: #f8f3ea;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='24' viewBox='0 0 48 24'%3E%3Cg fill='none' stroke='%23234b73' stroke-opacity='0.13' stroke-width='1.2'%3E%3Cpath d='M0 24a24 24 0 0 1 48 0M6 24a18 18 0 0 1 36 0M12 24a12 12 0 0 1 24 0M18 24a6 6 0 0 1 12 0'/%3E%3Cpath d='M-24 12a24 24 0 0 1 48 0M-18 12a18 18 0 0 1 36 0M-12 12a12 12 0 0 1 24 0M-6 12a6 6 0 0 1 12 0'/%3E%3Cpath d='M24 12a24 24 0 0 1 48 0M30 12a18 18 0 0 1 36 0M36 12a12 12 0 0 1 24 0M42 12a6 6 0 0 1 12 0'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 48px 24px;
+}
+
+/* 七宝（しっぽう）：濃色背景用 */
+.pattern-shippo {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='0.12' stroke-width='1.2'%3E%3Ccircle cx='16' cy='16' r='16'/%3E%3Ccircle cx='0' cy='0' r='16'/%3E%3Ccircle cx='32' cy='0' r='16'/%3E%3Ccircle cx='0' cy='32' r='16'/%3E%3Ccircle cx='32' cy='32' r='16'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 32px 32px;
+}
+
+/* 組子（くみこ）格子 */
+.pattern-kumiko {
+  background-color: #fdfbf7;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'%3E%3Cg fill='none' stroke='%23cdb892' stroke-opacity='0.28' stroke-width='1'%3E%3Cpath d='M0 0h40v40H0z'/%3E%3Cpath d='M0 0l40 40M40 0L0 40'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 40px 40px;
 }
 
 .bubble {

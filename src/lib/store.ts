@@ -1,37 +1,55 @@
-// JSONファイルベースの簡易ストア（デモ用）。
-// 本番ではスプレッドシート／DBが正とし、ここはキャッシュ兼ローカル記録として機能します。
+// データストア。保存先は環境により自動選択：
+//   1. Upstash Redis（UPSTASH_REDIS_REST_URL / KV_REST_API_URL が設定されている場合）… 永続・複数インスタンス共有
+//   2. ローカルファイル data/runtime/*.json（通常のサーバー）… 永続
+//   3. /tmp + メモリ（Vercel などサーバーレスで Redis 未設定）… 一時的（再起動で消える）
+// 本番ではスプレッドシートが受付情報の正となり、ここはキャッシュ兼ローカル記録として機能します。
 import { promises as fs } from "fs";
 import path from "path";
 import seedEstimates from "../../data/seed/estimates.json";
 import seedKnowledge from "../../data/seed/knowledge.json";
 import { env } from "./env";
-import type { AgentSession, AppSettings, ConversationLog, EstimateRequest, KnowledgeEntry } from "./types";
+import { kvConfigured, kvGet, kvSet } from "./kv";
+import type { AgentSession, AppSettings, ConversationLog, EstimateRequest, KnowledgeEntry, StorageInfo } from "./types";
 
 type CollectionName = "estimates" | "conversations" | "sessions" | "settings" | "knowledge_local" | "embeddings";
 
+interface CacheEntry {
+  value: unknown;
+  at: number;
+}
+
 interface StoreState {
-  cache: Map<string, unknown>;
+  cache: Map<string, CacheEntry>;
   queues: Map<string, Promise<void>>;
   writable: boolean | null;
+  dir: string | null | undefined;
+  kvError?: string;
 }
 
 const g = globalThis as unknown as { __aicustomerStore?: StoreState };
-const state: StoreState = g.__aicustomerStore ?? { cache: new Map(), queues: new Map(), writable: null };
+const state: StoreState = g.__aicustomerStore ?? { cache: new Map(), queues: new Map(), writable: null, dir: undefined };
 g.__aicustomerStore = state;
 
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY);
 const RUNTIME_DIR = path.join(process.cwd(), "data", "runtime");
 const TMP_DIR = path.join(process.env.TMPDIR || process.env.TEMP || "/tmp", "aicustomer-runtime");
+const KV_CACHE_TTL_MS = 3000; // Redis 利用時のメモリキャッシュ有効期間（他インスタンスの更新を拾うため短め）
+const MEMORY_ONLY: CollectionName[] = ["embeddings"]; // 大きいので Redis には置かない
 
 async function ensureDir(): Promise<string | null> {
-  for (const dir of [RUNTIME_DIR, TMP_DIR]) {
+  if (state.dir !== undefined) return state.dir;
+  const candidates = IS_SERVERLESS ? [TMP_DIR] : [RUNTIME_DIR, TMP_DIR];
+  for (const dir of candidates) {
     try {
       await fs.mkdir(dir, { recursive: true });
       await fs.access(dir);
+      state.dir = dir;
       return dir;
     } catch {
       // 次の候補へ
     }
   }
+  state.dir = null;
   return null;
 }
 
@@ -51,36 +69,71 @@ function seedFor(name: CollectionName): unknown {
   }
 }
 
+function useKv(name: CollectionName): boolean {
+  return kvConfigured() && !MEMORY_ONLY.includes(name);
+}
+
+function remember<T>(name: CollectionName, value: T): T {
+  state.cache.set(name, { value, at: Date.now() });
+  return value;
+}
+
 async function read<T>(name: CollectionName): Promise<T> {
-  if (state.cache.has(name)) return state.cache.get(name) as T;
+  const cached = state.cache.get(name);
+  const kv = useKv(name);
+  if (cached && (!kv || Date.now() - cached.at < KV_CACHE_TTL_MS)) return cached.value as T;
+
+  if (kv) {
+    try {
+      const raw = await kvGet(`aic:${name}`);
+      state.kvError = undefined;
+      if (raw) return remember(name, JSON.parse(raw) as T);
+      if (cached) return cached.value as T; // 書き込み直後など
+      return remember(name, structuredClone(seedFor(name)) as T);
+    } catch (e) {
+      state.kvError = (e as Error).message;
+      if (cached) return cached.value as T;
+      // Redis 障害時はファイル／シードへフォールバック
+    }
+  }
+  if (cached) return cached.value as T;
+
   const dir = await ensureDir();
   if (dir) {
     try {
       const raw = await fs.readFile(path.join(dir, `${name}.json`), "utf8");
-      const parsed = JSON.parse(raw) as T;
-      state.cache.set(name, parsed);
-      return parsed;
+      return remember(name, JSON.parse(raw) as T);
     } catch {
       // 未作成 → シードを使用
     }
   }
-  const seed = structuredClone(seedFor(name)) as T;
-  state.cache.set(name, seed);
-  return seed;
+  return remember(name, structuredClone(seedFor(name)) as T);
 }
 
 async function write<T>(name: CollectionName, value: T): Promise<void> {
-  state.cache.set(name, value);
+  remember(name, value);
   const prev = state.queues.get(name) ?? Promise.resolve();
   const next = prev
     .catch(() => undefined)
     .then(async () => {
+      if (useKv(name)) {
+        try {
+          await kvSet(`aic:${name}`, JSON.stringify(value));
+          state.kvError = undefined;
+          return;
+        } catch (e) {
+          state.kvError = (e as Error).message; // ファイルへフォールバック
+        }
+      }
       const dir = await ensureDir();
-      if (!dir) return;
+      if (!dir) {
+        state.writable = false;
+        return;
+      }
       const file = path.join(dir, `${name}.json`);
-      const tmp = `${file}.${process.pid}.tmp`;
+      const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 6)}.tmp`;
       try {
-        await fs.writeFile(tmp, JSON.stringify(value, null, 2), "utf8");
+        await fs.writeFile(tmp, JSON.stringify(value), "utf8");
         await fs.rename(tmp, file);
         state.writable = true;
       } catch {
@@ -89,6 +142,26 @@ async function write<T>(name: CollectionName, value: T): Promise<void> {
     });
   state.queues.set(name, next);
   await next;
+}
+
+export function storageInfo(): StorageInfo {
+  if (kvConfigured()) {
+    return {
+      backend: "redis",
+      persistent: true,
+      label: "Upstash Redis（永続・複数インスタンス共有）",
+      detail: state.kvError ? `直近のエラー：${state.kvError}（ファイル／メモリへフォールバック中）` : undefined,
+    };
+  }
+  if (IS_SERVERLESS) {
+    return {
+      backend: "memory",
+      persistent: false,
+      label: "一時保存（サーバーレス：再デプロイやスリープで消えます）",
+      detail: "Vercel の Storage から Upstash Redis を追加すると、受付・会話・設定が永続化され、電話・LINE の会話状態も安定します。",
+    };
+  }
+  return { backend: "file", persistent: true, label: "ローカルファイル（data/runtime）", detail: state.writable === false ? "書き込みに失敗したためメモリで動作中" : undefined };
 }
 
 // ---------- 設定 ----------
@@ -143,7 +216,8 @@ export async function listEstimates(): Promise<EstimateRequest[]> {
 
 export async function addEstimate(e: EstimateRequest): Promise<void> {
   const list = await read<EstimateRequest[]>("estimates");
-  await write("estimates", [...list.filter((x) => x.id !== e.id), e]);
+  const next = [...list.filter((x) => x.id !== e.id), e].sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1)).slice(0, 1000);
+  await write("estimates", next);
 }
 
 export async function updateEstimate(id: string, patch: Partial<EstimateRequest>): Promise<EstimateRequest | null> {
@@ -159,6 +233,9 @@ export async function updateEstimate(id: string, patch: Partial<EstimateRequest>
 
 // ---------- 会話履歴 ----------
 
+const MAX_CONVERSATIONS = 300;
+const MAX_MESSAGES_PER_CONVERSATION = 60;
+
 export async function listConversations(limit = 100): Promise<ConversationLog[]> {
   const list = await read<ConversationLog[]>("conversations");
   return [...list].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, limit);
@@ -172,14 +249,15 @@ export async function getConversation(id: string): Promise<ConversationLog | nul
 export async function upsertConversation(log: ConversationLog): Promise<void> {
   const list = await read<ConversationLog[]>("conversations");
   const others = list.filter((c) => c.id !== log.id);
-  // 直近500件のみ保持
-  const next = [...others, log].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, 500);
+  const trimmed: ConversationLog = { ...log, messages: log.messages.slice(-MAX_MESSAGES_PER_CONVERSATION) };
+  const next = [...others, trimmed].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, MAX_CONVERSATIONS);
   await write("conversations", next);
 }
 
 // ---------- エージェントセッション（電話・LINE・音声フォールバック） ----------
 
 const SESSION_TTL_MS = 3 * 60 * 60 * 1000;
+const MAX_SESSIONS = 200;
 
 export async function getSession(id: string): Promise<AgentSession | null> {
   const list = await read<AgentSession[]>("sessions");
@@ -190,7 +268,8 @@ export async function saveSession(s: AgentSession): Promise<void> {
   const list = await read<AgentSession[]>("sessions");
   const cutoff = Date.now() - SESSION_TTL_MS;
   const kept = list.filter((x) => x.id !== s.id && Date.parse(x.updatedAt) > cutoff);
-  await write("sessions", [...kept, s]);
+  const next = [...kept, s].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, MAX_SESSIONS);
+  await write("sessions", next);
 }
 
 export async function deleteSession(id: string): Promise<void> {
@@ -211,7 +290,7 @@ export async function saveLocalKnowledge(entries: KnowledgeEntry[]): Promise<voi
   await write("knowledge_local", entries);
 }
 
-// ---------- 埋め込みキャッシュ ----------
+// ---------- 埋め込みキャッシュ（メモリ／ファイルのみ） ----------
 
 export async function getEmbeddingCache(): Promise<Record<string, number[]>> {
   return read<Record<string, number[]>>("embeddings");

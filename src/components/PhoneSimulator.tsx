@@ -36,6 +36,7 @@ interface Routing {
 interface StartResp {
   ok: boolean;
   sessionId: string;
+  session?: unknown;
   greeting: string;
   mode: Mode;
   routing: Routing;
@@ -51,6 +52,7 @@ interface TurnResp {
   done: boolean;
   mode: Mode;
   estimate: EstimateRequest | null;
+  session?: unknown;
   error?: string;
 }
 
@@ -90,6 +92,7 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
   const speakingRef = useRef(false);
   const recRef = useRef<Recognizer | null>(null);
   const sessionIdRef = useRef("");
+  const sessionRef = useRef<unknown>(null); // サーバーレス環境でも途切れないよう、セッションを往復させる
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -162,10 +165,11 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
       const res = await fetch("/api/agent/turn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sessionIdRef.current, text }),
+        body: JSON.stringify({ sessionId: sessionIdRef.current, text, session: sessionRef.current }),
       });
       const j = (await res.json()) as TurnResp;
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
+      if (j.session) sessionRef.current = j.session;
       setStage(j.stage);
       setDraft(j.draft);
       setMode(j.mode);
@@ -202,6 +206,7 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
       const j = (await res.json()) as StartResp;
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
       sessionIdRef.current = j.sessionId;
+      sessionRef.current = j.session ?? null;
       setRouting(j.routing);
       setInfo(j.settings);
       setNow(j.now);

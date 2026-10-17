@@ -71,11 +71,14 @@ export default function ChatConsole({
       const history = toHistory([...messages, userMsg]);
       setMessages((prev) => [...prev, userMsg, { id: pendingId, role: "assistant", content: "", pending: true }]);
       setBusy(true);
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 70_000);
       try {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sessionId, channel: "web_text", messages: history }),
+          signal: ac.signal,
         });
         if (!res.ok || !res.body) {
           const j = (await res.json().catch(() => ({}))) as { error?: string };
@@ -105,12 +108,13 @@ export default function ChatConsole({
           ),
         );
       } catch (e) {
+        const reason = (e as Error).name === "AbortError" ? "応答がタイムアウトしました" : (e as Error).message;
         setMessages((prev) =>
           prev.map((x) =>
             x.id === pendingId
               ? {
                   ...x,
-                  content: `申し訳ありません、通信エラーが発生しました（${(e as Error).message}）。時間をおいて再度お試しください。`,
+                  content: `申し訳ありません、通信エラーが発生しました（${reason}）。時間をおいて再度お試しください。`,
                   pending: false,
                   mode: "error",
                 }
@@ -118,6 +122,7 @@ export default function ChatConsole({
           ),
         );
       } finally {
+        clearTimeout(timer);
         setBusy(false);
         textareaRef.current?.focus();
       }
@@ -184,7 +189,7 @@ export default function ChatConsole({
               <div className={`max-w-[85%] ${m.role === "user" ? "text-right" : ""}`}>
                 <div
                   className={`bubble inline-block rounded-2xl px-4 py-3 text-left text-sm leading-relaxed shadow-sm ${
-                    m.role === "user" ? "rounded-tr-sm bg-ai-600 text-white" : "rounded-tl-sm border border-washi-200 bg-white text-sumi-800"
+                    m.role === "user" ? "rounded-tr-sm bg-ai-600 text-white" : "bubble-washi rounded-tl-sm border border-washi-200 text-sumi-800"
                   }`}
                 >
                   {m.pending && !m.content ? (
