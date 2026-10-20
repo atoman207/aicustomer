@@ -1,28 +1,49 @@
 "use client";
 
-import { Bot, ClipboardCheck, Loader2, Send, Sparkles, UserRound } from "lucide-react";
+import { BookOpenCheck, ClipboardCheck, Clock3, Loader2, Send, UserRound, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import EstimateForm from "./EstimateForm";
 import { DemoNotice, Modal, ModeBadge } from "./ui";
+import { BUSINESS } from "@/lib/company";
 import type { ChatMessage, EstimateRequest } from "@/lib/types";
 import { uid } from "@/lib/utils";
+
+/** AI の顔：一畳屋のロゴマーク */
+function AiAvatar({ size = "h-9 w-9" }: { size?: string }) {
+  return (
+    <span className={`grid ${size} shrink-0 place-items-center rounded-full border-2 border-ichi-green bg-white`}>
+      <img src="/ichijoya/logo-symbol.svg" alt="" className="w-[62%]" />
+    </span>
+  );
+}
 
 interface UiMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  sources?: { title: string; category: string }[];
+  sources?: { title: string; category: string; origin?: string }[];
   mode?: string;
+  kind?: string;
   pending?: boolean;
+}
+
+const ORIGIN_SHORT: Record<string, string> = { manual: "マニュアル", company: "会社情報", website: "ホームページ", admin: "追加" };
+
+/** OpenAI を使わずに答えた回答の表示 */
+function answeredLocally(mode?: string): string | null {
+  if (mode === "local") return "学習済みナレッジから回答（AI未使用）";
+  if (mode === "cache") return "学習済みの回答（AI未使用）";
+  return null;
 }
 
 const SUGGESTIONS = [
   "6畳の畳の表替えはいくらですか？",
-  "襖の張替えは何日くらいかかりますか？",
-  "ペットがいても破れにくい障子はありますか？",
-  "網戸の張替えは即日できますか？",
+  "畳の表替えは何日かかりますか？",
+  "土日に工事をお願いできますか？",
+  "お店に行って見本を見られますか？",
+  "猫がいても破れにくい障子紙はありますか？",
+  "水まわりのリフォームもできますか？",
   "対応エリアを教えてください",
-  "和室を洋室にリフォームしたい",
 ];
 
 export default function ChatConsole({
@@ -41,7 +62,7 @@ export default function ChatConsole({
     {
       id: "greeting",
       role: "assistant",
-      content: `こんにちは。${company}のAI相談員です。\n畳・襖・障子・網戸・リフォームについて、お気軽にご質問ください。料金の目安や工期、対応エリアなどにお答えします。\nお見積りをご希望の際は、「LINEで見積依頼」ボタンからお進みください。`,
+      content: `こんにちは。畳の${company}のAI相談員です。\n畳・襖・障子・網戸から住まいのリフォームまで、お気軽にご質問ください。料金の目安や工期、対応エリア、営業日などにお答えします。\nお見積り（無料）をご希望の際は、「無料お見積りを依頼」ボタンからお進みください。`,
     },
   ]);
   const [input, setInput] = useState("");
@@ -85,8 +106,9 @@ export default function ChatConsole({
           throw new Error(j.error ?? `HTTP ${res.status}`);
         }
         const m = res.headers.get("X-Mode") ?? "openai";
+        const kind = res.headers.get("X-Answer-Kind") ?? "";
         setLastMode(m);
-        let sources: { title: string; category: string }[] = [];
+        let sources: { title: string; category: string; origin?: string }[] = [];
         try {
           sources = JSON.parse(decodeURIComponent(res.headers.get("X-Sources") ?? "%5B%5D")) as typeof sources;
         } catch {
@@ -104,7 +126,7 @@ export default function ChatConsole({
         }
         setMessages((prev) =>
           prev.map((x) =>
-            x.id === pendingId ? { ...x, content: acc || "（応答がありませんでした）", pending: false, sources, mode: m } : x,
+            x.id === pendingId ? { ...x, content: acc || "（応答がありませんでした）", pending: false, sources, mode: m, kind } : x,
           ),
         );
       } catch (e) {
@@ -129,6 +151,17 @@ export default function ChatConsole({
     },
     [busy, messages, sessionId],
   );
+
+  // トップページの「こんなことが聞けます」から来た場合（/chat?q=...）はそのまま質問する
+  const autoAsked = useRef(false);
+  useEffect(() => {
+    if (autoAsked.current) return;
+    const q = new URLSearchParams(window.location.search).get("q")?.trim();
+    if (!q) return;
+    autoAsked.current = true;
+    window.history.replaceState(null, "", window.location.pathname);
+    void send(q.slice(0, 300));
+  }, [send]);
 
   async function openEstimate() {
     setEstimateOpen(true);
@@ -162,32 +195,33 @@ export default function ChatConsole({
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
-      <section className="card flex h-[70vh] min-h-[520px] flex-col overflow-hidden">
-        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-washi-200 bg-washi-100/70 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span className="grid h-8 w-8 place-items-center rounded-full bg-ai-600 text-white">
-              <Bot className="h-4 w-4" />
-            </span>
+      <section className="card flex h-[70vh] min-h-[520px] flex-col overflow-hidden" data-busy={busy ? "true" : "false"}>
+        <header className="flex flex-wrap items-center justify-between gap-2 bg-ptn-logo px-4 py-3 text-white">
+          <div className="flex items-center gap-2.5">
+            <AiAvatar />
             <div className="leading-tight">
-              <p className="text-sm font-semibold text-sumi-800">AI相談員</p>
-              <p className="text-[11px] text-sumi-400">回答根拠：{knowledgeLabel}</p>
+              <p className="font-hand text-base">一畳屋 AI相談員</p>
+              <p className="text-[11px] text-white/75">回答の根拠：{knowledgeLabel}</p>
             </div>
           </div>
-          <ModeBadge mode={lastMode === "openai" ? "openai" : "demo"} />
+          <ModeBadge mode={mode === "openai" && lastMode !== "demo-error" ? "openai" : "demo"} />
         </header>
 
         <div ref={listRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
           {messages.map((m) => (
             <div key={m.id} className={`flex gap-3 ${m.role === "user" ? "flex-row-reverse" : ""}`}>
-              <span
-                className={`mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-full ${
-                  m.role === "user" ? "bg-washi-300 text-sumi-700" : "bg-ai-600 text-white"
-                }`}
-              >
-                {m.role === "user" ? <UserRound className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
-              </span>
+              {m.role === "user" ? (
+                <span className="mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-full bg-sumi-100 text-sumi-600">
+                  <UserRound className="h-4 w-4" />
+                </span>
+              ) : (
+                <span className="mt-1">
+                  <AiAvatar />
+                </span>
+              )}
               <div className={`max-w-[85%] ${m.role === "user" ? "text-right" : ""}`}>
                 <div
+                  data-role={m.role}
                   className={`bubble inline-block rounded-2xl px-4 py-3 text-left text-sm leading-relaxed shadow-sm ${
                     m.role === "user" ? "rounded-tr-sm bg-ai-600 text-white" : "bubble-washi rounded-tl-sm border border-washi-200 text-sumi-800"
                   }`}
@@ -202,12 +236,19 @@ export default function ChatConsole({
                     m.content
                   )}
                 </div>
-                {m.sources && m.sources.length > 0 ? (
+                {answeredLocally(m.mode) || (m.sources && m.sources.length > 0) ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
-                    {m.sources.map((s) => (
+                    {answeredLocally(m.mode) ? (
+                      <span className="chip border-ichi-green bg-ichi-cream text-ichi-theme" data-answer={m.mode}>
+                        <Zap className="h-3 w-3" />
+                        {answeredLocally(m.mode)}
+                      </span>
+                    ) : null}
+                    {(m.sources ?? []).slice(0, 3).map((s) => (
                       <span key={s.title} className="chip">
-                        <Sparkles className="h-3 w-3 text-ai-500" />
-                        参照：{s.title}
+                        <BookOpenCheck className="h-3 w-3" />
+                        参照：{s.origin && ORIGIN_SHORT[s.origin] ? `${ORIGIN_SHORT[s.origin]}｜` : ""}
+                        {s.title.replace(/^.*｜/, "")}
                       </span>
                     ))}
                   </div>
@@ -247,7 +288,7 @@ export default function ChatConsole({
                 send(input);
               }
             }}
-            disabled={busy}
+            aria-busy={busy}
           />
           <button type="submit" className="btn-primary h-[44px] px-4" disabled={busy || !input.trim()} aria-label="送信">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -257,13 +298,13 @@ export default function ChatConsole({
 
       <aside className="space-y-4">
         <div className="card p-4">
-          <p className="font-serif text-base font-bold text-sumi-800">お見積りのご依頼</p>
+          <p className="font-serif text-base font-bold text-sumi-800">お見積りのご依頼（無料）</p>
           <p className="mt-1 text-xs text-sumi-500">
-            相談内容はAIが要約し、お名前・ご住所・お電話番号・ご希望日（第1〜第3）とあわせて、送信前にご確認いただきます。
+            担当者が現地を見てからお見積りを提出します。ご相談内容はAIが要約し、お名前・ご住所・お電話番号・訪問のご希望日（第1〜第3）とあわせて、送信前にご確認いただきます。
           </p>
-          <button type="button" className="btn-line mt-3 w-full" onClick={openEstimate}>
+          <button type="button" className="btn-accent mt-3 w-full" onClick={openEstimate}>
             <ClipboardCheck className="h-4 w-4" />
-            LINEで見積依頼
+            無料お見積りを依頼
           </button>
           {lastEstimate ? (
             <p className="mt-3 rounded-xl bg-tatami-50 px-3 py-2 text-xs text-tatami-700">
@@ -273,19 +314,33 @@ export default function ChatConsole({
             </p>
           ) : null}
         </div>
-        {lastMode !== "openai" ? <DemoNotice compact /> : null}
-        <div className="card p-4 text-xs text-sumi-500">
-          <p className="font-semibold text-sumi-700">この窓口でできること</p>
-          <ul className="mt-2 list-disc space-y-1 pl-4">
-            <li>社内ナレッジ（スプレッドシートの指定シート）だけを根拠に回答</li>
-            <li>ナレッジにない質問は推測せず、担当者の折り返しをご案内</li>
-            <li>会話をAIが要約し、見積依頼フォームに自動入力</li>
-            <li>送信前にお客様ご自身で内容を確認・修正</li>
-          </ul>
+        <div className="card p-4 text-xs leading-relaxed text-sumi-600">
+          <p className="flex items-center gap-1.5 font-serif text-base font-bold text-sumi-800">
+            <Clock3 className="h-4 w-4 text-ichi-green" />
+            営業のご案内
+          </p>
+          <dl className="mt-2 space-y-1.5">
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0 font-bold text-sumi-700">営業時間</dt>
+              <dd>{BUSINESS.hours}</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0 font-bold text-sumi-700">定休日</dt>
+              <dd>
+                {BUSINESS.closed}（ほか{BUSINESS.otherHolidays}）
+              </dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="w-14 shrink-0 font-bold text-sumi-700">土日施工</dt>
+              <dd>OK（3週間前までに要予約）</dd>
+            </div>
+          </dl>
+          <p className="mt-2 rounded-lg bg-ichi-cream px-2.5 py-1.5">このAI相談は24時間ご利用いただけます。</p>
         </div>
+        {mode !== "openai" || lastMode === "demo-error" ? <DemoNotice compact /> : null}
       </aside>
 
-      <Modal open={estimateOpen} onClose={() => setEstimateOpen(false)} title="見積依頼（内容の確認・送信）">
+      <Modal open={estimateOpen} onClose={() => setEstimateOpen(false)} title="無料お見積りの依頼（内容の確認・送信）">
         <EstimateForm
           channel="web_text"
           sessionId={sessionId}

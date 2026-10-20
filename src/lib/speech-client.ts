@@ -37,6 +37,25 @@ export function supportsRecognition(): boolean {
   return recognitionCtor() !== null;
 }
 
+/** 再試行しても直らない音声認識エラー（自動再開を止めてテキスト入力に切り替える） */
+export function isFatalRecognitionError(error: string): boolean {
+  return ["not-allowed", "service-not-allowed", "network", "audio-capture", "language-not-supported", "bad-grammar"].includes(error);
+}
+
+export function recognitionErrorMessage(error: string): string {
+  switch (error) {
+    case "not-allowed":
+    case "service-not-allowed":
+      return "マイクの使用が許可されていません。ブラウザの設定でマイクを許可するか、下の入力欄から文字でお話しください。";
+    case "audio-capture":
+      return "マイクが見つかりません。マイクを接続するか、下の入力欄から文字でお話しください。";
+    case "network":
+      return "音声認識サービスに接続できません。下の入力欄から文字でお話しください。";
+    default:
+      return "このブラウザでは音声認識を使えません。下の入力欄から文字でお話しください。";
+  }
+}
+
 export interface Recognizer {
   start(): void;
   stop(): void;
@@ -51,7 +70,12 @@ export function createRecognizer(handlers: {
 }): Recognizer | null {
   const Ctor = recognitionCtor();
   if (!Ctor) return null;
-  const rec = new Ctor();
+  let rec: RecognitionLike;
+  try {
+    rec = new Ctor();
+  } catch {
+    return null;
+  }
   rec.lang = "ja-JP";
   rec.interimResults = true;
   rec.continuous = false;
@@ -100,19 +124,33 @@ export function createRecognizer(handlers: {
   };
 }
 
-let currentAudio: HTMLAudioElement | null = null;
+// ---------------- 読み上げ ----------------
 
+let currentAudio: HTMLAudioElement | null = null;
+let cancelCurrent: (() => void) | null = null;
+
+/** 再生中の読み上げを止め、待機中の speakText をすぐに完了させる */
 export function stopSpeaking(): void {
   if (currentAudio) {
     try {
       currentAudio.pause();
-      currentAudio.src = "";
+      currentAudio.removeAttribute("src");
+      currentAudio.load();
     } catch {
       // noop
     }
     currentAudio = null;
   }
-  if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
+  if (typeof speechSynthesis !== "undefined") {
+    try {
+      speechSynthesis.cancel();
+    } catch {
+      // noop
+    }
+  }
+  const c = cancelCurrent;
+  cancelCurrent = null;
+  c?.();
 }
 
 function pickJapaneseVoice(): SpeechSynthesisVoice | undefined {
@@ -124,52 +162,171 @@ function pickJapaneseVoice(): SpeechSynthesisVoice | undefined {
   );
 }
 
+/** 声の一覧は遅れて読み込まれることがあるため最大 1 秒待ってから、日本語の声があるか確かめる */
+async function ensureJapaneseVoice(): Promise<boolean> {
+  if (pickJapaneseVoice()) return true;
+  await new Promise<void>((resolve) => {
+    const t = window.setTimeout(resolve, 1000);
+    speechSynthesis.addEventListener(
+      "voiceschanged",
+      () => {
+        window.clearTimeout(t);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+  return Boolean(pickJapaneseVoice());
+}
+
+/** Chrome は長い発話を途中で止めることがあるため、文単位に分割する */
+function splitSentences(text: string): string[] {
+  const parts = text.match(/[^。！？!?\n]+[。！？!?]?/g) ?? [text];
+  const out: string[] = [];
+  let buf = "";
+  for (const p of parts.map((s) => s.trim()).filter(Boolean)) {
+    if ((buf + p).length > 90 && buf) {
+      out.push(buf);
+      buf = p;
+    } else {
+      buf += p;
+    }
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+
+interface SpeakControl {
+  isCancelled: () => boolean;
+  /** 中断されたときに呼ぶ関数を登録（戻り値で解除） */
+  onCancel: (fn: () => void) => () => void;
+}
+
+function speakBrowserSentence(sentence: string, ctl: SpeakControl): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (ctl.isCancelled()) return resolve();
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(safety);
+      off();
+      resolve();
+    };
+    const off = ctl.onCancel(finish);
+    // 音声が無い環境などで onend が来ない場合の保険（文字数に応じた上限で必ず進める）
+    const safety = window.setTimeout(finish, Math.min(20000, 1500 + sentence.length * 220));
+    try {
+      const u = new SpeechSynthesisUtterance(sentence);
+      u.lang = "ja-JP";
+      u.rate = 1.0;
+      u.pitch = 1.0;
+      const v = pickJapaneseVoice();
+      if (v) u.voice = v;
+      u.onend = finish;
+      u.onerror = finish;
+      speechSynthesis.speak(u);
+    } catch {
+      finish();
+    }
+  });
+}
+
+function playServerAudio(blob: Blob, ctl: SpeakControl): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    if (ctl.isCancelled()) return resolve(true);
+    const url = URL.createObjectURL(blob);
+    const a = new Audio(url);
+    currentAudio = a;
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(safety);
+      off();
+      URL.revokeObjectURL(url);
+      if (currentAudio === a) currentAudio = null;
+      resolve(ok);
+    };
+    const off = ctl.onCancel(() => finish(true));
+    // 再生が終わらない場合の保険（長さが分かれば長さ＋2秒、分からなければ 60 秒）
+    let safety = window.setTimeout(() => finish(true), 60000);
+    a.onloadedmetadata = () => {
+      if (Number.isFinite(a.duration) && a.duration > 0) {
+        window.clearTimeout(safety);
+        safety = window.setTimeout(() => finish(true), a.duration * 1000 + 2000);
+      }
+    };
+    a.onended = () => finish(true);
+    a.onerror = () => finish(false);
+    a.play().catch(() => finish(false)); // 自動再生が拒否された場合はブラウザ音声へ
+  });
+}
+
 /**
- * テキスト読み上げ。OpenAI TTS（/api/tts）が使えればそれを、なければブラウザ音声合成を使う
+ * テキスト読み上げ。OpenAI TTS（/api/tts）が使えればそれを、なければブラウザ音声合成を使う。
+ * どの環境でも必ず完了する（stopSpeaking() でも即完了）。
  */
 export async function speakText(text: string, opts: { preferServer?: boolean } = {}): Promise<"openai" | "browser" | "none"> {
   stopSpeaking();
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) return "none";
+  let cancelled = false;
+  const wakers = new Set<() => void>();
+  const ctl: SpeakControl = {
+    isCancelled: () => cancelled,
+    onCancel: (fn) => {
+      wakers.add(fn);
+      return () => {
+        wakers.delete(fn);
+      };
+    },
+  };
+  const isCancelled = ctl.isCancelled;
+  cancelCurrent = () => {
+    cancelled = true;
+    [...wakers].forEach((w) => w());
+    wakers.clear();
+  };
+
   if (opts.preferServer !== false) {
     try {
+      const ac = new AbortController();
+      const t = window.setTimeout(() => ac.abort(), 20000);
       const res = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: clean }),
+        signal: ac.signal,
       });
+      window.clearTimeout(t);
+      if (isCancelled()) return "none";
       if (res.status === 200) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        await new Promise<void>((resolve, reject) => {
-          const a = new Audio(url);
-          currentAudio = a;
-          a.onended = () => {
-            URL.revokeObjectURL(url);
-            resolve();
-          };
-          a.onerror = () => reject(new Error("audio playback error"));
-          a.play().catch(reject);
-        });
-        currentAudio = null;
-        return "openai";
+        const played = await playServerAudio(await res.blob(), ctl);
+        if (played || isCancelled()) {
+          if (cancelCurrent && !isCancelled()) cancelCurrent = null;
+          return "openai";
+        }
       }
     } catch {
-      // ブラウザ合成へフォールバック
+      // ブラウザ音声合成へ
     }
   }
-  if (typeof speechSynthesis === "undefined") return "none";
-  await new Promise<void>((resolve) => {
-    const u = new SpeechSynthesisUtterance(clean);
-    u.lang = "ja-JP";
-    u.rate = 1.0;
-    u.pitch = 1.0;
-    const v = pickJapaneseVoice();
-    if (v) u.voice = v;
-    u.onend = () => resolve();
-    u.onerror = () => resolve();
-    speechSynthesis.speak(u);
-  });
+  if (isCancelled()) return "none";
+  if (typeof speechSynthesis === "undefined") {
+    cancelCurrent = null;
+    return "none";
+  }
+  // 日本語の声が無い端末では読み上げず、文字表示だけで進める（英語の声で読ませない・待たせない）
+  if (!(await ensureJapaneseVoice())) {
+    cancelCurrent = null;
+    return "none";
+  }
+  for (const sentence of splitSentences(clean)) {
+    if (isCancelled()) break;
+    await speakBrowserSentence(sentence, ctl);
+  }
+  if (!isCancelled()) cancelCurrent = null;
   return "browser";
 }
 

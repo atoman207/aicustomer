@@ -1,7 +1,8 @@
 "use client";
 
-import { CheckCircle2, ChevronLeft, ExternalLink, Loader2, Send, ShieldCheck } from "lucide-react";
+import { Check, CheckCircle2, ChevronLeft, Copy, ExternalLink, Loader2, Send, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import SpriteIcon from "./SpriteIcon";
 import { CHANNEL_LABEL, type Channel, type EstimateRequest } from "@/lib/types";
 import { formatJst, isLikelyPhone } from "@/lib/utils";
 
@@ -58,6 +59,17 @@ export default function EstimateForm({ channel, sessionId, initial, summaryLoadi
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState("");
   const [result, setResult] = useState<{ estimate: EstimateRequest; sinkLabel: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function copyId() {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.estimate.id);
+      setCopied(true);
+    } catch {
+      window.prompt("受付番号をコピーしてください", result.estimate.id);
+    }
+  }
 
   useEffect(() => {
     if (initial?.summary && !summaryTouched) setSummary(initial.summary);
@@ -159,21 +171,9 @@ export default function EstimateForm({ channel, sessionId, initial, summaryLoadi
             goConfirm();
           }}
         >
-          {lineUrl ? (
-            <a
-              href={lineUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center justify-between gap-3 rounded-xl border border-[#06C755]/40 bg-[#06C755]/10 px-4 py-3 text-sm text-sumi-700 hover:bg-[#06C755]/15"
-            >
-              <span>
-                <span className="font-semibold text-[#06824a]">LINE公式アカウントで続ける</span>
-                <br />
-                <span className="text-xs text-sumi-500">LINEでも同じ項目をお伺いします。このまま下のフォームからも送信できます。</span>
-              </span>
-              <ExternalLink className="h-4 w-4 shrink-0 text-[#06824a]" />
-            </a>
-          ) : null}
+          <p className="rounded-xl bg-ichi-cream px-4 py-3 text-xs leading-relaxed text-sumi-600">
+            送信後、担当者から折り返しお電話し、お見積り訪問の日程を確定します。お見積りは担当者が現地を見てから無料で提出します。
+          </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="label">
@@ -317,6 +317,25 @@ export default function EstimateForm({ channel, sessionId, initial, summaryLoadi
             <br />
             受付経路：{CHANNEL_LABEL[result.estimate.channel]} ／ 受付日時：{formatJst(result.estimate.receivedAt)}
           </p>
+          {lineUrl ? (
+            <div className="rounded-xl border border-ichi-line/40 bg-ichi-line/10 p-4 text-left">
+              <p className="text-sm font-bold text-ichi-theme">LINEでもご連絡を受け取れます（任意）</p>
+              <p className="mt-1 text-xs leading-relaxed text-sumi-600">
+                一畳屋の公式LINEを友だち追加し、トークで受付番号を送ってください。このご依頼とLINEがつながり、日程のご連絡などをLINEでも受け取れます。
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <a href={lineUrl} target="_blank" rel="noreferrer" className="btn-line">
+                  <SpriteIcon id="i-line-square" size={18} />
+                  友だち追加
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+                <button type="button" className="btn-secondary" onClick={copyId}>
+                  {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                  {copied ? "コピーしました" : "受付番号をコピー"}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <p className="rounded-xl bg-washi-100 px-4 py-2 text-xs text-sumi-500">
             記録先：{result.sinkLabel}
             {result.estimate.syncError ? `（同期エラー：${result.estimate.syncError}）` : ""}

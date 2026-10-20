@@ -1,7 +1,7 @@
 import { env } from "@/lib/env";
 import { japanNow } from "@/lib/hours";
 import { json, rateLimited } from "@/lib/http";
-import { getKnowledge, knowledgeToPromptText } from "@/lib/knowledge";
+import { getKnowledge } from "@/lib/knowledge";
 import { createRealtimeSecret } from "@/lib/openai";
 import { buildRealtimeInstructions } from "@/lib/prompts";
 import { getSettings } from "@/lib/store";
@@ -15,7 +15,7 @@ const REALTIME_TOOLS = [
     type: "function",
     name: "search_knowledge",
     description:
-      "社内ナレッジ（畳・襖・障子・網戸・リフォームの料金目安・工期・対応エリア・支払い方法など）を検索する。回答の根拠が必要なときに使う。",
+      "一畳屋のナレッジ（顧客対応マニュアル・会社情報・ホームページ）を検索する。料金・工期・営業時間・対応エリア・店舗など事実を答える前に必ず使う。answer があればそれが回答の根拠。",
     parameters: {
       type: "object",
       properties: { query: { type: "string", description: "検索したい内容（日本語）" } },
@@ -50,11 +50,8 @@ export async function POST(req: Request) {
   }
   try {
     const [settings, snapshot] = await Promise.all([getSettings(), getKnowledge()]);
-    const instructions = buildRealtimeInstructions(
-      settings.companyName,
-      knowledgeToPromptText(snapshot.entries, 12000),
-      japanNow().display,
-    );
+    // ナレッジ全文は渡さず、事実は search_knowledge で確認させる（毎回の応答で読み込まれる指示を短く保つ）
+    const instructions = buildRealtimeInstructions(settings.companyName, japanNow().display);
     const secret = await createRealtimeSecret({ instructions, tools: REALTIME_TOOLS });
     return json({
       ok: true,

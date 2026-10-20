@@ -3,6 +3,8 @@ const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   eslint: { ignoreDuringBuilds: true },
+  // 顧客対応マニュアル（Excel）は実行時に読み込むため、サーバーレス関数に同梱する
+  outputFileTracingIncludes: { "/**/*": ["./database/**/*"] },
   images: {
     formats: ["image/avif", "image/webp"],
     deviceSizes: [390, 640, 768, 1024, 1280, 1536, 1920],

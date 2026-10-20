@@ -1,10 +1,7 @@
-import { env } from "@/lib/env";
-import { fallbackAnswer } from "@/lib/fallback";
+import { learnAnswer, planAnswer, type AnswerPlan } from "@/lib/answer";
 import { error, rateLimited, readJson } from "@/lib/http";
-import { getKnowledge, knowledgeToPromptText } from "@/lib/knowledge";
 import { streamChatCompletion } from "@/lib/openai";
 import { buildChatSystemPrompt } from "@/lib/prompts";
-import { hybridSearch } from "@/lib/retrieval";
 import { getConversation, getSettings, upsertConversation } from "@/lib/store";
 import type { Channel, ChatMessage } from "@/lib/types";
 import { truncate, uid } from "@/lib/utils";
@@ -17,6 +14,11 @@ interface Body {
   sessionId?: string;
   channel?: Channel;
   messages: ChatMessage[];
+}
+
+/** OpenAI に渡す会話履歴は直近の数往復だけ（長い履歴はトークンが増えるため） */
+function recentHistory(messages: ChatMessage[]): { role: "user" | "assistant"; content: string }[] {
+  return messages.slice(-6).map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: truncate(m.content, 500) }));
 }
 
 export async function POST(req: Request) {
@@ -33,22 +35,16 @@ export async function POST(req: Request) {
   const last = [...messages].reverse().find((m) => m.role === "user");
   if (!last) return error("ユーザーメッセージがありません");
 
-  const [settings, snapshot] = await Promise.all([getSettings(), getKnowledge()]);
-  const search = await hybridSearch(last.content, snapshot.entries, 4);
-  const sources = search.hits.map((h) => ({
-    id: h.entry.id,
-    title: h.entry.title,
-    category: h.entry.category,
-    score: Math.round(h.score * 100) / 100,
-  }));
+  const [settings, plan] = await Promise.all([getSettings(), planAnswer(last.content, messages.slice(0, -1), { channel })]);
 
-  const baseHeaders: Record<string, string> = {
+  const headers = (p: AnswerPlan, mode: string): Record<string, string> => ({
     "Content-Type": "text/plain; charset=utf-8",
     "Cache-Control": "no-store",
-    "X-Sources": encodeURIComponent(JSON.stringify(sources)),
-    "X-Knowledge-Source": snapshot.source,
-    "X-Search-Mode": search.mode,
-  };
+    "X-Sources": encodeURIComponent(JSON.stringify(p.sources)),
+    "X-Knowledge-Source": p.snapshot.source,
+    "X-Answer-Kind": p.kind,
+    "X-Mode": mode,
+  });
 
   const persist = async (reply: string, mode: string) => {
     try {
@@ -61,39 +57,39 @@ export async function POST(req: Request) {
         updatedAt: now,
         messages: [...messages, { role: "assistant", content: reply, at: now }],
         estimateId: existing?.estimateId,
-        meta: { mode, knowledgeSource: snapshot.source },
+        meta: { mode, knowledgeSource: plan.snapshot.source, answer: plan.kind },
       });
     } catch {
       // ログ保存失敗は応答に影響させない
     }
   };
 
-  if (!env.hasOpenAI) {
-    const reply = fallbackAnswer(search.hits);
-    await persist(reply, "demo");
-    return new Response(reply, { headers: { ...baseHeaders, "X-Mode": "demo" } });
+  // OpenAI を使わずに答えられる質問（料金表・会社情報・学習済み・定型文・該当なし・デモ）
+  if (plan.mode !== "openai") {
+    await persist(plan.reply, plan.mode);
+    return new Response(plan.reply, { headers: headers(plan, plan.mode) });
   }
 
   try {
-    let system = buildChatSystemPrompt(settings.companyName, knowledgeToPromptText(snapshot.entries, 14000), channel);
-    if (search.hits.length > 0) {
-      system += `\n\n# 直近の質問に関連するナレッジ（優先して参照）\n${search.hits
-        .map((h) => `- ${h.entry.title}: ${h.entry.content}`)
-        .join("\n")}`;
-    }
+    const system = buildChatSystemPrompt(settings.companyName, plan.context, channel);
     const stream = await streamChatCompletion(
       {
-        messages: [{ role: "system", content: system }, ...messages.map((m) => ({ role: m.role, content: m.content }))],
+        messages: [{ role: "system", content: system }, ...recentHistory(messages)],
         temperature: 0.3,
-        maxTokens: 700,
+        maxTokens: 600,
+        purpose: "chat",
       },
-      (full) => persist(full, "openai"),
+      async (full) => {
+        await persist(full, "openai");
+        await learnAnswer(plan, full);
+      },
     );
-    return new Response(stream, { headers: { ...baseHeaders, "X-Mode": "openai" } });
+    return new Response(stream, { headers: headers(plan, "openai") });
   } catch (e) {
     const reason = truncate((e as Error).message, 160);
-    const reply = `${fallbackAnswer(search.hits)}\n\n（AI応答でエラーが発生したため、ナレッジ検索の結果を表示しています：${reason}）`;
+    const top = plan.hits[0];
+    const reply = `${top ? `「${top.entry.title.replace(/^.*｜/, "")}」についてご案内します。\n${truncate(top.entry.content, 800)}` : ""}\n\n（AI応答でエラーが発生したため、ナレッジ検索の結果を表示しています：${reason}）`.trim();
     await persist(reply, "demo-error");
-    return new Response(reply, { headers: { ...baseHeaders, "X-Mode": "demo-error" } });
+    return new Response(reply, { headers: headers(plan, "demo-error") });
   }
 }

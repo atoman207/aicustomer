@@ -1,6 +1,6 @@
 import { error, json, readJson, requireAdmin } from "@/lib/http";
-import { getKnowledge, invalidateKnowledgeCache, remoteKnowledgeConfigured } from "@/lib/knowledge";
-import { saveLocalKnowledge } from "@/lib/store";
+import { describeKnowledge, getKnowledge, invalidateKnowledgeCache } from "@/lib/knowledge";
+import { saveAdminKnowledge } from "@/lib/store";
 import type { KnowledgeEntry } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -8,11 +8,10 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function GET() {
-  const snapshot = await getKnowledge();
-  return json({ ok: true, ...snapshot, remoteConfigured: remoteKnowledgeConfigured() });
+  return json(describeKnowledge(await getKnowledge()));
 }
 
-/** ローカルナレッジ（シート未接続時の編集用）を保存 */
+/** 管理画面で追加するナレッジ（マニュアル・会社情報・ホームページに無い内容の補足）を保存 */
 export async function PUT(req: Request) {
   const denied = await requireAdmin();
   if (denied) return denied;
@@ -20,8 +19,8 @@ export async function PUT(req: Request) {
   if (!body || !Array.isArray(body.entries)) return error("entries が必要です");
   const entries: KnowledgeEntry[] = body.entries
     .map((e, i) => ({
-      id: String(e.id ?? `k${String(i + 1).padStart(3, "0")}`).slice(0, 40),
-      category: String(e.category ?? "その他").trim().slice(0, 40) || "その他",
+      id: String(e.id ?? `a${String(i + 1).padStart(3, "0")}`).slice(0, 40),
+      category: String(e.category ?? "追加ナレッジ").trim().slice(0, 40) || "追加ナレッジ",
       title: String(e.title ?? "").trim().slice(0, 200),
       content: String(e.content ?? "").trim().slice(0, 4000),
       keywords: Array.isArray(e.keywords)
@@ -33,9 +32,8 @@ export async function PUT(req: Request) {
       note: e.note ? String(e.note).slice(0, 500) : undefined,
     }))
     .filter((e) => e.title && e.content);
-  if (entries.length === 0) return error("有効なナレッジがありません（項目名と内容は必須です）");
-  await saveLocalKnowledge(entries);
+  if (body.entries.length > 0 && entries.length === 0) return error("有効なナレッジがありません（項目名と内容は必須です）");
+  await saveAdminKnowledge(entries);
   invalidateKnowledgeCache();
-  const snapshot = await getKnowledge(true);
-  return json({ ok: true, ...snapshot, remoteConfigured: remoteKnowledgeConfigured() });
+  return json(describeKnowledge(await getKnowledge(true)));
 }

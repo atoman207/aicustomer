@@ -1,30 +1,43 @@
-import Image from "next/image";
-import type { SiteImage } from "@/lib/images";
+// 下層ページのタイトル帯（一畳屋サイト「畳替え価格」ページと同じクリーム地＋黄色い畳柄の帯）
+import type { ReactNode } from "react";
 
 export default function PageHero({
-  image,
-  eyebrow,
+  kicker,
+  ruby,
   title,
-  description,
+  badge,
   children,
 }: {
-  image: SiteImage;
-  eyebrow: string;
+  kicker: string;
+  ruby?: string;
   title: string;
-  description: string;
-  children?: React.ReactNode;
+  badge?: [string, string];
+  children?: ReactNode;
 }) {
   return (
-    <section className="relative mb-8 overflow-hidden rounded-3xl shadow-soft">
-      <div className="relative h-56 sm:h-64">
-        <Image src={image.src} alt={image.alt} fill priority sizes="(max-width: 1152px) 100vw, 1152px" className="object-cover" />
-        <div className="absolute inset-0 bg-gradient-to-r from-sumi-900/80 via-sumi-900/50 to-transparent" />
-        <div className="absolute inset-0 flex flex-col justify-center px-6 sm:px-10">
-          <p className="eyebrow text-washi-200">{eyebrow}</p>
-          <h1 className="mt-2 font-serif text-2xl font-bold text-white sm:text-3xl">{title}</h1>
-          <p className="mt-2 max-w-xl text-sm text-washi-100/90">{description}</p>
-          {children ? <div className="mt-3 flex flex-wrap gap-2">{children}</div> : null}
+    <section className="relative bg-ichi-cream pb-14">
+      <div className="relative z-10 mx-auto flex w-full max-w-[1200px] flex-col items-center px-5 pt-7 text-center sm:pt-9">
+        <p className="inline-flex items-center gap-2 rounded-full bg-ichi-theme px-4 py-1 text-xs font-bold tracking-wider text-white">{kicker}</p>
+        <div className="mt-2 inline-flex items-start justify-center gap-3 sm:gap-5">
+          {badge ? (
+            <span className="relative mt-3 grid h-[56px] w-[64px] shrink-0 place-items-center rounded-[46%_54%_50%_50%/55%_48%_52%_45%] bg-ichi-yellow font-hand text-[14px] leading-[1.05] text-ichi-red sm:h-[70px] sm:w-[80px] sm:text-[17px]">
+              <span>
+                {badge[0]}
+                <br />
+                {badge[1]}
+              </span>
+              <span className="absolute -right-2 top-1/2 h-0 w-0 -translate-y-1/2 border-y-[7px] border-l-[12px] border-y-transparent border-l-ichi-yellow" aria-hidden />
+            </span>
+          ) : null}
+          <div>
+            {ruby ? <p className="font-hand text-[12px] tracking-[0.5em] text-ichi-theme sm:text-sm">{ruby}</p> : null}
+            <h1 className="font-hand text-[34px] leading-[1.15] text-ichi-theme sm:text-[50px]">{title}</h1>
+          </div>
         </div>
+      </div>
+      <div className="relative">
+        <div className="bg-yellow-tatami absolute inset-x-0 -top-6 h-[300px] sm:-top-8 sm:h-[340px]" aria-hidden />
+        <div className="relative z-10 mx-auto w-full max-w-[1200px] px-5 pt-6">{children}</div>
       </div>
     </section>
   );

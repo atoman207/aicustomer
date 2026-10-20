@@ -62,6 +62,19 @@ export function isLikelyPhone(s: string): boolean {
   return digits.length >= 10 && digits.length <= 11;
 }
 
+/** 発信者番号（+81 形式も）を国内形式にする。非通知など電話番号として使えない場合は undefined */
+export function domesticPhone(raw: string | undefined): string | undefined {
+  const p = normalizePhone(raw ?? "").replace(/^\+81-?/, "0");
+  return isLikelyPhone(p) ? p : undefined;
+}
+
+const DIGIT_READING = ["ゼロ", "イチ", "ニ", "サン", "ヨン", "ゴ", "ロク", "ナナ", "ハチ", "キュウ"];
+
+/** 電話番号の数字を読み上げ用のカタカナに（例：4444 → ヨンヨンヨンヨン） */
+export function readDigits(digits: string): string {
+  return digits.replace(/\D/g, "").split("").map((d) => DIGIT_READING[Number(d)]).join("");
+}
+
 export function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }

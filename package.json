@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "learn:site": "node scripts/learn-website.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.577.0",

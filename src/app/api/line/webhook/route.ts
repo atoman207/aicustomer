@@ -1,5 +1,7 @@
 import { createSession, greetingFor, runTurn } from "@/lib/agent";
+import { BRAND } from "@/lib/brand";
 import { env } from "@/lib/env";
+import { findReceptionId, linkEstimateToLine } from "@/lib/estimates";
 import { json } from "@/lib/http";
 import { lineReply, textMessage, verifyLineSignature, type LineEvent } from "@/lib/line";
 import { deleteSession, getSession } from "@/lib/store";
@@ -31,6 +33,20 @@ async function handleEvent(ev: LineEvent): Promise<void> {
     if (ev.type === "message") {
       await lineReply(ev.replyToken, [textMessage("恐れ入ります、テキストでご用件をお送りください。", CONSULT_QUICK)]);
     }
+    return;
+  }
+
+  // 受付後の LINE 引き継ぎ：受付番号が送られてきたら、その受付とこの LINE をつなぐ
+  const receptionId = findReceptionId(text);
+  if (receptionId && userId !== "anonymous") {
+    const linked = await linkEstimateToLine(receptionId, userId);
+    const reply =
+      linked === "linked" || linked === "already"
+        ? `受付番号 ${receptionId} のご依頼とLINEをおつなぎしました。\n担当者より折り返しご連絡し、お見積り訪問の日程を確定いたします。今後のご連絡はこちらのLINEでも承ります。`
+        : linked === "other"
+          ? `受付番号 ${receptionId} は、すでに別のLINEアカウントとつながっています。お心当たりがない場合は、フリーダイヤル ${BRAND.freeDial} までお問い合わせください。`
+          : `受付番号「${receptionId}」が見つかりませんでした。恐れ入りますが、番号をご確認のうえ、もう一度お送りください。`;
+    await lineReply(ev.replyToken, [textMessage(reply, CONSULT_QUICK)]);
     return;
   }
 

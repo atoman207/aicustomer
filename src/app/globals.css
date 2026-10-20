@@ -2,8 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/* =========================================================
+   一畳屋（ichijoya.co.jp）のデザインに合わせたグローバルスタイル
+   - 本文：Noto Sans JP / 行間 1.8 / palt
+   - 見出し：手書き風（Yusei Magic + 太らせ）※サイトの手書きロゴ文字に合わせる
+   - 配色：#1c4911 / #488937 / #a72126 / #48af57 / #fdd000 / #fffdea
+   ========================================================= */
+
 :root {
   color-scheme: light;
+  --theme: #1c4911;
+  --green: #488937;
+  --leaf: #488837;
+  --line: #48af57;
+  --sub: #a72126;
+  --yellow: #fdd000;
+  --cream: #fffdea;
+  --blue: #3b3980;
+  --text: #222;
 }
 
 html {
@@ -11,103 +27,641 @@ html {
 }
 
 body {
-  @apply bg-washi-50 font-sans text-sumi-800 antialiased;
-  background-image: radial-gradient(rgba(205, 184, 146, 0.14) 1px, transparent 1px);
-  background-size: 22px 22px;
+  @apply bg-white font-sans text-sumi-800 antialiased;
+  font-feature-settings: "palt" 1;
+  line-height: 1.8;
+  overflow-wrap: break-word;
+}
+
+img {
+  max-width: 100%;
+}
+
+/* 手書き風フォント（サイトの手書き見出しに近づけるため輪郭を少し太らせる） */
+.font-hand,
+.font-serif {
+  -webkit-text-stroke: 0.032em currentColor;
+  paint-order: stroke fill;
+  letter-spacing: 0.04em;
+  font-weight: 400;
 }
 
 @layer components {
   .container-x {
-    @apply mx-auto w-full max-w-6xl px-4 sm:px-6;
+    @apply mx-auto w-full max-w-[1200px] px-5 sm:px-6;
   }
+
+  /* ---- ボタン（サイトの CTA に準拠） ---- */
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-full bg-ai-600 px-5 py-2.5 text-sm font-medium text-white shadow-soft transition hover:bg-ai-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-ai-400 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-ichi-green px-6 py-2.5 text-sm font-bold text-white transition-opacity duration-300 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ichi-green/40 disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-accent {
-    @apply inline-flex items-center justify-center gap-2 rounded-full bg-shu-500 px-5 py-2.5 text-sm font-medium text-white shadow-soft transition hover:bg-shu-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-shu-300 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-ichi-red px-6 py-2.5 text-sm font-bold text-white transition-opacity duration-300 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ichi-red/40 disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-secondary {
-    @apply inline-flex items-center justify-center gap-2 rounded-full border border-sumi-200 bg-white px-5 py-2.5 text-sm font-medium text-sumi-700 transition hover:border-sumi-300 hover:bg-washi-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-ai-300 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-sumi-800 bg-white px-6 py-2.5 text-sm font-bold text-sumi-800 transition-opacity duration-300 hover:opacity-70 focus:outline-none focus-visible:ring-2 focus-visible:ring-ichi-green/40 disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-sumi-600 transition hover:bg-washi-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-ai-300 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-bold text-sumi-600 transition hover:bg-sumi-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ichi-green/40 disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-line {
-    @apply inline-flex items-center justify-center gap-2 rounded-full bg-[#06C755] px-5 py-2.5 text-sm font-semibold text-white shadow-soft transition hover:bg-[#05b14c] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#06C755]/50 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-ichi-line px-6 py-2.5 text-sm font-bold text-white transition-opacity duration-300 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ichi-line/40 disabled:cursor-not-allowed disabled:opacity-50;
   }
+  /* 白地＋黒枠＋右に赤い矢印（サイトの「一覧」ボタン） */
+  .btn-more {
+    @apply relative inline-flex min-w-[240px] items-center justify-center rounded-full border border-sumi-800 bg-white px-12 py-3 text-sm font-bold text-sumi-800 transition-opacity duration-300 hover:opacity-70;
+  }
+  .btn-more::after {
+    content: "";
+    @apply absolute right-4 top-1/2 h-[18px] w-[18px] -translate-y-1/2 rounded-full;
+    background: var(--sub) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h13M12 6l6 6-6 6'/%3E%3C/svg%3E") center / 11px no-repeat;
+  }
+
   .card {
-    @apply rounded-2xl border border-washi-300/70 bg-white/90 shadow-card backdrop-blur;
+    @apply rounded-xl bg-white shadow-card;
   }
   .input {
-    @apply w-full rounded-xl border border-sumi-200 bg-white px-3 py-2 text-sm text-sumi-800 placeholder:text-sumi-300 focus:border-ai-400 focus:outline-none focus:ring-2 focus:ring-ai-100 disabled:bg-washi-100;
+    @apply w-full rounded-lg border border-sumi-200 bg-white px-3 py-2 text-sm text-sumi-800 placeholder:text-sumi-300 focus:border-ichi-green focus:outline-none focus:ring-2 focus:ring-ichi-green/20 disabled:bg-sumi-50;
   }
   .label {
-    @apply mb-1 block text-xs font-medium text-sumi-500;
+    @apply mb-1 block text-xs font-bold text-sumi-600;
   }
+  /* カテゴリ札（緑の枠線ピル） */
   .chip {
-    @apply inline-flex items-center gap-1 rounded-full border border-washi-300 bg-washi-100 px-3 py-1 text-xs text-sumi-600;
+    @apply inline-flex items-center gap-1 rounded-full border border-ichi-leaf bg-white px-3 py-0.5 text-xs font-bold text-ichi-leaf;
   }
-  .section-title {
-    @apply font-serif text-2xl font-bold tracking-wide text-sumi-800 sm:text-3xl;
+  /* 二重斜線つきの大見出し（サイトの「＼＼ 新しいCMができました ／／」） */
+  .yey {
+    @apply relative inline-flex items-center gap-2 font-hand text-[24px] leading-tight text-sumi-800 sm:gap-3 sm:text-[38px];
   }
-  .eyebrow {
-    @apply inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.25em] text-ai-500;
-  }
-  .eyebrow::before {
+  .yey::before,
+  .yey::after {
     content: "";
-    @apply inline-block h-3 w-0.5 bg-shu-500;
+    @apply block h-[0.95em] w-[0.6em] shrink-0;
+  }
+  /* ＼＼ */
+  .yey::before {
+    background:
+      linear-gradient(to top right, transparent calc(50% - 1.4px), currentColor calc(50% - 1.4px), currentColor calc(50% + 1.4px), transparent calc(50% + 1.4px)) 0 0 / 45% 100% no-repeat,
+      linear-gradient(to top right, transparent calc(50% - 1.4px), currentColor calc(50% - 1.4px), currentColor calc(50% + 1.4px), transparent calc(50% + 1.4px)) 100% 0 / 45% 100% no-repeat;
+  }
+  /* ／／ */
+  .yey::after {
+    background:
+      linear-gradient(to top left, transparent calc(50% - 1.4px), currentColor calc(50% - 1.4px), currentColor calc(50% + 1.4px), transparent calc(50% + 1.4px)) 0 0 / 45% 100% no-repeat,
+      linear-gradient(to top left, transparent calc(50% - 1.4px), currentColor calc(50% - 1.4px), currentColor calc(50% + 1.4px), transparent calc(50% + 1.4px)) 100% 0 / 45% 100% no-repeat;
   }
   .table-base {
     @apply w-full border-collapse text-left text-sm;
   }
   .table-base th {
-    @apply sticky top-0 z-10 whitespace-nowrap border-b border-washi-300 bg-washi-100 px-3 py-2 text-xs font-semibold text-sumi-500;
+    @apply sticky top-0 z-10 whitespace-nowrap border-b border-sumi-200 bg-sumi-50 px-3 py-2 text-xs font-bold text-sumi-600;
   }
   .table-base td {
-    @apply border-b border-washi-200 px-3 py-2 align-top text-sumi-700;
-  }
-
-  /* ---- 和のモチーフ ---- */
-  .hanko {
-    @apply inline-grid h-12 w-12 place-items-center rounded-md bg-shu-500 font-serif text-xl font-bold leading-none text-white;
-    box-shadow:
-      inset 0 0 0 2px #fdf1ed,
-      inset 0 0 0 3px #c8432a,
-      0 6px 16px -8px rgba(200, 67, 42, 0.6);
-    transform: rotate(-6deg);
-  }
-  .vertical-rl {
-    writing-mode: vertical-rl;
-    text-orientation: mixed;
-    letter-spacing: 0.35em;
-  }
-  .kanji-watermark {
-    @apply pointer-events-none absolute -right-2 -top-3 select-none font-serif text-7xl font-bold leading-none text-washi-300/60;
+    @apply border-b border-sumi-100 px-3 py-2 align-top text-sumi-700;
   }
   .bubble-washi {
-    background: linear-gradient(135deg, #ffffff 0%, #fdfbf7 100%);
-    border-left: 3px solid #527eab;
+    @apply bg-white;
   }
 }
 
-/* 青海波（せいがいは） */
-.pattern-seigaiha {
-  background-color: #f8f3ea;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='24' viewBox='0 0 48 24'%3E%3Cg fill='none' stroke='%23234b73' stroke-opacity='0.13' stroke-width='1.2'%3E%3Cpath d='M0 24a24 24 0 0 1 48 0M6 24a18 18 0 0 1 36 0M12 24a12 12 0 0 1 24 0M18 24a6 6 0 0 1 12 0'/%3E%3Cpath d='M-24 12a24 24 0 0 1 48 0M-18 12a18 18 0 0 1 36 0M-12 12a12 12 0 0 1 24 0M-6 12a6 6 0 0 1 12 0'/%3E%3Cpath d='M24 12a24 24 0 0 1 48 0M30 12a18 18 0 0 1 36 0M36 12a12 12 0 0 1 24 0M42 12a6 6 0 0 1 12 0'/%3E%3C/g%3E%3C/svg%3E");
-  background-size: 48px 24px;
+/* ---------- テクスチャ ---------- */
+.bg-ptn-logo {
+  background-color: var(--theme);
+  background-image: url("/ichijoya/texture/ptn-logo.jpg");
+  background-position: 50%;
+  background-repeat: repeat;
+  background-size: 499px 420px;
+}
+.bg-yellow-tatami {
+  background-color: var(--yellow);
+  background-image: url("/ichijoya/texture/bg-tatami.jpg");
+  background-position: 50% 0;
+  background-repeat: repeat;
+  background-size: 640px auto;
+}
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  .bg-ptn-logo {
+    background-image: url("/ichijoya/texture/ptn-logo@2x.jpg");
+  }
+  .bg-yellow-tatami {
+    background-image: url("/ichijoya/texture/bg-tatami@2x.jpg");
+  }
 }
 
-/* 七宝（しっぽう）：濃色背景用 */
-.pattern-shippo {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='0.12' stroke-width='1.2'%3E%3Ccircle cx='16' cy='16' r='16'/%3E%3Ccircle cx='0' cy='0' r='16'/%3E%3Ccircle cx='32' cy='0' r='16'/%3E%3Ccircle cx='0' cy='32' r='16'/%3E%3Ccircle cx='32' cy='32' r='16'/%3E%3C/g%3E%3C/svg%3E");
-  background-size: 32px 32px;
+/* ---------- 3つの相談窓口のメニュー（クリーム地・緑の点線区切り・現在地に黄色のアクセント） ---------- */
+.ainav__item {
+  position: relative;
+}
+.ainav__item + .ainav__item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 28px;
+  background-image: linear-gradient(180deg, var(--green), var(--green) 5px, transparent 0, transparent 8px);
+  background-repeat: repeat-y;
+  background-size: 1px 8px;
+}
+.ainav__link {
+  position: relative;
+}
+.ainav__link::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -5px;
+  width: 35px;
+  height: 15px;
+  transform: translateX(-50%);
+  background: url("/ichijoya/nav-accent.svg") no-repeat 50% / cover;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.ainav__link:hover::before,
+.ainav__link.is-current::before {
+  opacity: 1;
 }
 
-/* 組子（くみこ）格子 */
-.pattern-kumiko {
-  background-color: #fdfbf7;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'%3E%3Cg fill='none' stroke='%23cdb892' stroke-opacity='0.28' stroke-width='1'%3E%3Cpath d='M0 0h40v40H0z'/%3E%3Cpath d='M0 0l40 40M40 0L0 40'/%3E%3C/g%3E%3C/svg%3E");
-  background-size: 40px 40px;
+/* ---------- SP メニュー（もくじ）トリガー ---------- */
+.trigger__u {
+  position: relative;
+  display: block;
+  width: 24px;
+  height: 3px;
+  margin: 8px auto;
+  background: currentColor;
+  transition:
+    background 0.4s cubic-bezier(0.645, 0.045, 0.355, 1),
+    transform 0.4s cubic-bezier(0.645, 0.045, 0.355, 1) 0.2s;
+}
+.trigger__u::before,
+.trigger__u::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 24px;
+  height: 3px;
+  background: currentColor;
+}
+.trigger__u::before {
+  bottom: 8px;
+  transition:
+    transform 0.4s cubic-bezier(0.86, 0, 0.07, 1),
+    bottom 0.4s cubic-bezier(0.86, 0, 0.07, 1) 0.2s;
+}
+.trigger__u::after {
+  top: 8px;
+  transition:
+    transform 0.4s cubic-bezier(0.86, 0, 0.07, 1),
+    top 0.4s cubic-bezier(0.86, 0, 0.07, 1) 0.2s;
+}
+.trigger[aria-expanded="true"] .trigger__u {
+  background: transparent;
+}
+.trigger[aria-expanded="true"] .trigger__u::before {
+  bottom: 0;
+  transform: rotate(45deg);
+  transition:
+    transform 0.4s cubic-bezier(0.86, 0, 0.07, 1) 0.2s,
+    bottom 0.4s cubic-bezier(0.86, 0, 0.07, 1);
+}
+.trigger[aria-expanded="true"] .trigger__u::after {
+  top: 0;
+  transform: rotate(-45deg);
+  transition:
+    transform 0.4s cubic-bezier(0.86, 0, 0.07, 1) 0.2s,
+    top 0.4s cubic-bezier(0.86, 0, 0.07, 1);
+}
+
+/* ドロワー（白いオーバーレイがフェードし、中身が右から） */
+.drawer {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.3s cubic-bezier(0.22, 0.82, 0.24, 0.96) 0.5s,
+    visibility 0.3s cubic-bezier(0.22, 0.82, 0.24, 0.96) 0.5s;
+}
+.drawer[aria-hidden="false"] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity 0.3s cubic-bezier(0.22, 0.82, 0.24, 0.96) 0s,
+    visibility 0.3s cubic-bezier(0.22, 0.82, 0.24, 0.96) 0s;
+}
+.drawer__container {
+  opacity: 0;
+  transform: translate3d(10px, 0, 0);
+  transition:
+    transform 0.1s cubic-bezier(0.22, 0.82, 0.24, 0.96) 0s,
+    opacity 0.1s cubic-bezier(0.22, 0.82, 0.24, 0.96) 0s;
+}
+.drawer[aria-hidden="false"] .drawer__container {
+  opacity: 1;
+  transform: translateZ(0);
+  transition:
+    transform 0.3s cubic-bezier(0.22, 0.82, 0.24, 0.96) 0.3s,
+    opacity 0.3s cubic-bezier(0.22, 0.82, 0.24, 0.96) 0.3s;
+}
+
+/* ---------- スクロールで表示（サイトの ScrollTrigger と同じ：500ms / ease-in-out / rootMargin -15%） ---------- */
+.js [data-st-effect]:not(.is-observed) {
+  transition-delay: 0s !important;
+  transition-duration: 0s !important;
+}
+.js [data-st-effect^="fade"]:not(.is-observed),
+.js [data-st-effect^="zoom"]:not(.is-observed),
+.js [data-st-effect="blur"]:not(.is-observed) {
+  opacity: 0;
+}
+.js [data-st-effect="fade-up"]:not(.is-observed) {
+  transform: translate3d(0, 30px, 0);
+}
+.js [data-st-effect="fade-down"]:not(.is-observed) {
+  transform: translate3d(0, -30px, 0);
+}
+.js [data-st-effect="fade-right"]:not(.is-observed) {
+  transform: translate3d(30px, 0, 0);
+}
+.js [data-st-effect="fade-left"]:not(.is-observed) {
+  transform: translate3d(-30px, 0, 0);
+}
+.js [data-st-effect="zoom-in"]:not(.is-observed) {
+  transform: scale(0.6);
+}
+.js [data-st-effect="blur"]:not(.is-observed) {
+  filter: blur(0.5em);
+}
+[data-st-effect] {
+  transition-property: opacity, transform, filter;
+}
+
+/* ---------- キービジュアル（ichijoya.co.jp の .p-kv を移植。em 基準で画面幅に追従） ---------- */
+.kv__inner {
+  font-size: 1.2125162973vw;
+}
+.kv-fader {
+  position: relative;
+  width: 100%;
+  height: 64em;
+  min-height: 300px;
+  z-index: 0;
+}
+.kv-fader__item {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  transition-property: opacity;
+}
+.kv__content {
+  position: relative;
+  height: 64em;
+  min-height: 300px;
+  overflow: hidden;
+  background-image: url("/ichijoya/texture/kv-ptn_tatami.png");
+  background-position: 50%;
+  background-repeat: repeat;
+  background-size: 200px 200px;
+}
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  .kv__content {
+    background-image: url("/ichijoya/texture/kv-ptn_tatami@2x.png");
+  }
+}
+.kv__content--green {
+  background-color: var(--green);
+}
+.kv__content--blue {
+  background-color: var(--blue);
+}
+.kv-center {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+}
+.kv-center::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 1;
+  display: block;
+  width: 70.4em;
+  height: 70.4em;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  background-image: url("/ichijoya/texture/ptn-logo-circle.png");
+  background-position: 50%;
+  background-repeat: repeat;
+  background-size: 40px 33px;
+}
+.kv-center > * {
+  position: relative;
+  z-index: 2;
+}
+.kv-center > .kv-center__main--omakase,
+.kv-center > .kv-center__sub {
+  position: absolute;
+}
+.kv-center__main {
+  position: relative;
+  margin-left: 0.9em;
+  margin-top: 1.8em;
+}
+.kv-center__main--tatami {
+  width: 32.5em;
+}
+.kv-center__main--fusuma {
+  width: 36.2em;
+}
+.kv-center__main--omakase {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 77em;
+  margin-left: -11.45em;
+  margin-top: 6.5em;
+  transform: translateX(-50%);
+}
+.kv-center__sub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 55.4em;
+  height: 47.4em;
+  margin-left: 0.9em;
+  margin-top: 0.6em;
+  transform: translate(-50%, -50%);
+}
+.kv-staff {
+  position: absolute;
+}
+.kv-staff--1 {
+  left: 2.3em;
+  width: 16.7em;
+  animation: shake2 2s steps(2) infinite;
+}
+.kv-staff--2 {
+  right: 0;
+  top: 11.2em;
+  width: 14.7em;
+  animation: shake1 2s steps(2) infinite;
+}
+.kv-staff--3 {
+  bottom: 9.5em;
+  left: 0;
+  width: 15em;
+  animation: shake1 2s steps(2) infinite;
+}
+.kv-staff--4 {
+  bottom: 0;
+  right: 1.8em;
+  width: 16em;
+  animation: shake2 2s steps(2) infinite;
+}
+.kv-copy {
+  position: absolute;
+  right: 5em;
+  top: 50%;
+  z-index: 2;
+  margin-top: -2em;
+  transform: translateY(-50%);
+}
+.kv-copy__label--tatami {
+  width: 9.4em;
+}
+.kv-copy__label--fusuma {
+  width: 9.8em;
+}
+.kv-copy__label--omakase {
+  width: 17.9em;
+}
+.kv-copy--omakase {
+  right: 5em;
+  z-index: 6;
+  margin-top: -0.7em;
+}
+.kv-deco {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 3;
+  width: 66.1em;
+  height: 52.6em;
+  margin-left: -0.2em;
+  margin-top: -2.2em;
+  transform: translate(-50%, -50%);
+}
+.kv-deco__item {
+  position: absolute;
+  transform-origin: center;
+}
+.kv-deco__item--1 {
+  left: 4.2em;
+  top: 2.4em;
+  width: 5.3em;
+  animation: shake1 2s steps(2) infinite;
+}
+.kv-deco__item--2 {
+  bottom: 0;
+  left: 10.3em;
+  width: 5.2em;
+  animation: shake2 2s steps(2) infinite;
+}
+.kv-deco__item--3 {
+  right: 0;
+  top: 31.7em;
+  width: 2.9em;
+  animation: shake1 2s steps(2) infinite;
+}
+.kv-deco__item--4 {
+  right: 9.9em;
+  top: 0;
+  width: 19.6em;
+}
+.kv-deco__item--5 {
+  left: 0;
+  top: 23.3em;
+  width: 12.5em;
+}
+.kv-leftbottom {
+  position: absolute;
+  bottom: -1em;
+  z-index: 1;
+}
+.kv-leftbottom img {
+  width: 100%;
+}
+.kv-leftbottom--tatami {
+  left: 1em;
+  width: 32.5em;
+}
+.kv-leftbottom--fusuma {
+  left: 1em;
+  width: 32.9em;
+  margin-bottom: -1em;
+}
+.kv-store,
+.kv-store .text {
+  position: absolute;
+}
+.kv-store .pic {
+  display: block;
+}
+.kv-store--tamana {
+  left: 0;
+  top: 0;
+  z-index: 7;
+}
+.kv-store--tamana .text {
+  right: -5.1em;
+  top: 6.75em;
+  width: 9em;
+  animation: shake1 2s steps(2) infinite;
+}
+.kv-store--tamana .pic {
+  width: 34.4em;
+}
+.kv-store--showroom {
+  left: 0;
+  top: 50%;
+  z-index: 6;
+  margin-top: 3.05em;
+  transform: translateY(-50%);
+}
+.kv-store--showroom .text {
+  right: -2.75em;
+  top: 6.35em;
+  width: 14.55em;
+  animation: shake2 2s steps(2) infinite;
+}
+.kv-store--showroom .pic {
+  width: 29.6em;
+}
+.kv-store--nishi {
+  bottom: 0;
+  left: 7.05em;
+  z-index: 5;
+}
+.kv-store--nishi .text {
+  bottom: 5.6em;
+  right: -2.3em;
+  width: 7.4em;
+  animation: shake1 2s steps(2) infinite;
+}
+.kv-store--nishi .pic {
+  width: 32em;
+}
+.kv-store--koushi {
+  right: 0;
+  top: 0;
+  z-index: 5;
+}
+.kv-store--koushi .text {
+  left: -1.4em;
+  top: 2.45em;
+  width: 9.25em;
+  animation: shake2 2s steps(2) infinite;
+}
+.kv-store--koushi .pic {
+  width: 30.1em;
+}
+.kv-store--tyuou {
+  bottom: 0;
+  right: 0;
+  z-index: 5;
+}
+.kv-store--tyuou .text {
+  left: 7.5em;
+  top: -3.5em;
+  width: 9.4em;
+  animation: shake1 2s steps(2) infinite;
+}
+.kv-store--tyuou .pic {
+  width: 33.2em;
+}
+
+@media (max-width: 767.98px) {
+  .kv-center--shift,
+  .kv-deco--shift {
+    margin-left: -4em;
+  }
+  .kv-copy {
+    margin-right: -2em;
+  }
+}
+@media (min-width: 768px) {
+  .kv__inner {
+    font-size: 0.9775171065vw;
+  }
+}
+@media (min-width: 1024px) {
+  .kv__inner {
+    font-size: 0.7142857143vw;
+  }
+  .kv-copy {
+    right: 20em;
+  }
+  .kv-copy--omakase {
+    right: 39.6em;
+  }
+  .kv-leftbottom--tatami {
+    left: 12.7em;
+  }
+  .kv-leftbottom--fusuma {
+    left: 11.2em;
+  }
+  .kv-store--tamana .pic {
+    width: 43.1em;
+  }
+  .kv-store--showroom .pic {
+    width: 37em;
+  }
+  .kv-store--nishi .pic {
+    width: 40em;
+  }
+  .kv-store--koushi .pic {
+    width: 37.7em;
+  }
+  .kv-store--tyuou .pic {
+    width: 41.5em;
+  }
+}
+
+/* ---------- モーダル（サイトの .p-modal：黒 80% の背景＋拡大フェード） ---------- */
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes overlayIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.modal-overlay {
+  animation: overlayIn 0.2s ease-in-out both;
+}
+.modal-frame {
+  animation: modalIn 0.35s ease-in-out both;
 }
 
 .bubble {
@@ -115,11 +669,33 @@ body {
   word-break: break-word;
 }
 
+/* よくあるご質問・7つの在り方の開閉（Safari の既定の三角を消す） */
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 動きを減らす設定の利用者には揺れ・スライドを止める */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .js [data-st-effect]:not(.is-observed) {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(154, 154, 147, 0.4);
+  background: rgba(0, 0, 0, 0.2);
   border-radius: 999px;
 }

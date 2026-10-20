@@ -6,12 +6,22 @@
 import { promises as fs } from "fs";
 import path from "path";
 import seedEstimates from "../../data/seed/estimates.json";
-import seedKnowledge from "../../data/seed/knowledge.json";
+import { LEGACY_COMPANY_NAMES, LEGACY_PHONES } from "./brand";
 import { env } from "./env";
 import { kvConfigured, kvGet, kvSet } from "./kv";
 import type { AgentSession, AppSettings, ConversationLog, EstimateRequest, KnowledgeEntry, StorageInfo } from "./types";
 
-type CollectionName = "estimates" | "conversations" | "sessions" | "settings" | "knowledge_local" | "embeddings";
+type CollectionName =
+  | "estimates"
+  | "conversations"
+  | "sessions"
+  | "settings"
+  | "knowledge_admin"
+  | "site_knowledge"
+  | "learned"
+  | "unanswered"
+  | "usage"
+  | "embeddings";
 
 interface CacheEntry {
   value: unknown;
@@ -57,8 +67,14 @@ function seedFor(name: CollectionName): unknown {
   switch (name) {
     case "estimates":
       return seedEstimates as EstimateRequest[];
-    case "knowledge_local":
-      return seedKnowledge as KnowledgeEntry[];
+    case "knowledge_admin":
+    case "learned":
+    case "unanswered":
+      return [];
+    case "site_knowledge":
+      return null;
+    case "usage":
+      return {};
     case "settings":
       return defaultSettings();
     case "conversations":
@@ -166,33 +182,60 @@ export function storageInfo(): StorageInfo {
 
 // ---------- 設定 ----------
 
+/** 設定の版。これより古い保存値は、以前の既定値のままなら新しい既定値に移行する */
+const SETTINGS_REV = 2;
+/** 以前の既定の挨拶（スタッフが書き換えていなければ新しい既定に置き換える） */
+const LEGACY_GREETINGS = [
+  "お電話ありがとうございます。{company}のAI受付です。畳・襖・障子・網戸・リフォームに関するご質問や、お見積りのご依頼を承ります。ご用件をどうぞ。",
+  "お電話ありがとうございます。畳の{company}、AI受付です。畳・襖・障子・網戸のご相談や、無料お見積りのご依頼を承ります。ご用件をどうぞ。",
+];
+
 export function defaultSettings(): AppSettings {
   return {
     companyName: env.companyName,
     companyPhone: env.companyPhone,
     lineAddFriendUrl: env.lineAddFriendUrl,
     greeting:
-      "お電話ありがとうございます。{company}のAI受付です。畳・襖・障子・網戸・リフォームに関するご質問や、お見積りのご依頼を承ります。ご用件をどうぞ。",
+      "お電話ありがとうございます。畳の{company}、AI受付です。畳・襖・障子・網戸から住まいのリフォームまで、ご相談や無料お見積りのご依頼を承ります。ご用件をどうぞ。",
+    // 営業時間 8:00〜17:00・土日定休。休業日（年末年始・GW・お盆など）と時間外は AI が受付
     phone: {
       mode: "ai_off_hours",
-      businessDays: [1, 2, 3, 4, 5, 6],
-      openTime: "09:00",
-      closeTime: "18:00",
+      businessDays: [1, 2, 3, 4, 5],
+      openTime: "08:00",
+      closeTime: "17:00",
       holidays: [],
       forwardNumber: env.staffForwardNumber,
     },
     updatedAt: new Date(0).toISOString(),
+    rev: SETTINGS_REV,
   };
+}
+
+/** 以前の既定の営業時間（月〜土 8:00/9:00〜18:00）のまま保存されているか */
+function isLegacyHours(p: AppSettings["phone"]): boolean {
+  return p.businessDays.join(",") === "1,2,3,4,5,6" && (p.openTime === "08:00" || p.openTime === "09:00") && p.closeTime === "18:00";
 }
 
 export async function getSettings(): Promise<AppSettings> {
   const saved = await read<Partial<AppSettings>>("settings");
   const def = defaultSettings();
-  return {
+  const merged: AppSettings = {
     ...def,
     ...saved,
     phone: { ...def.phone, ...(saved.phone ?? {}) },
   };
+  // 旧デモ（熊本たたみ工房）の値が保存されていたら一畳屋の値に置き換える
+  if (LEGACY_COMPANY_NAMES.includes(merged.companyName)) merged.companyName = def.companyName;
+  if (LEGACY_PHONES.includes(merged.companyPhone)) merged.companyPhone = def.companyPhone;
+  if (!merged.lineAddFriendUrl) merged.lineAddFriendUrl = def.lineAddFriendUrl;
+  if ((saved.rev ?? 0) < SETTINGS_REV) {
+    if (LEGACY_GREETINGS.includes(merged.greeting) || /リフォームに関するご質問/.test(merged.greeting)) merged.greeting = def.greeting;
+    if (isLegacyHours(merged.phone)) {
+      merged.phone = { ...merged.phone, businessDays: def.phone.businessDays, openTime: def.phone.openTime, closeTime: def.phone.closeTime };
+    }
+    merged.rev = SETTINGS_REV;
+  }
+  return merged;
 }
 
 export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
@@ -202,6 +245,7 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
     ...patch,
     phone: { ...current.phone, ...(patch.phone ?? {}) },
     updatedAt: new Date().toISOString(),
+    rev: SETTINGS_REV,
   };
   await write("settings", next);
   return next;
@@ -280,14 +324,38 @@ export async function deleteSession(id: string): Promise<void> {
   );
 }
 
-// ---------- ローカルナレッジ（シート未接続時／編集用） ----------
+// ---------- 管理画面で追加したナレッジ・再学習したホームページ ----------
 
-export async function getLocalKnowledge(): Promise<KnowledgeEntry[]> {
-  return read<KnowledgeEntry[]>("knowledge_local");
+export async function getAdminKnowledge(): Promise<KnowledgeEntry[]> {
+  return read<KnowledgeEntry[]>("knowledge_admin");
 }
 
-export async function saveLocalKnowledge(entries: KnowledgeEntry[]): Promise<void> {
-  await write("knowledge_local", entries);
+export async function saveAdminKnowledge(entries: KnowledgeEntry[]): Promise<void> {
+  await write("knowledge_admin", entries);
+}
+
+export interface StoredSiteKnowledge {
+  fetchedAt: string;
+  entries: KnowledgeEntry[];
+  pages: { path: string; label: string; entries: number; error?: string }[];
+}
+
+export async function getSiteKnowledge(): Promise<StoredSiteKnowledge | null> {
+  return read<StoredSiteKnowledge | null>("site_knowledge");
+}
+
+export async function saveSiteKnowledge(v: StoredSiteKnowledge | null): Promise<void> {
+  await write("site_knowledge", v);
+}
+
+// ---------- 学習済みの回答・答えられなかった質問・利用状況 ----------
+
+export async function readCollection<T>(name: "learned" | "unanswered" | "usage"): Promise<T> {
+  return read<T>(name);
+}
+
+export async function writeCollection<T>(name: "learned" | "unanswered" | "usage", value: T): Promise<void> {
+  await write(name, value);
 }
 
 // ---------- 埋め込みキャッシュ（メモリ／ファイルのみ） ----------

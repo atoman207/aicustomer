@@ -2,6 +2,7 @@
 
 import { AlertTriangle, CheckCircle2, Loader2, X } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 export function Badge({
   tone = "neutral",
@@ -13,14 +14,14 @@ export function Badge({
   className?: string;
 }) {
   const tones: Record<string, string> = {
-    neutral: "border-washi-300 bg-washi-100 text-sumi-600",
-    green: "border-tatami-200 bg-tatami-50 text-tatami-700",
-    amber: "border-amber-200 bg-amber-50 text-amber-800",
-    red: "border-shu-200 bg-shu-50 text-shu-700",
-    blue: "border-ai-200 bg-ai-50 text-ai-700",
+    neutral: "border-sumi-200 bg-white text-sumi-600",
+    green: "border-ichi-leaf bg-white text-ichi-leaf",
+    amber: "border-[#e0b400] bg-[#fffcdb] text-[#7a5a00]",
+    red: "border-ichi-red bg-white text-ichi-red",
+    blue: "border-ichi-theme bg-ichi-theme text-white",
   };
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${tones[tone]} ${className}`}>
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${tones[tone]} ${className}`}>
       {children}
     </span>
   );
@@ -31,7 +32,7 @@ export function ModeBadge({ mode }: { mode: string }) {
     return (
       <Badge tone="green">
         <CheckCircle2 className="h-3 w-3" />
-        OpenAI API 接続中
+        AI（OpenAI）接続中
       </Badge>
     );
   return (
@@ -44,11 +45,11 @@ export function ModeBadge({ mode }: { mode: string }) {
 
 export function DemoNotice({ reason, compact = false }: { reason?: string; compact?: boolean }) {
   return (
-    <div className={`rounded-xl border border-amber-200 bg-amber-50 text-amber-900 ${compact ? "px-3 py-2 text-xs" : "px-4 py-3 text-sm"}`}>
+    <div className={`rounded-lg border border-[#e0b400] bg-[#fffcdb] text-[#5c4400] ${compact ? "px-3 py-2 text-xs" : "px-4 py-3 text-sm"}`}>
       <p className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
         <span>
-          <span className="font-semibold">デモモードで動作中：</span>
+          <span className="font-bold">デモモードで動作中：</span>
           OPENAI_API_KEY が未設定のため、あらかじめ用意したテンプレート応答（社内ナレッジのキーワード検索）で動作しています。
           <code className="mx-1 rounded bg-white/70 px-1">.env</code>に OPENAI_API_KEY を設定して再起動すると、同じ画面がそのまま本番の AI 応答に切り替わります。
           {reason ? <span className="mt-1 block text-xs opacity-80">{reason}</span> : null}
@@ -62,15 +63,7 @@ export function Spinner({ className = "h-4 w-4" }: { className?: string }) {
   return <Loader2 className={`animate-spin ${className}`} />;
 }
 
-/** 朱印（はんこ）風のアクセント */
-export function Hanko({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return (
-    <span className={`hanko ${className}`} aria-hidden>
-      {children}
-    </span>
-  );
-}
-
+/** サイトの .p-modal と同じ：黒 80% の背景、枠は 0.9 倍から拡大しながらフェード */
 export function Modal({
   open,
   onClose,
@@ -97,32 +90,44 @@ export function Modal({
       document.body.style.overflow = prev;
     };
   }, [open, onClose]);
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-sumi-900/50 p-0 backdrop-blur-sm sm:items-center sm:p-4" onClick={onClose}>
+  if (!open || typeof document === "undefined") return null;
+  // ヘッダーより前面に出すため body 直下に描画（親の z-index の影響を受けない）
+  return createPortal(
+    <div className="modal-overlay fixed inset-0 z-[200] flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-6" onClick={onClose}>
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-washi-50 p-5 shadow-2xl animate-fadeUp sm:rounded-2xl ${wide ? "sm:max-w-4xl" : "sm:max-w-2xl"}`}
+        className={`modal-frame relative max-h-[92vh] w-full overflow-y-auto rounded-t-[15px] border-2 border-ichi-theme bg-white p-5 shadow-2xl sm:rounded-[15px] sm:p-7 ${
+          wide ? "sm:max-w-4xl" : "sm:max-w-2xl"
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="font-serif text-lg font-bold text-sumi-800">{title}</h2>
-          <button type="button" className="rounded-full p-1.5 text-sumi-400 hover:bg-washi-200 hover:text-sumi-700" onClick={onClose} aria-label="閉じる">
+        <div className="mb-5 flex items-center justify-between gap-3 border-b border-sumi-100 pb-3">
+          <h2 className="flex items-center gap-2 font-hand text-lg text-ichi-theme sm:text-xl">
+            <img src="/ichijoya/logo-symbol.svg" alt="" width={26} />
+            {title}
+          </h2>
+          <button
+            type="button"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ichi-theme text-white transition-opacity hover:opacity-80"
+            onClick={onClose}
+            aria-label="閉じる"
+          >
             <X className="h-5 w-5" />
           </button>
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
 export function StatusDot({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-sumi-600">
-      <span className={`h-2 w-2 rounded-full ${ok ? "bg-tatami-500" : "bg-amber-400"}`} />
+      <span className={`h-2 w-2 rounded-full ${ok ? "bg-ichi-leaf" : "bg-[#e0b400]"}`} />
       {label}
     </span>
   );

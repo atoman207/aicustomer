@@ -1,7 +1,7 @@
 // 見積依頼（受付情報）の作成とスプレッドシートへの記録
 import { env } from "./env";
 import { gasRequest, sheetsAppendRow } from "./google";
-import { addEstimate, updateEstimate } from "./store";
+import { addEstimate, listEstimates, updateEstimate } from "./store";
 import { CHANNEL_LABEL, type Channel, type EstimateRequest } from "./types";
 import { formatJst, isLikelyPhone, newId, normalizePhone, nowJstIso } from "./utils";
 
@@ -77,6 +77,24 @@ export function estimateToRow(e: EstimateRequest): string[] {
     e.confirmedByCustomer ? "お客様確認済み" : "未確認",
     "新規",
   ];
+}
+
+/** 受付番号（例：EST-20261019-AB12）を文中から取り出す */
+export function findReceptionId(text: string): string | null {
+  const m = text.normalize("NFKC").toUpperCase().match(/EST-\d{8}-[A-Z0-9]{4}/);
+  return m ? m[0] : null;
+}
+
+/**
+ * 受付後の LINE 引き継ぎ：お客様が LINE で受付番号を送ると、その受付に LINE のユーザーを紐づける。
+ * 別の LINE アカウントに紐づいている受付は上書きしない。
+ */
+export async function linkEstimateToLine(id: string, userId: string): Promise<"linked" | "already" | "other" | "not_found"> {
+  const e = (await listEstimates()).find((x) => x.id === id);
+  if (!e) return "not_found";
+  if (e.lineUserId) return e.lineUserId === userId ? "already" : "other";
+  await updateEstimate(id, { lineUserId: userId, lineLinkedAt: nowJstIso() });
+  return "linked";
 }
 
 export async function createEstimate(input: EstimateInput): Promise<EstimateRequest> {

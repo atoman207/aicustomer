@@ -1,13 +1,14 @@
 // デモモード（OpenAI APIキー未設定時）のルールベース応答・受付フロー
 import { keywordSearch } from "./retrieval";
 import type { AgentSession, AgentTurnResult, IntakeDraft, KnowledgeEntry, SearchHit } from "./types";
-import { isLikelyPhone, normalizePhone, truncate } from "./utils";
+import { domesticPhone, isLikelyPhone, normalizePhone, truncate } from "./utils";
 
-const INTENT_ESTIMATE =
+export const INTENT_ESTIMATE =
   /(見積|みつもり|依頼|お願いしたい|頼みたい|来てほしい|来て欲しい|訪問|申し込|予約|折り返し|やってほしい|工事したい|交換したい|張り替えたい|張替えたい|新調したい|お願いします)/;
 const YES = /^(はい|ええ|うん|そう|大丈夫|ok|オッケー|お願い|間違いない|結構|よろしく|それで|問題ない|合って)/i;
-const SKIP = /^(なし|ない|ありません|指定なし|特にない|特になし|お任せ|おまかせ|いいえ)/;
-const BYE = /(ありがとうございました|以上です|終わります|失礼します|さようなら|もう大丈夫)/;
+const SKIP = /^(なし|無し|ない|ありません|指定なし|特にない|特になし|特にありません|お任せ|おまかせ|いいえ)/;
+export const BYE = /(ありがとうございました|以上です|終わります|失礼します|さようなら|もう大丈夫)/;
+const SAME_NUMBER = /((この|その|今の|いまの|同じ|おかけの?|かけている|かけてる|発信)(番号|電話)|(この|その)まま)/;
 const FIX_TARGETS: { key: keyof IntakeDraft; test: RegExp; label: string }[] = [
   { key: "name", test: /(名前|氏名)/, label: "お名前" },
   { key: "address", test: /(住所)/, label: "ご住所" },
@@ -20,7 +21,7 @@ export const NOT_FOUND_REPLY =
   "恐れ入りますが、その件は社内ナレッジに記載がないため、この場で正確にお答えできかねます。担当者より折り返しご案内いたしますので、お見積り・折り返しをご希望の場合は「見積をお願いします」とお伝えください。";
 
 export function fallbackGreeting(company: string): string {
-  return `こんにちは。${company}のAI相談員です（デモモード）。畳・襖・障子・網戸・リフォームについて、お気軽にご質問ください。`;
+  return `こんにちは。畳の${company}のAI相談員です（デモモード）。畳・襖・障子・網戸から住まいのリフォームまで、お気軽にご質問ください。`;
 }
 
 /** ナレッジ検索結果からテンプレート回答を生成 */
@@ -37,8 +38,9 @@ export function fallbackAnswer(hits: SearchHit[]): string {
 
 function clean(text: string): string {
   return text
-    .replace(/^(はい|えっと|えーと|あの|名前は|住所は|電話は|電話番号は|希望は)[、,]?\s*/u, "")
-    .replace(/(です|になります|でお願いします|でお願い|でございます)[。.]?$/u, "")
+    .replace(/^(はい|えっと|えーと|あの)[、,]?\s*/u, "")
+    .replace(/^(お?名前は|ご?住所は|電話番号は|電話は|第?[1-3１-３一二三]?希望(日)?は|希望日?は)[、,]?\s*/u, "")
+    .replace(/(です|になります|でお願いします|でお願い|にしてください|でございます)[。.]?$/u, "")
     .replace(/[。]$/u, "")
     .trim();
 }
@@ -55,7 +57,7 @@ function readback(d: IntakeDraft): string {
   }」。以上の内容でお間違いないでしょうか？よろしければ「はい」、修正があれば「お名前」「ご住所」「お電話番号」「希望日」「相談内容」のどれを直すかお伝えください。`;
 }
 
-function nextStep(d: IntakeDraft): { step: string; prompt: string; stage: AgentTurnResult["stage"] } {
+function nextStep(d: IntakeDraft, caller?: string): { step: string; prompt: string; stage: AgentTurnResult["stage"] } {
   if (!d.name) return { step: "name", prompt: "まず、お名前をフルネームでお聞かせください。", stage: "collecting" };
   if (!d.address)
     return {
@@ -66,7 +68,9 @@ function nextStep(d: IntakeDraft): { step: string; prompt: string; stage: AgentT
   if (!d.phone)
     return {
       step: "phone",
-      prompt: "ありがとうございます。折り返しご連絡できるお電話番号を、市外局番からお聞かせください。",
+      prompt: caller
+        ? "ありがとうございます。折り返しのお電話は、いまおかけいただいている番号でよろしいでしょうか？別の番号をご希望の場合は、その番号をお聞かせください。"
+        : "ありがとうございます。折り返しご連絡できるお電話番号を、市外局番からお聞かせください。",
       stage: "collecting",
     };
   if (d.dates.length === 0)
@@ -89,9 +93,10 @@ export function fallbackTurn(session: AgentSession, text: string, entries: Knowl
   const step = session.fallbackStep ?? "consult";
   const draft: IntakeDraft = { ...session.draft, dates: [...session.draft.dates] };
   const base = { draft, mode: "demo" as const, done: false };
+  const caller = domesticPhone(session.meta?.callerNumber);
 
   const advance = (): AgentTurnResult => {
-    const n = nextStep(draft);
+    const n = nextStep(draft, caller);
     session.fallbackStep = n.step;
     return { ...base, stage: n.stage, reply: n.prompt };
   };
@@ -100,7 +105,7 @@ export function fallbackTurn(session: AgentSession, text: string, entries: Knowl
     case "consult": {
       if (INTENT_ESTIMATE.test(text)) {
         if (!draft.summary) draft.summary = appendSummary(undefined, text);
-        const n = nextStep(draft);
+        const n = nextStep(draft, caller);
         session.fallbackStep = n.step;
         return { ...base, stage: n.stage, reply: `かしこまりました。お見積りのご依頼を承ります。${n.prompt}` };
       }
@@ -123,28 +128,36 @@ export function fallbackTurn(session: AgentSession, text: string, entries: Knowl
       draft.address = clean(text);
       return advance();
     case "phone": {
-      if (draft.phone && YES.test(text)) return advance();
       const p = normalizePhone(text);
-      if (!isLikelyPhone(p)) {
-        return {
-          ...base,
-          stage: "collecting",
-          reply: "恐れ入ります、お電話番号を市外局番から数字でお聞かせください。例えば、ゼロキューゼロ、イチニサンヨン、ゴーロクナナハチ、のようにお願いします。",
-        };
+      if (isLikelyPhone(p)) {
+        draft.phone = p;
+        return advance();
       }
-      draft.phone = p;
-      return advance();
+      if (caller && (YES.test(text.trim()) || SAME_NUMBER.test(text))) {
+        draft.phone = caller;
+        return advance();
+      }
+      if (draft.phone && YES.test(text)) return advance();
+      return {
+        ...base,
+        stage: "collecting",
+        reply: caller
+          ? "恐れ入ります。いまおかけの番号でよろしければ「はい」と、別の番号の場合は市外局番から数字でお聞かせください。"
+          : "恐れ入ります、お電話番号を市外局番から数字でお聞かせください。例えば、ゼロキューゼロ、イチニサンヨン、ゴーロクナナハチ、のようにお願いします。",
+      };
     }
     case "date1":
       draft.dates = [clean(text)];
       return advance();
     case "date2":
     case "date3": {
-      if (SKIP.test(text.trim())) {
+      const v = clean(text);
+      // 「第2希望はありません」のように前置きつきでも「なし」と判定する
+      if (SKIP.test(text.trim()) || SKIP.test(v) || !v) {
         session.fallbackStep = "confirm";
         return { ...base, stage: "confirming", reply: readback(draft) };
       }
-      draft.dates = [...draft.dates, clean(text)].slice(0, 3);
+      draft.dates = [...draft.dates, v].slice(0, 3);
       return advance();
     }
     case "summary":
@@ -166,7 +179,7 @@ export function fallbackTurn(session: AgentSession, text: string, entries: Knowl
           if (t.key === "dates") draft.dates = [];
           else draft[t.key] = undefined;
           session.fallbackStep = t.key === "dates" ? "date1" : t.key;
-          const n = nextStep(draft);
+          const n = nextStep(draft, caller);
           session.fallbackStep = n.step;
           return { ...base, stage: "collecting", reply: `かしこまりました。${t.label}を改めてお聞かせください。` };
         }

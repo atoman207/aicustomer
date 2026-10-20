@@ -12,10 +12,12 @@
  *       実行ユーザー: 自分 ／ アクセスできるユーザー: 全員
  *  4. 発行された URL を .env の GAS_WEBHOOK_URL に設定
  *
- * ナレッジシートの列: A カテゴリ / B 項目（質問） / C 内容（回答） / D キーワード / E 備考（1行目は見出し）
+ * ナレッジシート：顧客対応マニュアルの指定1シート（例：「ＡＩ相談ソース」）。
+ *   自由形式（上部に文章、下部に料金表）でも、A カテゴリ / B 項目 / C 内容 / D キーワード の表形式でも読み込めます。
+ *   自由形式の見出しの判定に空行が必要なため、空行も含めた全セル（grid）を返します。
  */
 
-var KNOWLEDGE_SHEET_DEFAULT = "AI回答用";
+var KNOWLEDGE_SHEET_DEFAULT = "ＡＩ相談ソース";
 var RECEPTION_SHEET_DEFAULT = "受付一覧";
 
 function json_(obj) {
@@ -36,7 +38,8 @@ function doGet(e) {
           return String(c).trim() !== "";
         });
       });
-      return json_({ ok: true, sheet: sheetName, rows: rows, fetchedAt: new Date().toISOString() });
+      // grid：空行も位置を保った全セル（新しいアプリはこちらを使う）／rows：空行を除いたもの（旧版との互換）
+      return json_({ ok: true, sheet: sheetName, grid: values, rows: rows, fetchedAt: new Date().toISOString() });
     }
     if (action === "ping") return json_({ ok: true, time: new Date().toISOString() });
     return json_({ ok: false, error: "unknown action: " + action });

@@ -4,7 +4,16 @@ import { ClipboardCheck, Keyboard, Loader2, Mic, MicOff, PhoneOff, Send, Sparkle
 import { useCallback, useEffect, useRef, useState } from "react";
 import EstimateForm, { type EstimateInitial } from "./EstimateForm";
 import { Badge, DemoNotice, Modal, ModeBadge } from "./ui";
-import { createRecognizer, speakText, stopSpeaking, supportsRecognition, warmUpVoices, type Recognizer } from "@/lib/speech-client";
+import {
+  createRecognizer,
+  isFatalRecognitionError,
+  recognitionErrorMessage,
+  speakText,
+  stopSpeaking,
+  supportsRecognition,
+  warmUpVoices,
+  type Recognizer,
+} from "@/lib/speech-client";
 import type { ChatMessage, EstimateRequest } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
@@ -34,8 +43,8 @@ interface RtEvent {
   call_id?: string;
   name?: string;
   arguments?: string;
-  response?: { output?: { type: string; call_id?: string; name?: string; arguments?: string }[] };
-  error?: { message?: string };
+  response?: { status?: string; output?: { type: string; call_id?: string; name?: string; arguments?: string }[] };
+  error?: { message?: string; code?: string };
 }
 
 interface ToolArgs {
@@ -79,6 +88,9 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   const agentSessionRef = useRef("");
   const agentSessionObjRef = useRef<unknown>(null); // デモモード：セッションを往復させる（サーバーレス対策）
   const handledCalls = useRef<Set<string>>(new Set());
+  const responseActiveRef = useRef(false); // Realtime：モデルが応答中か
+  const recFatalRef = useRef(false); // デモ：音声認識が使えない環境では自動再開しない
+  const pendingRef = useRef<string | null>(null); // デモ：応答中に入力された発話
   const linesRef = useRef<Line[]>([]);
   const estimateIdRef = useRef<string | undefined>(undefined);
   const listRef = useRef<HTMLDivElement>(null);
@@ -127,6 +139,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
 
   async function endSession(save = true) {
     liveRef.current = false;
+    pendingRef.current = null;
     recRef.current?.abort();
     recRef.current = null;
     stopSpeaking();
@@ -153,7 +166,8 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
 
   // ---------------- OpenAI Realtime (WebRTC) ----------------
 
-  async function handleFunctionCall(name: string, callId: string, argsJson: string) {
+  /** ツール（関数）呼び出しの結果を作る */
+  async function toolOutput(name: string, argsJson: string): Promise<string> {
     let args: ToolArgs = {};
     try {
       args = JSON.parse(argsJson || "{}") as ToolArgs;
@@ -168,13 +182,18 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ query: args.query ?? "", k: 4 }),
         });
-        const j = (await res.json()) as { hits?: { title: string; content: string }[] };
+        const j = (await res.json()) as { answer?: string; mode?: string; hits?: { title: string; content: string }[]; sources?: { title: string }[] };
         const hits = j.hits ?? [];
-        setSources(hits.map((h) => h.title));
-        output = JSON.stringify({
-          results: hits.map((h) => ({ title: h.title, content: h.content })),
-          note: hits.length === 0 ? "該当するナレッジがありません。推測せず、担当者からの折り返しを案内してください。" : undefined,
-        });
+        setSources((j.sources?.length ? j.sources : hits).map((h) => h.title));
+        // answer があれば（料金表・会社情報・学習済みの回答）それを根拠に話す。なければ関係するナレッジだけを渡す
+        output = JSON.stringify(
+          j.answer
+            ? { answer: j.answer }
+            : {
+                results: hits.map((h) => ({ title: h.title, content: h.content })),
+                note: hits.length === 0 ? "該当するナレッジがありません。推測せず、担当者からの折り返しを案内してください。" : undefined,
+              },
+        );
       } catch (e) {
         output = JSON.stringify({ error: (e as Error).message });
       }
@@ -194,12 +213,42 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     } else {
       output = JSON.stringify({ error: `unknown tool: ${name}` });
     }
-    sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output } });
+    return output;
+  }
+
+  /**
+   * 応答が完了したら、その応答に含まれる関数呼び出しを処理して結果を返し、続きの応答を依頼する。
+   * （応答の途中で response.create を送ると「応答中」のエラーになるため、必ず response.done 後に送る）
+   */
+  async function handleResponseDone(ev: RtEvent) {
+    responseActiveRef.current = false;
+    const calls = (ev.response?.output ?? []).filter(
+      (it) => it.type === "function_call" && it.call_id && it.name && !handledCalls.current.has(it.call_id),
+    );
+    if (calls.length === 0) return;
+    calls.forEach((c) => handledCalls.current.add(c.call_id!));
+    const outputs = await Promise.all(calls.map((c) => toolOutput(c.name!, c.arguments ?? "{}")));
+    calls.forEach((c, i) => {
+      sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: c.call_id, output: outputs[i] } });
+    });
+    sendEvent({ type: "response.create" });
+  }
+
+  /** お客様の文字入力・システム通知をモデルに渡して応答させる（AIが話している途中なら止めてから） */
+  function sendUserText(text: string) {
+    if (responseActiveRef.current) {
+      sendEvent({ type: "response.cancel" });
+      sendEvent({ type: "output_audio_buffer.clear" });
+    }
+    sendEvent({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text }] } });
     sendEvent({ type: "response.create" });
   }
 
   function handleServerEvent(ev: RtEvent) {
     switch (ev.type) {
+      case "response.created":
+        responseActiveRef.current = true;
+        break;
       case "input_audio_buffer.committed":
         if (ev.item_id) upsertLine(ev.item_id, "user", "…", false);
         break;
@@ -215,8 +264,16 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
           });
         }
         break;
-      case "conversation.item.input_audio_transcription.completed":
-        if (ev.item_id) upsertLine(ev.item_id, "user", ev.transcript?.trim() || "（聞き取れませんでした）", true);
+      case "conversation.item.input_audio_transcription.completed": {
+        if (!ev.item_id) break;
+        const text = ev.transcript?.trim() ?? "";
+        // 物音などで文字にならなかった発話は表示しない
+        if (text) upsertLine(ev.item_id, "user", text, true);
+        else setLines((prev) => prev.filter((l) => l.id !== ev.item_id));
+        break;
+      }
+      case "conversation.item.input_audio_transcription.failed":
+        if (ev.item_id) setLines((prev) => prev.filter((l) => l.id !== ev.item_id));
         break;
       case "input_audio_buffer.speech_started":
         setUserSpeaking(true);
@@ -239,24 +296,16 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
       case "output_audio_buffer.cleared":
         setAiSpeaking(false);
         break;
-      case "response.function_call_arguments.done":
-        if (ev.call_id && ev.name && !handledCalls.current.has(ev.call_id)) {
-          handledCalls.current.add(ev.call_id);
-          void handleFunctionCall(ev.name, ev.call_id, ev.arguments ?? "{}");
-        }
+      case "response.done":
+        void handleResponseDone(ev);
         break;
-      case "response.done": {
-        for (const it of ev.response?.output ?? []) {
-          if (it.type === "function_call" && it.call_id && it.name && !handledCalls.current.has(it.call_id)) {
-            handledCalls.current.add(it.call_id);
-            void handleFunctionCall(it.name, it.call_id, it.arguments ?? "{}");
-          }
-        }
-        break;
-      }
-      case "error":
+      case "error": {
+        // 割り込み時などに出る無害なエラーはお客様に表示しない
+        const code = ev.error?.code ?? "";
+        if (code === "response_cancel_not_active" || code === "conversation_already_has_active_response") break;
         setError(ev.error?.message ?? "Realtime API エラー");
         break;
+      }
       default:
         break;
     }
@@ -292,7 +341,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
       sendEvent({
         type: "response.create",
         response: {
-          instructions: `「こんにちは、${company}のAI相談員です。畳や襖、障子、網戸、リフォームのことなら何でもお聞きください。」のように、短く挨拶してご用件を伺ってください。`,
+          instructions: `「こんにちは、畳の${company}のAI相談員です。畳や襖、障子、網戸のことなら何でもお聞きください。」のように、短く挨拶してご用件を伺ってください。`,
         },
       });
     };
@@ -302,6 +351,17 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         void endSession();
       }
     };
+    const opened = new Promise<void>((resolve, reject) => {
+      const t = window.setTimeout(() => reject(new Error("音声接続がタイムアウトしました")), 15000);
+      dc.addEventListener(
+        "open",
+        () => {
+          window.clearTimeout(t);
+          resolve();
+        },
+        { once: true },
+      );
+    });
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     const model = info.model ?? "gpt-realtime";
@@ -314,6 +374,8 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     const res = await fetch(url, { method: "POST", body: offer.sdp, headers });
     if (!res.ok) throw new Error(`音声セッションの接続に失敗しました（HTTP ${res.status}）`);
     await pc.setRemoteDescription({ type: "answer", sdp: await res.text() });
+    // データチャネルが開くまで待つ（開かなければデモモードに切り替える）
+    await opened;
   }
 
   // ---------------- デモモード（Web Speech API） ----------------
@@ -329,7 +391,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   }
 
   function listen() {
-    if (!liveRef.current || modeRef.current !== "demo") return;
+    if (!liveRef.current || modeRef.current !== "demo" || recFatalRef.current) return;
     if (!supportsRecognition()) {
       setMicOk(false);
       return;
@@ -343,12 +405,14 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
       },
       onEnd: () => {
         setListening(false);
-        if (liveRef.current && !busyRef.current && !speakingRef.current) setTimeout(listen, 250);
+        if (liveRef.current && !busyRef.current && !speakingRef.current && !recFatalRef.current) setTimeout(listen, 250);
       },
       onError: (err) => {
-        if (err === "not-allowed" || err === "service-not-allowed") {
+        if (isFatalRecognitionError(err)) {
+          recFatalRef.current = true;
           setMicOk(false);
-          setError("マイクの使用が許可されていません。下の入力欄からテキストで会話できます。");
+          setListening(false);
+          setError(recognitionErrorMessage(err));
         }
       },
     });
@@ -362,7 +426,13 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   }
 
   async function handleDemoUserText(text: string) {
-    if (busyRef.current || !liveRef.current) return;
+    if (!liveRef.current) return;
+    if (busyRef.current) {
+      // 応答・読み上げ中の発話は、読み上げを止めて次に処理する（入力を取りこぼさない）
+      pendingRef.current = text;
+      stopSpeaking();
+      return;
+    }
     busyRef.current = true;
     recRef.current?.abort();
     setListening(false);
@@ -400,6 +470,12 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     } finally {
       busyRef.current = false;
     }
+    const next = pendingRef.current;
+    pendingRef.current = null;
+    if (next && liveRef.current) {
+      void handleDemoUserText(next);
+      return;
+    }
     listen();
   }
 
@@ -428,6 +504,8 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     setLastEstimate(null);
     estimateIdRef.current = undefined;
     handledCalls.current = new Set();
+    responseActiveRef.current = false;
+    recFatalRef.current = false;
     sessionIdRef.current = `voice_${uid()}`;
     setStatus("connecting");
     try {
@@ -475,8 +553,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     setTyped("");
     if (modeRef.current === "openai") {
       upsertLine(uid(), "user", t, true);
-      sendEvent({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: t }] } });
-      sendEvent({ type: "response.create" });
+      sendUserText(t);
     } else {
       void handleDemoUserText(t);
     }
@@ -512,20 +589,11 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     setLastEstimate(est);
     estimateIdRef.current = est.id;
     if (modeRef.current === "openai") {
-      sendEvent({
-        type: "conversation.item.create",
-        item: {
-          type: "message",
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: `（システム通知）見積依頼フォームが送信され、受付番号 ${est.id} で登録されました。お客様に短くお礼を伝え、担当者より折り返しご連絡して日程を確定する旨を伝えてください。`,
-            },
-          ],
-        },
-      });
-      sendEvent({ type: "response.create" });
+      if (liveRef.current) {
+        sendUserText(
+          `（システム通知）見積依頼フォームが送信され、受付番号 ${est.id} で登録されました。お客様に短くお礼を伝え、担当者より折り返しご連絡して日程を確定する旨を伝えてください。`,
+        );
+      }
     } else if (liveRef.current) {
       void (async () => {
         recRef.current?.abort();
@@ -649,6 +717,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
           {lines.map((l) => (
             <div key={l.id} className={`flex ${l.role === "user" ? "justify-end" : "justify-start"}`}>
               <div
+                data-role={l.role}
                 className={`bubble max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
                   l.role === "user" ? "rounded-tr-sm bg-ai-600 text-white" : "rounded-tl-sm border border-washi-200 bg-white text-sumi-800"
                 } ${l.final ? "" : "opacity-80"}`}

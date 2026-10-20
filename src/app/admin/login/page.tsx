@@ -9,8 +9,10 @@ export const metadata: Metadata = { title: "管理画面ログイン" };
 export default async function AdminLoginPage() {
   if (await isAdminAuthenticated()) redirect("/admin");
   return (
-    <div className="container-x flex min-h-[60vh] items-center py-12">
-      <AdminLogin />
-    </div>
+    <section className="bg-yellow-tatami">
+      <div className="container-x flex min-h-[60vh] items-center py-16">
+        <AdminLogin />
+      </div>
+    </section>
   );
 }

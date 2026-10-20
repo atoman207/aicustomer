@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import SiteFooter from "@/components/SiteFooter";
 import SiteHeader from "@/components/SiteHeader";
-import { getSettings } from "@/lib/store";
+import { ASSETS } from "@/lib/brand";
 
 export const dynamic = "force-dynamic";
 
@@ -14,49 +14,49 @@ function siteUrl(): URL {
   return new URL("http://localhost:3000");
 }
 
-const TITLE = "AI顧客相談・電話受付システム｜熊本たたみ工房（デモ）";
+const TITLE = "AI相談窓口｜畳の一畳屋｜熊本県内の畳・襖・障子・網戸の張り替え・交換専門店";
 const DESCRIPTION =
-  "熊本県の畳・襖・障子・網戸・リフォーム会社向け AI 顧客相談システム。テキスト相談・音声相談・AI電話受付の3窓口を共通の社内ナレッジで自動化し、見積受付をスプレッドシートに記録します。";
+  "熊本生まれ熊本育ち、創業120年の一畳屋のAI相談窓口です。畳・襖・障子・網戸の料金や仕上がり日数、対応エリアなどに、文字・声・お電話でAIが24時間お答えします。お見積りのご依頼は内容を確認のうえ担当者が折り返しご連絡します。";
 
 export const metadata: Metadata = {
   metadataBase: siteUrl(),
-  title: { default: TITLE, template: "%s｜熊本たたみ工房（デモ）" },
+  title: { default: TITLE, template: "%s｜AI相談窓口｜畳の一畳屋" },
   description: DESCRIPTION,
-  icons: { icon: "/favicon.svg" },
+  icons: { icon: ASSETS.favicon, apple: ASSETS.appleTouch },
   openGraph: {
     type: "website",
     locale: "ja_JP",
-    siteName: "熊本たたみ工房（デモ）",
+    siteName: "畳の一畳屋｜熊本県内の畳・襖・障子・網戸の張り替え・交換専門店",
     title: TITLE,
     description: DESCRIPTION,
-    images: [{ url: "/og.jpg", width: 1200, height: 630, alt: "障子越しの光が差し込む和室" }],
+    images: [{ url: ASSETS.og, width: 1200, height: 630, alt: "畳の一畳屋" }],
   },
-  twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION, images: ["/og.jpg"] },
+  twitter: { card: "summary_large_image", title: TITLE, description: DESCRIPTION, images: [ASSETS.og] },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#234b73",
+  themeColor: "#1c4911",
   width: "device-width",
   initialScale: 1,
 };
 
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const settings = await getSettings();
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ja">
+    <html lang="ja" suppressHydrationWarning>
       <head>
+        {/* スクロール表示アニメーション用（JS 無効時は最初から表示） */}
+        <script dangerouslySetInnerHTML={{ __html: "document.documentElement.classList.add('js')" }} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Shippori+Mincho:wght@500;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=Yusei+Magic&display=swap"
           rel="stylesheet"
         />
       </head>
       <body className="flex min-h-screen flex-col">
-        <div className="h-1 w-full bg-gradient-to-r from-ai-700 via-shu-500 to-tatami-500" aria-hidden />
-        <SiteHeader company={settings.companyName} phone={settings.companyPhone} />
+        <SiteHeader />
         <main className="flex-1">{children}</main>
-        <SiteFooter company={settings.companyName} phone={settings.companyPhone} />
+        <SiteFooter />
       </body>
     </html>
   );

@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const TTS_INSTRUCTIONS =
-  "熊本の住宅設備会社（畳・襖・障子・網戸・リフォーム）の受付担当として、落ち着いた丁寧な日本語で、はっきりと自然に、少しゆっくり話してください。";
+  "熊本の老舗畳店「一畳屋」の受付担当として、明るく親しみやすい丁寧な日本語で、はっきりと自然に、少しゆっくり話してください。";
 
 /** 読み上げ音声（OpenAI TTS）。未設定時は 204 を返し、クライアント側でブラウザ合成音声にフォールバック */
 export async function POST(req: Request) {

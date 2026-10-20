@@ -18,7 +18,8 @@ export function say(text: string, voice: string): string {
   return `<Say voice="${escapeXml(voice)}" language="ja-JP">${escapeXml(text)}</Say>`;
 }
 
-const SPEECH_HINTS = "畳,襖,ふすま,障子,網戸,リフォーム,見積,表替え,裏返し,新調,張替え,熊本市,午前,午後,はい,いいえ";
+const SPEECH_HINTS =
+  "一畳屋,畳,襖,ふすま,障子,網戸,アミ戸,見積,表替え,新調,張替え,琉球畳,へり無し,古都,さくら,やすらぎ,きずな,なごみ,めぐみ,極み,熊本市,合志市,菊池市,菊陽町,大津町,山鹿市,玉名市,阿蘇,午前,午後,はい,いいえ";
 
 export function gather(
   text: string,

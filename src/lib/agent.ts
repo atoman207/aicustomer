@@ -1,15 +1,17 @@
 // 電話・LINE・音声フォールバックで共通利用する会話エージェント
+//   ・相談中の質問は回答エンジン（answer.ts）で答え、学習済みのナレッジで答えられるものは OpenAI を使わない
+//   ・見積受付の聞き取り・復唱は OpenAI（構造化出力）で行い、そのときはナレッジを渡さない（トークン節約）
+import { learnAnswer, planAnswer } from "./answer";
 import { env } from "./env";
 import { createEstimate } from "./estimates";
-import { fallbackTurn } from "./fallback";
+import { BYE, INTENT_ESTIMATE, fallbackTurn } from "./fallback";
 import { japanNow } from "./hours";
-import { getKnowledge, knowledgeToPromptText } from "./knowledge";
+import { getKnowledge } from "./knowledge";
 import { chatCompletionJson } from "./openai";
 import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt } from "./prompts";
-import { hybridSearch } from "./retrieval";
 import { getSession, getSettings, saveSession, upsertConversation } from "./store";
-import type { AgentSession, AgentStage, AgentTurnResult, Channel, IntakeDraft, KnowledgeEntry } from "./types";
-import { fillTemplate, truncate, uid } from "./utils";
+import type { AgentSession, AgentStage, AgentTurnResult, Channel, IntakeDraft, SearchHit } from "./types";
+import { domesticPhone, fillTemplate, readDigits, truncate, uid } from "./utils";
 
 interface ModelTurn {
   reply: string;
@@ -45,8 +47,8 @@ export async function greetingFor(channel: Channel): Promise<string> {
   const company = settings.companyName;
   if (channel === "phone") return fillTemplate(settings.greeting, { company });
   if (channel === "line")
-    return `${company}の公式LINEにご登録ありがとうございます。\n畳・襖・障子・網戸・リフォームのご相談や、お見積りのご依頼を承ります。ご用件をメッセージでお送りください。`;
-  return `こんにちは。${company}のAI相談員です。畳・襖・障子・網戸・リフォームについて、お気軽にご質問ください。お見積りのご依頼も承ります。`;
+    return `畳の${company}の公式LINEにご登録ありがとうございます。\n畳・襖・障子・網戸から住まいのリフォームまで、ご相談や無料お見積りのご依頼を承ります。ご用件をメッセージでお送りください。\nホームページのAI相談でお見積りを受付済みの方は、受付番号（EST-から始まる番号）をお送りいただくと、ご依頼とこのLINEをおつなぎします。`;
+  return `こんにちは。畳の${company}のAI相談員です。畳・襖・障子・網戸から住まいのリフォームまで、お気軽にご質問ください。無料お見積りのご依頼も承ります。`;
 }
 
 function draftComplete(d: IntakeDraft): boolean {
@@ -65,41 +67,70 @@ function summaryFromMessages(session: AgentSession): string {
   return truncate(texts.join(" ／ "), 220) || "（会話から抽出できませんでした）";
 }
 
-async function openaiTurn(
-  session: AgentSession,
-  text: string,
-  company: string,
-  entries: KnowledgeEntry[],
-): Promise<AgentTurnResult> {
-  const search = await hybridSearch(text, entries, 4);
+function appendSummary(prev: string | undefined, text: string): string {
+  return truncate([prev, text.trim()].filter((s): s is string => !!s && s.length > 0).join(" ／ "), 220);
+}
+
+/** 「〇〇です」「〇〇と申します」などから答えの部分だけを取り出す */
+function cleanAnswer(text: string): string {
+  return text
+    .trim()
+    .replace(/^(はい|えっと|えーと|あの)[、,]?\s*/u, "")
+    .replace(/^(名前は|お名前は|氏名は|住所は|ご住所は)[、,]?\s*/u, "")
+    .replace(/(と申します|といいます|と言います|です|になります|でお願いします)[。.!！]?$/u, "")
+    .replace(/[。.]$/u, "")
+    .trim();
+}
+
+/**
+ * AI が直前にお名前・ご住所を伺い、お客様が短く答えたのに draft に入らなかった場合の補い。
+ * （モデルが「電話試験51083」のような珍しい名前を名前と判断しないことがあるため）
+ */
+function fillAnsweredField(session: AgentSession, draft: IntakeDraft): IntakeDraft {
+  const msgs = session.messages;
+  const user = msgs[msgs.length - 1];
+  const asked = [...msgs.slice(0, -1)].reverse().find((m) => m.role === "assistant")?.content ?? "";
+  if (!user || user.role !== "user") return draft;
+  const answer = cleanAnswer(user.content);
+  if (!answer || answer.length > 40 || /[?？]/.test(user.content) || /^(はい|いいえ|いえ|ok|大丈夫|お願いします)$/i.test(answer)) return draft;
+  const next = { ...draft, dates: [...draft.dates] };
+  if (!next.name && /(お名前|ご氏名|フルネーム)/.test(asked) && !/(住所|番号|希望)/.test(asked)) next.name = answer;
+  else if (!next.address && /ご住所/.test(asked) && !/(お名前|番号|希望)/.test(asked) && /[市区町村郡丁目番地\d-]/.test(answer)) next.address = answer;
+  return next;
+}
+
+/** OpenAI による 1 ターン（参考情報は相談中の質問に関係するものだけ。受付の聞き取り中は渡さない） */
+async function openaiTurn(session: AgentSession, company: string, context: string, hits: SearchHit[]): Promise<AgentTurnResult> {
   const now = japanNow();
-  let system = buildAgentSystemPrompt(company, knowledgeToPromptText(entries, 12000), session.channel, now.display);
-  if (search.hits.length > 0) {
-    system += `\n\n# 直近の発話に関連するナレッジ（優先して参照）\n${search.hits
-      .map((h) => `- ${h.entry.title}: ${h.entry.content}`)
-      .join("\n")}`;
-  }
+  let system = buildAgentSystemPrompt(company, context, session.channel, now.display);
   system += `\n\n# 現在の受付状態\nstage=${session.stage}\ndraft=${JSON.stringify(session.draft)}`;
-  if (session.meta?.callerNumber) {
-    system += `\n発信者番号: ${session.meta.callerNumber}（お電話番号を伺う際は、この番号へ折り返してよいかを確認するだけで構いません。同意されたら draft.phone にこの番号を入れてください）`;
+  if (session.channel === "phone") {
+    const caller = domesticPhone(session.meta?.callerNumber);
+    system += caller
+      ? `\n発信者番号: ${caller}（お電話番号を伺う際は「いまおかけの、末尾${readDigits(caller.slice(-4))}の番号へ折り返してよろしいでしょうか」のように下4桁だけで確認してください。番号全体を読み上げたり、ほかの番号と混同したりしないでください。同意されたら draft.phone に ${caller} を入れてください）`
+      : "\n発信者番号: 非通知（お電話番号は市外局番から伺ってください）";
   }
-  const history = session.messages.slice(-20).map((m) => ({ role: m.role, content: m.content }));
+  const history = session.messages.slice(-12).map((m) => ({ role: m.role, content: truncate(m.content, 400) }));
   const out = await chatCompletionJson<ModelTurn>({
     messages: [{ role: "system", content: system }, ...history],
     jsonSchema: AGENT_JSON_SCHEMA,
     temperature: 0.3,
-    maxTokens: 700,
+    maxTokens: 500,
+    purpose: "agent",
   });
-  const draft: IntakeDraft = {
-    name: out.draft.name?.trim() || undefined,
-    address: out.draft.address?.trim() || undefined,
-    phone: out.draft.phone?.trim() || undefined,
-    dates: (out.draft.dates ?? []).map((d) => d.trim()).filter(Boolean).slice(0, 3),
-    summary: out.draft.summary?.trim() || session.draft.summary,
-  };
+  // モデルが既に伺った項目を null で返しても消さない（訂正時は新しい値で上書きされる）
+  const prev = session.draft;
+  const dates = (out.draft.dates ?? []).map((d) => d.trim()).filter(Boolean).slice(0, 3);
+  const draft: IntakeDraft = fillAnsweredField(session, {
+    name: out.draft.name?.trim() || prev.name,
+    address: out.draft.address?.trim() || prev.address,
+    phone: out.draft.phone?.trim() || prev.phone,
+    dates: dates.length > 0 ? dates : prev.dates,
+    summary: out.draft.summary?.trim() || prev.summary,
+  });
   let stage: AgentStage = out.stage;
   if (out.stage === "completed" && !out.customer_confirmed) stage = "confirming";
-  return { reply: out.reply.trim(), stage, draft, done: out.end_call, mode: "openai", sources: search.hits };
+  return { reply: out.reply.trim(), stage, draft, done: out.end_call, mode: "openai", sources: hits, answeredBy: "openai" };
 }
 
 /** 1ターン処理：ユーザー発話 → 応答。受付完了時はスプレッドシート等へ記録 */
@@ -108,20 +139,47 @@ export async function runTurn(
   userText: string,
 ): Promise<{ result: AgentTurnResult; session: AgentSession }> {
   const text = userText.trim();
-  const [settings, snapshot] = await Promise.all([getSettings(), getKnowledge()]);
+  const settings = await getSettings();
   const at = new Date().toISOString();
+  const history = [...session.messages];
   session.messages.push({ role: "user", content: text, at });
+  const aiMode = env.hasOpenAI ? "openai" : "demo";
+  const fallback = async () => fallbackTurn(session, text, (await getKnowledge()).entries);
 
   let result: AgentTurnResult;
-  if (env.hasOpenAI) {
+  const consulting = session.stage === "consult" && !INTENT_ESTIMATE.test(text) && !BYE.test(text);
+  if (consulting) {
+    // 相談中の質問：学習済みのナレッジで答えられるものは OpenAI を使わない
+    const plan = await planAnswer(text, history, { channel: session.channel, style: session.channel === "line" ? "text" : "voice" });
+    if (plan.mode !== "openai") {
+      result = {
+        reply: plan.reply,
+        stage: "consult",
+        draft: { ...session.draft, dates: [...session.draft.dates], summary: appendSummary(session.draft.summary, text) },
+        done: false,
+        mode: aiMode,
+        sources: plan.hits,
+        answeredBy: plan.mode,
+      };
+    } else {
+      try {
+        result = await openaiTurn(session, settings.companyName, plan.context, plan.hits);
+        if (result.stage === "consult") await learnAnswer(plan, result.reply);
+      } catch (e) {
+        session.meta = { ...(session.meta ?? {}), lastError: truncate((e as Error).message, 200) };
+        result = await fallback();
+      }
+    }
+  } else if (env.hasOpenAI) {
+    // 見積受付の聞き取り・復唱：ナレッジは渡さない（トークン節約）
     try {
-      result = await openaiTurn(session, text, settings.companyName, snapshot.entries);
+      result = await openaiTurn(session, settings.companyName, "", []);
     } catch (e) {
       session.meta = { ...(session.meta ?? {}), lastError: truncate((e as Error).message, 200) };
-      result = fallbackTurn(session, text, snapshot.entries);
+      result = await fallback();
     }
   } else {
-    result = fallbackTurn(session, text, snapshot.entries);
+    result = await fallback();
   }
 
   if (result.stage === "completed" && !session.estimateId) {
@@ -159,7 +217,7 @@ export async function runTurn(
     updatedAt: session.updatedAt,
     messages: session.messages,
     estimateId: session.estimateId,
-    meta: { ...(session.meta ?? {}), mode: result.mode, stage: session.stage },
+    meta: { ...(session.meta ?? {}), mode: result.mode, stage: session.stage, answer: result.answeredBy ?? "" },
   });
   return { result, session };
 }

@@ -30,7 +30,7 @@ const form = (obj) => new URLSearchParams(obj).toString();
 await check("GET / (トップページ)", async () => {
   const res = await fetch(`${BASE}/`);
   const html = await res.text();
-  if (!res.ok || !html.includes("AIが24時間")) throw new Error(`status ${res.status}`);
+  if (!res.ok || !html.includes("の相談窓口") || !html.includes("logo-color.svg")) throw new Error(`status ${res.status}`);
   return `${res.status} ${html.length}B`;
 });
 for (const p of ["/chat", "/voice", "/phone", "/admin"]) {
@@ -45,15 +45,40 @@ await check("GET /api/status", async () => {
   if (!res.ok || !body.ok) throw new Error(`status ${res.status}`);
   return `openai=${body.openai.configured} knowledge=${body.knowledge.source}(${body.knowledge.entries}) reception=${body.reception.sink}`;
 });
-await check("GET /api/knowledge", async () => {
+await check("GET /api/knowledge（マニュアル・会社情報・ホームページ）", async () => {
   const { res, body } = await json("/api/knowledge");
   if (!res.ok || !Array.isArray(body.entries) || body.entries.length === 0) throw new Error(`status ${res.status}`);
-  return `${body.entries.length} entries from ${body.source}`;
+  const st = body.stats ?? {};
+  if (!(st.manualTables > 0) || !(st.company > 0) || !(st.website > 0)) throw new Error(`sources missing: ${JSON.stringify(st)}`);
+  return `${body.entries.length} entries（${body.source}: 文章${st.manualText}・料金表${st.manualTables} / 会社情報${st.company} / HP${st.website}）`;
 });
-await check("POST /api/knowledge/search", async () => {
+await check("POST /api/knowledge/search（料金は料金表から回答）", async () => {
   const { res, body } = await json("/api/knowledge/search", { method: "POST", body: JSON.stringify({ query: "6畳の畳の表替えはいくら？" }) });
-  if (!res.ok || !body.hits?.length) throw new Error(`status ${res.status} ${JSON.stringify(body).slice(0, 100)}`);
-  return `${body.mode}: ${body.hits[0].title}`;
+  if (!res.ok || !(body.answer || body.hits?.length)) throw new Error(`status ${res.status} ${JSON.stringify(body).slice(0, 100)}`);
+  if (body.answer && !/円/.test(body.answer)) throw new Error(`no price in answer: ${body.answer.slice(0, 80)}`);
+  return `${body.mode}/${body.kind}: ${(body.answer ?? body.hits[0].title).slice(0, 40)}`;
+});
+await check("POST /api/chat（料金表から AI なしで即答）", async () => {
+  const res = await fetch(`${BASE}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: "smoke-price", channel: "web_text", messages: [{ role: "user", content: "朱雀の襖の両面はいくら？" }] }),
+  });
+  const text = await res.text();
+  if (!res.ok || res.headers.get("x-mode") !== "local" || !/23,100円/.test(text)) throw new Error(`mode=${res.headers.get("x-mode")} ${text.slice(0, 80)}`);
+  return `mode=local ${text.split("\n")[1] ?? ""}`;
+});
+await check("POST /api/knowledge/answer（よくある質問は AI なし）", async () => {
+  const { res, body } = await json("/api/knowledge/answer", { method: "POST", body: JSON.stringify({ question: "営業時間を教えてください" }) });
+  if (!res.ok || body.mode !== "local" || !/17:00/.test(body.reply)) throw new Error(`${body.mode} ${String(body.reply).slice(0, 80)}`);
+  return `${body.mode}/${body.kind}: ${body.reply.slice(0, 30)}…`;
+});
+await check("GET /api/usage", async () => {
+  const { res, body } = await json("/api/usage");
+  if (res.status === 401) return "401（管理画面のパスワード保護あり）";
+  if (!res.ok || !Array.isArray(body.days)) throw new Error(`status ${res.status}`);
+  const d = body.days[0]?.usage;
+  return d ? `今日：ナレッジ回答 ${d.answers.local + d.answers.cache} / AI ${d.answers.openai} / tokens ${d.tokens.prompt + d.tokens.completion}` : "記録なし";
 });
 await check("POST /api/chat (ストリーム)", async () => {
   const res = await fetch(`${BASE}/api/chat`, {

@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   Circle,
   Clock,
-  Copy,
   Keyboard,
   Loader2,
   Mic,
@@ -16,7 +15,16 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Badge, DemoNotice, ModeBadge } from "./ui";
-import { createRecognizer, speakText, stopSpeaking, supportsRecognition, warmUpVoices, type Recognizer } from "@/lib/speech-client";
+import {
+  createRecognizer,
+  isFatalRecognitionError,
+  recognitionErrorMessage,
+  speakText,
+  stopSpeaking,
+  supportsRecognition,
+  warmUpVoices,
+  type Recognizer,
+} from "@/lib/speech-client";
 import type { AgentStage, EstimateRequest, IntakeDraft } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
@@ -27,6 +35,8 @@ interface Line {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** OpenAI を使わずに学習済みのナレッジで答えた */
+  local?: boolean;
 }
 interface Routing {
   handler: "ai" | "human";
@@ -47,6 +57,7 @@ interface StartResp {
 interface TurnResp {
   ok: boolean;
   reply: string;
+  answeredBy?: string;
   stage: AgentStage;
   draft: IntakeDraft;
   done: boolean;
@@ -84,13 +95,14 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
   const [seconds, setSeconds] = useState(0);
   const [error, setError] = useState("");
   const [micOk, setMicOk] = useState(true);
-  const [origin, setOrigin] = useState("");
-  const [copied, setCopied] = useState("");
 
+  const [thinking, setThinking] = useState(false);
   const liveRef = useRef(false);
   const busyRef = useRef(false);
   const speakingRef = useRef(false);
   const recRef = useRef<Recognizer | null>(null);
+  const recFatalRef = useRef(false); // 音声認識が使えない環境では自動再開しない
+  const pendingRef = useRef<string | null>(null); // 応答中に入力された発話
   const sessionIdRef = useRef("");
   const sessionRef = useRef<unknown>(null); // サーバーレス環境でも途切れないよう、セッションを往復させる
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -98,7 +110,6 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
 
   useEffect(() => {
     warmUpVoices();
-    setOrigin(window.location.origin);
     setMicOk(supportsRecognition());
     return () => {
       hangup(false);
@@ -110,10 +121,10 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [lines, interim]);
 
-  const addLine = (role: Line["role"], text: string) => setLines((prev) => [...prev, { id: uid(), role, text }]);
+  const addLine = (role: Line["role"], text: string, local = false) => setLines((prev) => [...prev, { id: uid(), role, text, local }]);
 
-  async function say(text: string) {
-    addLine("assistant", text);
+  async function say(text: string, local = false) {
+    addLine("assistant", text, local);
     speakingRef.current = true;
     setSpeaking(true);
     setListening(false);
@@ -123,7 +134,7 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
   }
 
   function listen() {
-    if (!liveRef.current) return;
+    if (!liveRef.current || recFatalRef.current) return;
     if (!supportsRecognition()) {
       setMicOk(false);
       return;
@@ -137,12 +148,14 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
       },
       onEnd: () => {
         setListening(false);
-        if (liveRef.current && !busyRef.current && !speakingRef.current) setTimeout(listen, 250);
+        if (liveRef.current && !busyRef.current && !speakingRef.current && !recFatalRef.current) setTimeout(listen, 250);
       },
       onError: (err) => {
-        if (err === "not-allowed" || err === "service-not-allowed") {
+        if (isFatalRecognitionError(err)) {
+          recFatalRef.current = true;
           setMicOk(false);
-          setError("マイクの使用が許可されていません。下の入力欄からテキストで通話をシミュレートできます。");
+          setListening(false);
+          setError(recognitionErrorMessage(err));
         }
       },
     });
@@ -156,8 +169,15 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
   }
 
   async function onUser(text: string) {
-    if (busyRef.current || !liveRef.current) return;
+    if (!liveRef.current) return;
+    if (busyRef.current) {
+      // AI の応答・読み上げ中に話しかけられたら、読み上げを止めて次に処理する（入力を取りこぼさない）
+      pendingRef.current = text;
+      stopSpeaking();
+      return;
+    }
     busyRef.current = true;
+    setThinking(true);
     recRef.current?.abort();
     setListening(false);
     addLine("user", text);
@@ -174,21 +194,32 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
       setDraft(j.draft);
       setMode(j.mode);
       if (j.estimate) setEstimate(j.estimate);
-      await say(j.reply);
+      setThinking(false);
+      await say(j.reply, j.answeredBy === "local" || j.answeredBy === "cache");
       if (j.done) {
         busyRef.current = false;
         hangup();
         return;
       }
     } catch (e) {
+      setThinking(false);
       await say(`申し訳ありません、システムエラーが発生しました（${(e as Error).message}）。もう一度お話しください。`);
     } finally {
       busyRef.current = false;
+      setThinking(false);
+    }
+    const next = pendingRef.current;
+    pendingRef.current = null;
+    if (next && liveRef.current) {
+      void onUser(next);
+      return;
     }
     listen();
   }
 
   async function startCall(forceAi = false) {
+    hangup(false);
+    recFatalRef.current = false;
     setError("");
     setLines([]);
     setStage("consult");
@@ -228,6 +259,7 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
 
   function hangup(markEnded = true) {
     liveRef.current = false;
+    pendingRef.current = null;
     recRef.current?.abort();
     recRef.current = null;
     stopSpeaking();
@@ -248,16 +280,6 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
     void onUser(t);
   }
 
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(text);
-      setTimeout(() => setCopied(""), 1500);
-    } catch {
-      // noop
-    }
-  }
-
   const stageIndex = STAGES.findIndex((s) => s.key === stage);
   const screenLabel = (() => {
     switch (callState) {
@@ -273,9 +295,6 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
         return "通話を終了しました";
     }
   })();
-
-  const voiceWebhook = `${origin || "https://<公開URL>"}/api/twilio/voice`;
-  const statusWebhook = `${origin || "https://<公開URL>"}/api/twilio/status`;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[400px_1fr]">
@@ -308,11 +327,13 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
               {lines.map((l) => (
                 <div key={l.id} className={`flex ${l.role === "user" ? "justify-end" : "justify-start"}`}>
                   <div
+                    data-role={l.role}
                     className={`bubble max-w-[88%] rounded-2xl px-3 py-2 text-[13px] leading-relaxed ${
                       l.role === "user" ? "rounded-tr-sm bg-tatami-500 text-white" : "rounded-tl-sm bg-white/95 text-sumi-800"
                     }`}
                   >
                     {l.text}
+                    {l.local ? <span className="mt-1 block text-[10px] font-bold text-ichi-green" data-answer="local">⚡ 学習済みナレッジから回答（AI未使用）</span> : null}
                   </div>
                 </div>
               ))}
@@ -322,13 +343,15 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
                 </div>
               ) : null}
               {callState === "transfer" ? (
-                <div className="mx-auto mt-6 max-w-[90%] rounded-2xl bg-white/95 p-3 text-center text-xs text-sumi-700">
+                <div className="mx-auto mt-6 max-w-[92%] rounded-2xl bg-white/95 p-4 text-center text-xs leading-relaxed text-sumi-700">
                   <PhoneForwarded className="mx-auto mb-1 h-5 w-5 text-ai-600" />
-                  {routing?.reason}
-                  <br />
-                  転送先：{info?.forwardNumber || "（未設定：管理画面で設定）"}
-                  <button type="button" className="btn-primary mt-3 w-full py-1.5 text-xs" onClick={() => startCall(true)}>
-                    AI対応を強制して試す
+                  <p className="font-bold text-sumi-800">{routing?.reason}</p>
+                  <p className="mt-1">
+                    実際のお電話は、いまの時間帯はスタッフに転送されます（転送先：{info?.forwardNumber || "管理画面で設定"}）。
+                  </p>
+                  <p className="mt-1">このシミュレーターでは、休日・時間外と同じAI受付をそのままお試しいただけます。</p>
+                  <button type="button" className="btn-accent mt-3 w-full py-2 text-sm" onClick={() => startCall(true)}>
+                    AI受付で試す
                   </button>
                 </div>
               ) : null}
@@ -356,7 +379,7 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
               )}
               {callState === "live" ? (
                 <span className={`grid h-12 w-12 place-items-center rounded-full ${speaking ? "bg-ai-500" : listening ? "bg-tatami-400" : "bg-sumi-600"} text-white`}>
-                  {speaking ? <Volume2 className="h-5 w-5" /> : busyRef.current ? <Loader2 className="h-5 w-5 animate-spin" /> : <Mic className="h-5 w-5" />}
+                  {speaking ? <Volume2 className="h-5 w-5" /> : thinking ? <Loader2 className="h-5 w-5 animate-spin" /> : <Mic className="h-5 w-5" />}
                 </span>
               ) : null}
             </div>
@@ -458,37 +481,6 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
         </div>
 
         {mode === "demo" ? <DemoNotice compact reason="電話シミュレーターはブラウザの音声認識・合成で動作中。実際の電話では Twilio の音声認識と音声合成を使用し、応答ロジックは同じです。" /> : null}
-
-        <details className="card p-5">
-          <summary className="cursor-pointer font-serif text-base font-bold text-sumi-800">本番接続の手順（NTT 0120番号 → Twilio → このシステム）</summary>
-          <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm text-sumi-700">
-            <li>
-              Twilio で日本の電話番号（050 など）を取得し、NTT のフリーダイヤル 0120 番号の転送先に設定します（0120 番号はそのまま継続利用できます）。
-            </li>
-            <li>
-              Twilio 番号の Voice 設定「A call comes in」に Webhook（HTTP POST）を設定：
-              <div className="mt-1 flex items-center gap-2 rounded-lg bg-washi-100 px-2 py-1 font-mono text-xs">
-                <span className="truncate">{voiceWebhook}</span>
-                <button type="button" className="ml-auto text-sumi-400 hover:text-sumi-700" onClick={() => copy(voiceWebhook)} aria-label="コピー">
-                  {copied === voiceWebhook ? <CheckCircle2 className="h-4 w-4 text-tatami-500" /> : <Copy className="h-4 w-4" />}
-                </button>
-              </div>
-            </li>
-            <li>
-              「Call status changes」に：
-              <div className="mt-1 flex items-center gap-2 rounded-lg bg-washi-100 px-2 py-1 font-mono text-xs">
-                <span className="truncate">{statusWebhook}</span>
-                <button type="button" className="ml-auto text-sumi-400 hover:text-sumi-700" onClick={() => copy(statusWebhook)} aria-label="コピー">
-                  {copied === statusWebhook ? <CheckCircle2 className="h-4 w-4 text-tatami-500" /> : <Copy className="h-4 w-4" />}
-                </button>
-              </div>
-            </li>
-            <li>
-              <code className="rounded bg-washi-100 px-1">.env</code> に TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER / STAFF_FORWARD_NUMBER / PUBLIC_BASE_URL を設定します。
-            </li>
-            <li>管理画面「電話・営業時間」で、AI対応の時間帯（休日・営業時間外のみ など）と転送先を設定します。</li>
-          </ol>
-        </details>
       </section>
     </div>
   );

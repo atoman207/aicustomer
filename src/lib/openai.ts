@@ -1,5 +1,6 @@
 // OpenAI REST API の薄いラッパー（SDK非依存・サーバー専用）
 import { env } from "./env";
+import { recordTokens } from "./usage";
 
 const base = () => env.openaiBaseUrl;
 
@@ -52,6 +53,13 @@ export interface ChatOptions {
   maxTokens?: number;
   model?: string;
   jsonSchema?: { name: string; schema: Record<string, unknown> };
+  /** 利用状況の記録用（chat / agent / summarize など） */
+  purpose?: string;
+}
+
+export interface TokenUsage {
+  prompt: number;
+  completion: number;
 }
 
 function isReasoningModel(model: string): boolean {
@@ -61,6 +69,7 @@ function isReasoningModel(model: string): boolean {
 function chatBody(o: ChatOptions, stream: boolean): Record<string, unknown> {
   const model = o.model ?? env.chatModel;
   const body: Record<string, unknown> = { model, messages: o.messages, stream };
+  if (stream) body.stream_options = { include_usage: true };
   if (isReasoningModel(model)) {
     body.max_completion_tokens = o.maxTokens ?? 1500;
   } else {
@@ -78,11 +87,13 @@ function chatBody(o: ChatOptions, stream: boolean): Record<string, unknown> {
 
 interface ChatCompletionResponse {
   choices?: { message?: { content?: string | null } }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
 }
 
 export async function chatCompletion(o: ChatOptions): Promise<string> {
   const res = await post("/chat/completions", chatBody(o, false), undefined, 45_000);
   const json = (await res.json()) as ChatCompletionResponse;
+  void recordTokens(o.purpose ?? "chat", { prompt: json.usage?.prompt_tokens ?? 0, completion: json.usage?.completion_tokens ?? 0 });
   return json.choices?.[0]?.message?.content ?? "";
 }
 
@@ -105,7 +116,7 @@ export async function chatCompletionJson<T>(
  */
 export async function streamChatCompletion(
   o: ChatOptions,
-  onComplete?: (fullText: string) => void | Promise<void>,
+  onComplete?: (fullText: string, usage: TokenUsage) => void | Promise<void>,
 ): Promise<ReadableStream<Uint8Array>> {
   if (!env.hasOpenAI) throw new OpenAIError("OPENAI_API_KEY が設定されていません", 401);
   const ac = new AbortController();
@@ -139,6 +150,7 @@ export async function streamChatCompletion(
       const reader = upstream.getReader();
       let buffer = "";
       let full = "";
+      const usage: TokenUsage = { prompt: 0, completion: 0 };
       try {
         for (;;) {
           const { done, value } = await reader.read();
@@ -152,7 +164,14 @@ export async function streamChatCompletion(
             const data = t.slice(5).trim();
             if (data === "[DONE]") continue;
             try {
-              const j = JSON.parse(data) as { choices?: { delta?: { content?: string } }[] };
+              const j = JSON.parse(data) as {
+                choices?: { delta?: { content?: string } }[];
+                usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+              };
+              if (j.usage) {
+                usage.prompt = j.usage.prompt_tokens ?? 0;
+                usage.completion = j.usage.completion_tokens ?? 0;
+              }
               const delta = j.choices?.[0]?.delta?.content;
               if (delta) {
                 full += delta;
@@ -173,8 +192,9 @@ export async function streamChatCompletion(
         }
       }
       clearTimeout(timer);
+      void recordTokens(o.purpose ?? "chat", usage);
       try {
-        await onComplete?.(full);
+        await onComplete?.(full, usage);
       } catch {
         // 完了処理の失敗は応答に影響させない
       }
@@ -190,7 +210,8 @@ export async function streamChatCompletion(
 export async function embed(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
   const res = await post("/embeddings", { model: env.embeddingModel, input: texts }, undefined, 20_000);
-  const json = (await res.json()) as { data: { embedding: number[]; index: number }[] };
+  const json = (await res.json()) as { data: { embedding: number[]; index: number }[]; usage?: { prompt_tokens?: number } };
+  void recordTokens("embedding", { embedding: json.usage?.prompt_tokens ?? 0 });
   return json.data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
 }
 
@@ -206,6 +227,7 @@ export async function synthesizeSpeech(
   };
   if (opts.instructions && /tts/.test(env.ttsModel)) body.instructions = opts.instructions;
   const res = await post("/audio/speech", body, undefined, 30_000);
+  void recordTokens("tts", {});
   return res.arrayBuffer();
 }
 
@@ -250,6 +272,7 @@ export async function createRealtimeSecret(opts: {
       15_000,
     );
     const json = (await res.json()) as { value: string; expires_at: number };
+    void recordTokens("realtime_session", {});
     return { value: json.value, expiresAt: json.expires_at, model, api: "ga" };
   } catch (e) {
     if (!(e instanceof OpenAIError) || (e.status !== 404 && e.status !== 400)) throw e;

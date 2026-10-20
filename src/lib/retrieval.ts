@@ -87,8 +87,8 @@ export interface SearchResult {
 }
 
 /** OpenAI キーがあれば埋め込み+キーワードのハイブリッド、なければキーワードのみ */
-export async function hybridSearch(query: string, entries: KnowledgeEntry[], k = 5): Promise<SearchResult> {
-  const kwAll = entries.map((entry) => ({ entry, score: keywordScore(query, entry) }));
+export async function hybridSearch(query: string, entries: KnowledgeEntry[], k = 5, keywordQuery = query): Promise<SearchResult> {
+  const kwAll = entries.map((entry) => ({ entry, score: keywordScore(keywordQuery, entry) }));
   const keywordOnly = (): SearchHit[] =>
     kwAll
       .filter((h) => h.score >= 0.08)

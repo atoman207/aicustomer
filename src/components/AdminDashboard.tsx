@@ -10,17 +10,14 @@ import {
   Loader2,
   LogOut,
   MessageSquareText,
-  Pencil,
-  Plus,
   RefreshCw,
-  Search,
   Settings2,
   ShieldCheck,
-  Trash2,
   XCircle,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import KnowledgeAdmin from "./KnowledgeAdmin";
 import { Badge, Modal, Spinner } from "./ui";
 import type {
   AppSettings,
@@ -28,8 +25,6 @@ import type {
   EstimateRequest,
   EstimateStatus,
   IntegrationStatus,
-  KnowledgeEntry,
-  KnowledgeSource,
   PhoneMode,
 } from "@/lib/types";
 import { CHANNEL_LABEL } from "@/lib/types";
@@ -76,13 +71,13 @@ export default function AdminDashboard({
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <nav className="flex flex-wrap gap-1 rounded-full border border-washi-300 bg-white/80 p-1">
+        <nav className="flex max-w-full gap-1 overflow-x-auto rounded-full border border-washi-300 bg-white/80 p-1">
           {TABS.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               type="button"
               onClick={() => setTab(key)}
-              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm transition ${
+              className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-sm transition ${
                 tab === key ? "bg-ai-600 text-white shadow-soft" : "text-sumi-600 hover:bg-washi-100"
               }`}
             >
@@ -107,7 +102,7 @@ export default function AdminDashboard({
       {tab === "receptions" ? <ReceptionsTab storage={initialStatus.storage} /> : null}
       {tab === "conversations" ? <ConversationsTab /> : null}
       {tab === "phone" ? <PhoneSettingsTab initialSettings={initialSettings} /> : null}
-      {tab === "knowledge" ? <KnowledgeTab /> : null}
+      {tab === "knowledge" ? <KnowledgeAdmin /> : null}
       {tab === "status" ? <StatusTab initialStatus={initialStatus} /> : null}
     </div>
   );
@@ -299,6 +294,7 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
               {e.confirmedByCustomer ? "確認済み" : "未確認"}
             </span>
             <span className="text-sumi-400">{e.syncedTo.join(" / ")}</span>
+            {e.lineUserId ? <Badge tone="green">LINE連携済み</Badge> : null}
             {e.syncError ? <span className="text-shu-600">同期エラー</span> : null}
           </div>
         </td>
@@ -328,6 +324,12 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
                 <span className="text-sumi-400">セッション：</span>
                 {e.sessionId ?? "—"}
               </div>
+              {e.lineUserId ? (
+                <div className="sm:col-span-3">
+                  <span className="text-sumi-400">LINE連携：</span>
+                  {e.lineLinkedAt ? formatJst(e.lineLinkedAt) : ""} にお客様が受付番号を送信（以降のご連絡は LINE 公式アカウントのチャットでも可能）
+                </div>
+              ) : null}
               {e.syncError ? <div className="text-shu-600 sm:col-span-3">同期エラー：{e.syncError}</div> : null}
             </div>
           </td>
@@ -552,7 +554,8 @@ function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSettings })
           </div>
           <div>
             <label className="label">休業日（YYYY-MM-DD を改行区切り）</label>
-            <textarea className="input min-h-[80px]" value={holidaysText} onChange={(e) => setHolidaysText(e.target.value)} placeholder={"2026-12-30\n2026-12-31\n2027-01-01"} />
+            <textarea className="input min-h-[80px]" value={holidaysText} onChange={(e) => setHolidaysText(e.target.value)} placeholder={"2026-12-29\n2026-12-30\n2026-12-31\n2027-01-01"} />
+            <p className="mt-1 text-xs text-sumi-400">年末年始・GW・お盆休みの日付を登録すると、その日はAIが受付します。祝日は営業日が多いため、休む祝日だけ登録してください。</p>
           </div>
           <div>
             <label className="label">スタッフ転送先の電話番号</label>
@@ -571,7 +574,7 @@ function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSettings })
             <input className="input" value={s.companyPhone} onChange={(e) => setS({ ...s, companyPhone: e.target.value })} />
           </div>
           <div className="sm:col-span-2">
-            <label className="label">LINE 友だち追加URL（「LINEで見積依頼」の遷移先）</label>
+            <label className="label">LINE 友だち追加URL（見積受付後の「LINEでもご連絡を受け取れます」の遷移先）</label>
             <input className="input" value={s.lineAddFriendUrl} onChange={(e) => setS({ ...s, lineAddFriendUrl: e.target.value })} placeholder="https://lin.ee/xxxxxxx" />
           </div>
           <div className="sm:col-span-2">
@@ -605,270 +608,11 @@ function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSettings })
           <p className="font-semibold text-sumi-700">専門知識なしで運用できるポイント</p>
           <ul className="mt-2 list-disc space-y-1 pl-4">
             <li>AI／スタッフの切替はこの画面のラジオボタンだけ</li>
-            <li>年末年始などの休業日は日付を書き足すだけ</li>
+            <li>年末年始・GW・お盆休みなどの休業日は日付を書き足すだけ</li>
             <li>ナレッジの更新はスプレッドシートを編集するだけ（約1分で反映）</li>
           </ul>
         </div>
       </aside>
-    </div>
-  );
-}
-
-// ---------------- ナレッジ ----------------
-
-interface KnowledgeResp {
-  entries: KnowledgeEntry[];
-  source: KnowledgeSource;
-  sourceLabel: string;
-  fetchedAt: string;
-  sheetName?: string;
-  warning?: string;
-  remoteConfigured: boolean;
-}
-
-function KnowledgeTab() {
-  const [data, setData] = useState<KnowledgeResp | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [filter, setFilter] = useState("");
-  const [testQ, setTestQ] = useState("");
-  const [testing, setTesting] = useState(false);
-  const [hits, setHits] = useState<{ id: string; title: string; category: string; content: string; score: number }[] | null>(null);
-  const [testMode, setTestMode] = useState("");
-  const [editing, setEditing] = useState<KnowledgeEntry | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const load = useCallback(async (refresh = false) => {
-    setLoading(true);
-    setError("");
-    try {
-      const j = refresh ? await api<KnowledgeResp>("/api/knowledge/refresh", { method: "POST" }) : await api<KnowledgeResp>("/api/knowledge");
-      setData(j);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const filtered = useMemo(() => {
-    if (!data) return [];
-    const f = filter.trim().toLowerCase();
-    if (!f) return data.entries;
-    return data.entries.filter((e) => `${e.category} ${e.title} ${e.content} ${e.keywords.join(" ")}`.toLowerCase().includes(f));
-  }, [data, filter]);
-
-  async function runTest() {
-    if (!testQ.trim()) return;
-    setTesting(true);
-    try {
-      const j = await api<{ hits: NonNullable<typeof hits>; mode: string }>("/api/knowledge/search", { method: "POST", body: JSON.stringify({ query: testQ, k: 5 }) });
-      setHits(j.hits);
-      setTestMode(j.mode);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setTesting(false);
-    }
-  }
-
-  async function persist(entries: KnowledgeEntry[]) {
-    setSaving(true);
-    setError("");
-    try {
-      const j = await api<KnowledgeResp>("/api/knowledge", { method: "PUT", body: JSON.stringify({ entries }) });
-      setData(j);
-      setEditing(null);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function saveEntry(entry: KnowledgeEntry) {
-    if (!data) return;
-    const exists = data.entries.some((e) => e.id === entry.id);
-    const next = exists ? data.entries.map((e) => (e.id === entry.id ? entry : e)) : [...data.entries, entry];
-    void persist(next);
-  }
-
-  function removeEntry(id: string) {
-    if (!data) return;
-    if (!window.confirm("このナレッジを削除しますか？")) return;
-    void persist(data.entries.filter((e) => e.id !== id));
-  }
-
-  const editable = data?.source === "local";
-
-  return (
-    <div className="space-y-4">
-      <div className="card p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="font-serif text-base font-bold text-sumi-800">AIの回答情報源（社内総合マニュアル › 指定シート）</p>
-            <p className="mt-1 text-sm text-sumi-600">
-              現在の情報源：<span className="font-semibold">{data?.sourceLabel ?? "読込中…"}</span>
-              {data?.sheetName ? `（シート名：${data.sheetName}）` : ""}
-            </p>
-            <p className="text-xs text-sumi-400">
-              {data ? `${data.entries.length} 件 ／ 最終読込 ${formatJst(data.fetchedAt, true)}` : ""}
-              {data && !data.remoteConfigured ? "　※ .env にシート連携（GAS_WEBHOOK_URL など）を設定すると、スプレッドシートが情報源になります" : ""}
-            </p>
-            {data?.warning ? <p className="mt-1 text-xs text-amber-700">{data.warning}</p> : null}
-          </div>
-          <div className="flex gap-2">
-            <button type="button" className="btn-secondary px-3 py-1.5 text-xs" onClick={() => load(true)} disabled={loading}>
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-              シートから再読み込み
-            </button>
-            {editable ? (
-              <button
-                type="button"
-                className="btn-primary px-3 py-1.5 text-xs"
-                onClick={() => setEditing({ id: `k${Date.now().toString(36)}`, category: "", title: "", content: "", keywords: [] })}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                追加
-              </button>
-            ) : null}
-          </div>
-        </div>
-        {error ? <p className="mt-2 text-sm text-shu-600">{error}</p> : null}
-
-        <div className="mt-4 rounded-xl border border-washi-300 bg-washi-50 p-3">
-          <p className="text-xs font-semibold text-sumi-600">回答テスト（この質問にどのナレッジが使われるか）</p>
-          <form
-            className="mt-2 flex gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void runTest();
-            }}
-          >
-            <input className="input" value={testQ} onChange={(e) => setTestQ(e.target.value)} placeholder="例：ペットがいる家の障子はどれがいい？" />
-            <button type="submit" className="btn-primary px-4" disabled={testing || !testQ.trim()}>
-              {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-              検索
-            </button>
-          </form>
-          {hits ? (
-            <div className="mt-3 space-y-2">
-              <p className="text-xs text-sumi-400">検索方式：{testMode === "hybrid" ? "埋め込み＋キーワード（ハイブリッド）" : "キーワード（デモモード）"}</p>
-              {hits.length === 0 ? <p className="text-sm text-sumi-500">該当なし → AIは推測せず「担当者より折り返し」を案内します</p> : null}
-              {hits.map((h) => (
-                <div key={h.id} className="rounded-lg bg-white px-3 py-2 text-sm">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-sumi-800">
-                      【{h.category}】{h.title}
-                    </span>
-                    <span className="font-mono text-xs text-sumi-400">{Math.round(h.score * 100)}%</span>
-                  </div>
-                  <div className="mt-1 h-1 rounded bg-washi-200">
-                    <div className="h-1 rounded bg-ai-500" style={{ width: `${Math.round(h.score * 100)}%` }} />
-                  </div>
-                  <p className="mt-1 text-xs text-sumi-500">{truncate(h.content, 120)}</p>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="card overflow-hidden">
-        <div className="flex items-center gap-2 border-b border-washi-200 bg-washi-100/70 px-4 py-3">
-          <Database className="h-4 w-4 text-ai-600" />
-          <p className="text-sm font-semibold text-sumi-800">ナレッジ一覧</p>
-          <span className="text-xs text-sumi-400">{filtered.length} 件</span>
-          <input className="input ml-auto w-60" placeholder="絞り込み" value={filter} onChange={(e) => setFilter(e.target.value)} />
-        </div>
-        <div className="max-h-[60vh] overflow-auto">
-          <table className="table-base">
-            <thead>
-              <tr>
-                <th>カテゴリ</th>
-                <th>項目（質問）</th>
-                <th>内容（回答）</th>
-                <th>キーワード</th>
-                {editable ? <th /> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((e) => (
-                <tr key={e.id}>
-                  <td className="whitespace-nowrap">
-                    <Badge>{e.category}</Badge>
-                  </td>
-                  <td className="min-w-[180px] font-medium text-sumi-800">{e.title}</td>
-                  <td className="min-w-[320px] max-w-[560px] text-xs leading-relaxed">{e.content}</td>
-                  <td className="max-w-[200px] text-xs text-sumi-500">{e.keywords.join("、")}</td>
-                  {editable ? (
-                    <td className="whitespace-nowrap">
-                      <button type="button" className="rounded p-1 text-sumi-400 hover:bg-washi-200 hover:text-sumi-700" onClick={() => setEditing(e)} aria-label="編集">
-                        <Pencil className="h-4 w-4" />
-                      </button>
-                      <button type="button" className="rounded p-1 text-sumi-400 hover:bg-shu-50 hover:text-shu-600" onClick={() => removeEntry(e.id)} aria-label="削除">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </td>
-                  ) : null}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="border-t border-washi-200 px-4 py-2 text-xs text-sumi-400">
-          スプレッドシートの列構成：A「カテゴリ」／B「項目（質問）」／C「内容（回答）」／D「キーワード」（読点・カンマ区切り）／E「備考」。1行目は見出し行。
-        </p>
-      </div>
-
-      <Modal open={!!editing} onClose={() => setEditing(null)} title={editing && data?.entries.some((e) => e.id === editing.id) ? "ナレッジを編集" : "ナレッジを追加"}>
-        {editing ? (
-          <form
-            className="space-y-3"
-            onSubmit={(e) => {
-              e.preventDefault();
-              saveEntry(editing);
-            }}
-          >
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label className="label">カテゴリ</label>
-                <input className="input" value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })} placeholder="例：畳" />
-              </div>
-              <div>
-                <label className="label">キーワード（読点区切り）</label>
-                <input
-                  className="input"
-                  value={editing.keywords.join("、")}
-                  onChange={(e) => setEditing({ ...editing, keywords: e.target.value.split(/[、,，\s]+/).filter(Boolean) })}
-                  placeholder="例：料金、価格、いくら"
-                />
-              </div>
-            </div>
-            <div>
-              <label className="label">項目（質問）</label>
-              <input className="input" value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} required />
-            </div>
-            <div>
-              <label className="label">内容（回答）</label>
-              <textarea className="input min-h-[140px]" value={editing.content} onChange={(e) => setEditing({ ...editing, content: e.target.value })} required />
-            </div>
-            <div className="flex justify-end gap-2">
-              <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>
-                キャンセル
-              </button>
-              <button type="submit" className="btn-primary" disabled={saving}>
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                保存して反映
-              </button>
-            </div>
-          </form>
-        ) : null}
-      </Modal>
     </div>
   );
 }
