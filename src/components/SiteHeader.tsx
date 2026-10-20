@@ -1,8 +1,8 @@
 "use client";
 
 // ヘッダー（一畳屋サイトと同じ見た目）
-//   PC：ロゴ／百年企業／無料お見積りOK／フリーダイヤル／受付時間／LINEで相談
-//   SP：固定ヘッダー＋赤い「もくじ」ボタンで、3つの相談窓口のメニューを開く
+//   PC：ロゴ／百年企業／無料お見積りOK／フリーダイヤル（営業時間外・土日は AI が受付）／受付時間／AIに相談
+//   SP：固定ヘッダー＋赤い「もくじ」ボタンで、AI 相談（文字・声）と電話のメニューを開く
 import { Home, MessageSquareText, Mic, PhoneCall, Settings2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { AiNav } from "./SiteNav";
 import { AI_NAV, ASSETS, BRAND } from "@/lib/brand";
 
-const AI_ICONS = { "/": Home, "/chat": MessageSquareText, "/voice": Mic, "/phone": PhoneCall } as const;
+const AI_ICONS = { "/": Home, "/chat": MessageSquareText, "/voice": Mic } as const;
 
 export default function SiteHeader() {
   const pathname = usePathname() ?? "/";
@@ -62,7 +62,10 @@ export default function SiteHeader() {
             </div>
             <div className="pl-[30px] text-[10px] font-bold leading-none">
               <img src={ASSETS.uketsuke} alt={`受付 ${BRAND.hours}`} width={190} />
-              <span className="mt-2.5 inline-block">{BRAND.hoursNote}</span>
+              <span className="mt-1.5 block text-ichi-green" data-phone-note>
+                ※{BRAND.phoneAiNote}
+              </span>
+              <span className="mt-1 block">{BRAND.hoursNote}</span>
             </div>
           </div>
 
@@ -95,7 +98,7 @@ export default function SiteHeader() {
       {/* SP：固定ヘッダーの高さ分のスペーサー */}
       <div className="h-20 lg:hidden" aria-hidden />
 
-      {/* 3つの相談窓口のメニュー（トップはキービジュアルの下に表示） */}
+      {/* AI 相談（文字・声）と電話のメニュー（トップはキービジュアルの下に表示） */}
       {!isHome ? <AiNav /> : null}
 
       {/* SP：もくじボタン */}
@@ -116,7 +119,7 @@ export default function SiteHeader() {
       <div id="drawer" className="drawer fixed inset-0 z-[125] lg:hidden" aria-hidden={!open}>
         <div className="absolute inset-0 bg-white/80" onClick={() => setOpen(false)} />
         <div className="drawer__container absolute right-0 top-0 flex h-full w-full max-w-[420px] flex-col overflow-y-auto bg-ptn-logo pb-10 pt-20 text-white">
-          <p className="px-6 pt-4 text-[11px] font-bold tracking-widest text-white/70">AI相談窓口（24時間受付）</p>
+          <p className="px-6 pt-4 text-[11px] font-bold tracking-widest text-white/70">AIに相談（24時間受付）</p>
           <ul className="px-4">
             {AI_NAV.map((n) => {
               const Icon = AI_ICONS[n.href];
@@ -131,12 +134,19 @@ export default function SiteHeader() {
             })}
           </ul>
           <div className="mx-6 mt-8 rounded-xl bg-white px-4 py-4 text-center text-sumi-800">
-            <p className="text-xs font-bold">畳・襖は一畳屋にお気軽にご相談ください！</p>
-            <a href={`tel:${BRAND.freeDialTel}`} className="mt-2 block" tabIndex={open ? 0 : -1}>
+            <p className="text-xs font-bold">お電話でのご相談（通話無料）</p>
+            <a href={`tel:${BRAND.freeDialTel}`} className="mt-2 block" tabIndex={open ? 0 : -1} aria-label={`${BRAND.freeDial} に電話をかける`}>
               <img src={ASSETS.freeDial} alt={BRAND.freeDial} width={250} className="mx-auto" />
             </a>
             <img src={ASSETS.uketsuke} alt={`受付 ${BRAND.hours}`} width={160} className="mx-auto mt-2" />
+            <p className="mt-2 inline-flex rounded-full bg-ichi-green px-3 py-0.5 text-[11px] font-bold text-white" data-phone-note>
+              {BRAND.phoneAiNote}
+            </p>
             <p className="mt-1 text-[10px] font-bold">{BRAND.hoursNote}</p>
+            <a href={`tel:${BRAND.freeDialTel}`} className="btn-accent mt-3 w-full" tabIndex={open ? 0 : -1}>
+              <PhoneCall className="h-4 w-4" />
+              電話をかける
+            </a>
           </div>
           <Link href="/admin" className="mx-6 mt-6 flex items-center justify-center gap-1.5 text-xs text-white/70 underline" tabIndex={open ? 0 : -1}>
             <Settings2 className="h-3.5 w-3.5" />

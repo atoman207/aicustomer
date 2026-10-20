@@ -706,7 +706,9 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
       <section className="card flex h-[560px] flex-col overflow-hidden">
         <header className="flex items-center justify-between border-b border-washi-200 bg-washi-100/70 px-4 py-3">
           <p className="text-sm font-semibold text-sumi-800">会話の文字起こし</p>
-          <span className="text-[11px] text-sumi-400">{mode === "openai" ? "Realtime API（WebRTC）" : "Web Speech API（デモ）"}</span>
+          <span className="text-[11px] text-sumi-400" title={mode === "openai" ? "Realtime API（WebRTC）" : "Web Speech API（デモ）"}>
+            {mode === "openai" ? "話した内容を文字でも確認できます" : "デモ（ブラウザの音声機能）"}
+          </span>
         </header>
         <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
           {lines.length === 0 ? (

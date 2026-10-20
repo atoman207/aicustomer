@@ -8,6 +8,8 @@ export const BRAND = {
   freeDialTel: "0120158108",
   hours: "8:00 - 17:00",
   hoursNote: "土日の工事もOK！（3週間前までに要予約）",
+  /** 電話ボタンに添える一言（営業時間外・土日は AI が電話を受け付ける） */
+  phoneAiNote: "営業時間外・土日はAIが受付",
   copyright: "© ICHIJOYA.All Rights Reserved.",
 } as const;
 
@@ -31,12 +33,11 @@ export const ASSETS = {
   appleTouch: `${A}/apple-touch-icon.png`,
 } as const;
 
-/** 3つの相談窓口のメニュー */
+/** AI 相談のメニュー（AI の窓口は「文字」と「声」の 2 つ。電話はふつうの電話ボタン） */
 export const AI_NAV = [
   { href: "/", label: "AI相談トップ", short: "トップ" },
   { href: "/chat", label: "文字で相談", short: "文字" },
   { href: "/voice", label: "声で相談", short: "声" },
-  { href: "/phone", label: "AI電話受付", short: "電話" },
 ] as const;
 
 /** キービジュアルの写真（WebP 1x/2x + PNG フォールバック） */

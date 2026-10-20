@@ -11,7 +11,7 @@ export const metadata: Metadata = { title: "文字でAI相談" };
 export default async function ChatPage() {
   const [status, settings] = await Promise.all([getIntegrationStatus(await serverBaseUrl()), getSettings()]);
   return (
-    <PageHero kicker="① テキストAI相談" ruby="もじでそうだん" title="文字でAI相談" badge={["24", "時間"]}>
+    <PageHero kicker="AI相談（文字）" ruby="もじでそうだん" title="文字でAI相談" badge={["24", "時間"]}>
       <ChatConsole
         mode={status.openai.configured ? "openai" : "demo"}
         company={settings.companyName}

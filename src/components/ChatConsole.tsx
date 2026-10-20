@@ -1,8 +1,10 @@
 "use client";
 
-import { BookOpenCheck, ClipboardCheck, Clock3, Loader2, Send, UserRound, Zap } from "lucide-react";
+import { BookOpenCheck, ChevronRight, ClipboardCheck, Clock3, Loader2, Mic, Send, UserRound, Zap } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import EstimateForm from "./EstimateForm";
+import { PhoneCompact } from "./PhoneButton";
 import { DemoNotice, Modal, ModeBadge } from "./ui";
 import { BUSINESS } from "@/lib/company";
 import type { ChatMessage, EstimateRequest } from "@/lib/types";
@@ -27,12 +29,13 @@ interface UiMessage {
   pending?: boolean;
 }
 
-const ORIGIN_SHORT: Record<string, string> = { manual: "マニュアル", company: "会社情報", website: "ホームページ", admin: "追加" };
+// お客様に見せる参照元の呼び名（社内向けの「マニュアル」などの言い方は出さない）
+const ORIGIN_SHORT: Record<string, string> = { manual: "サービス案内", company: "会社案内", website: "公式サイト", admin: "最新のご案内" };
 
-/** OpenAI を使わずに答えた回答の表示 */
-function answeredLocally(mode?: string): string | null {
-  if (mode === "local") return "学習済みナレッジから回答（AI未使用）";
-  if (mode === "cache") return "学習済みの回答（AI未使用）";
+/** OpenAI を使わずに答えた回答の表示（お客様には「公式情報から」。スタッフ向けの詳細はツールチップ） */
+function answeredLocally(mode?: string): { label: string; detail: string } | null {
+  if (mode === "local") return { label: "一畳屋の公式情報から回答", detail: "学習済みナレッジから回答（AI未使用）" };
+  if (mode === "cache") return { label: "一畳屋の公式情報から回答", detail: "学習済みの回答を再利用（AI未使用）" };
   return null;
 }
 
@@ -201,7 +204,9 @@ export default function ChatConsole({
             <AiAvatar />
             <div className="leading-tight">
               <p className="font-hand text-base">一畳屋 AI相談員</p>
-              <p className="text-[11px] text-white/75">回答の根拠：{knowledgeLabel}</p>
+              <p className="text-[11px] text-white/75" title={`回答の根拠：${knowledgeLabel}`}>
+                一畳屋の料金表・会社案内をもとにお答えします
+              </p>
             </div>
           </div>
           <ModeBadge mode={mode === "openai" && lastMode !== "demo-error" ? "openai" : "demo"} />
@@ -239,9 +244,9 @@ export default function ChatConsole({
                 {answeredLocally(m.mode) || (m.sources && m.sources.length > 0) ? (
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     {answeredLocally(m.mode) ? (
-                      <span className="chip border-ichi-green bg-ichi-cream text-ichi-theme" data-answer={m.mode}>
+                      <span className="chip border-ichi-green bg-ichi-cream text-ichi-theme" data-answer={m.mode} title={answeredLocally(m.mode)?.detail}>
                         <Zap className="h-3 w-3" />
-                        {answeredLocally(m.mode)}
+                        {answeredLocally(m.mode)?.label}
                       </span>
                     ) : null}
                     {(m.sources ?? []).slice(0, 3).map((s) => (
@@ -337,6 +342,14 @@ export default function ChatConsole({
           </dl>
           <p className="mt-2 rounded-lg bg-ichi-cream px-2.5 py-1.5">このAI相談は24時間ご利用いただけます。</p>
         </div>
+        <Link href="/voice" className="card flex items-center justify-between gap-2 px-4 py-3 text-sm font-bold text-ichi-theme transition-opacity hover:opacity-80">
+          <span className="flex items-center gap-2">
+            <Mic className="h-4 w-4 text-ichi-green" />
+            声で相談したい方はこちら
+          </span>
+          <ChevronRight className="h-4 w-4" />
+        </Link>
+        <PhoneCompact />
         {mode !== "openai" || lastMode === "demo-error" ? <DemoNotice compact /> : null}
       </aside>
 

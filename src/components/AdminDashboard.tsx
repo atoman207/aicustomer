@@ -10,6 +10,7 @@ import {
   Loader2,
   LogOut,
   MessageSquareText,
+  PhoneCall,
   RefreshCw,
   Settings2,
   ShieldCheck,
@@ -18,6 +19,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import KnowledgeAdmin from "./KnowledgeAdmin";
+import { BRAND } from "@/lib/brand";
 import { Badge, Modal, Spinner } from "./ui";
 import type {
   AppSettings,
@@ -603,6 +605,16 @@ function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSettings })
             </div>
           ) : null}
           <p className="mt-3 text-xs text-sumi-400">30秒ごとに自動更新。設定保存後すぐに反映されます。</p>
+        </div>
+        <div className="card p-5">
+          <p className="text-sm font-semibold text-sumi-800">AI電話受付をブラウザで試す</p>
+          <p className="mt-1 text-xs text-sumi-500">
+            お客様向けの画面には「電話する（{BRAND.phoneAiNote}）」のボタンだけを表示しています。電話のAI受付の動作は、こちらのスタッフ用ページで確認できます。
+          </p>
+          <a href="/phone" target="_blank" rel="noreferrer" className="btn-secondary mt-3 w-full px-3 py-2 text-xs">
+            <PhoneCall className="h-3.5 w-3.5" />
+            電話受付のテストを開く
+          </a>
         </div>
         <div className="card p-5 text-xs text-sumi-500">
           <p className="font-semibold text-sumi-700">専門知識なしで運用できるポイント</p>

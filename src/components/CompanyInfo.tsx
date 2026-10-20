@@ -283,6 +283,7 @@ export function Stores() {
               <a href={`tel:${BRAND.freeDialTel}`} className="mt-3 text-sm font-bold text-ichi-yellow underline-offset-2 hover:underline">
                 フリーダイヤル {BRAND.freeDial}
               </a>
+              <p className="mt-1 text-[11px] font-bold text-white/85">{BRAND.phoneAiNote}</p>
             </div>
           </Reveal>
         </div>
