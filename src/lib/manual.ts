@@ -2,6 +2,7 @@
 //   ・上部の文章（会社情報・よくある問い合わせ など）… 見出しごとのまとまりに分割
 //   ・下部の料金表（畳・襖・障子・網戸 など、列が横に並ぶ表）… 表ごとに「品名：列名 金額」の形に展開
 //   ・社内向けの書き込み（思案中のメモ・原価の計算式・仕入先名など）は database/manual-rules.json の規則で除外
+//   ・Excel → database/manual.json の変換（scripts/build-knowledge.mjs）からも直接読み込むため、型以外の import は持たない
 import type { KnowledgeEntry } from "./types";
 
 export interface ManualRules {
@@ -547,4 +548,83 @@ export function parseManualGrid(rows: string[][], rulesIn: ManualRules = DEFAULT
     keywords: [...t.keywords, ...t.rows.flatMap((r) => r.label.split(/[／/・\s（）()]+/).filter((x) => x.length >= 2))].slice(0, 80),
   }));
   return { textEntries, tables: kept, tableEntries, excluded };
+}
+
+// ---------------- Q&A 形式のシート ----------------
+
+function splitKeywords(s: string): string[] {
+  return s
+    .split(/[、,，/／;；|｜\n\s]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+const HEADER_MAP: { key: keyof KnowledgeEntry; patterns: RegExp }[] = [
+  { key: "category", patterns: /(カテゴリ|分類|区分|category)/i },
+  { key: "title", patterns: /(質問|項目|タイトル|見出し|件名|title|question)/i },
+  { key: "content", patterns: /(回答|内容|本文|説明|answer|content)/i },
+  { key: "keywords", patterns: /(キーワード|検索語|タグ|keyword|tag)/i },
+  { key: "note", patterns: /(備考|メモ|注意|note)/i },
+];
+
+/** 「カテゴリ／質問／回答／キーワード」形式の表か（1 行目に列名が 2 つ以上） */
+function qaHeader(rows: string[][]): Partial<Record<keyof KnowledgeEntry, number>> | null {
+  const first = rows.find((r) => (r ?? []).some((c) => c && c.trim()));
+  if (!first) return null;
+  const colIndex: Partial<Record<keyof KnowledgeEntry, number>> = {};
+  let matched = 0;
+  first.forEach((h, i) => {
+    for (const { key, patterns } of HEADER_MAP) {
+      if (colIndex[key] === undefined && patterns.test((h ?? "").trim()) && (h ?? "").trim().length <= 20) {
+        colIndex[key] = i;
+        matched++;
+        break;
+      }
+    }
+  });
+  return matched >= 2 && colIndex.content !== undefined ? colIndex : null;
+}
+
+/** Q&A 形式のシート → ナレッジ */
+export function rowsToEntries(rows: string[][]): KnowledgeEntry[] {
+  const colIndex = qaHeader(rows);
+  if (!colIndex) return [];
+  const body = rows.filter((r) => (r ?? []).some((c) => c && c.trim())).slice(1);
+  const pick = (r: string[], key: keyof KnowledgeEntry) => {
+    const i = colIndex[key];
+    return i === undefined ? "" : (r[i] ?? "").toString().trim();
+  };
+  const entries: KnowledgeEntry[] = [];
+  body.forEach((r, idx) => {
+    const title = pick(r, "title");
+    const content = pick(r, "content");
+    if (!title && !content) return;
+    entries.push({
+      id: `s${String(idx + 1).padStart(3, "0")}`,
+      category: pick(r, "category") || "顧客対応マニュアル",
+      title: title || content.slice(0, 30),
+      content: content || title,
+      keywords: splitKeywords(pick(r, "keywords")),
+      note: pick(r, "note") || undefined,
+      origin: "manual",
+    });
+  });
+  return entries;
+}
+
+// ---------------- シート全体 → マニュアル ----------------
+
+export interface ManualData {
+  entries: KnowledgeEntry[];
+  tables: PriceTable[];
+  /** 社内向けとして除外した行 */
+  excluded: string[];
+}
+
+/** シートの全セル → マニュアル（Q&A 形式ならそのまま、自由形式なら文章と料金表に分けて解析） */
+export function gridToManual(rows: string[][], rules: ManualRules = DEFAULT_MANUAL_RULES): ManualData {
+  if (qaHeader(rows)) return { entries: rowsToEntries(rows), tables: [], excluded: [] };
+  const parsed = parseManualGrid(rows, rules);
+  const entries = [...parsed.textEntries, ...parsed.tableEntries].map((e) => ({ ...e, origin: "manual" as const }));
+  return { entries, tables: parsed.tables, excluded: parsed.excluded };
 }

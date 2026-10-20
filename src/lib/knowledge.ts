@@ -1,33 +1,32 @@
-// ナレッジ（AIの回答情報源）の読み込み・統合・キャッシュ
-//   1. 顧客対応マニュアル … Googleスプレッドシートの指定1シート（未接続時は database/顧客対応マニュアル.xlsx）
+// ナレッジ（AIの回答情報源）の読み込み・統合・キャッシュ。情報源はすべて database/ の JSON（ビルドに同梱）
+//   1. 顧客対応マニュアル … database/manual.json（Excel から npm run knowledge:build で変換）
+//                          Googleスプレッドシートを接続した場合はその指定1シート
 //   2. 会社情報 … database/company.json（マニュアル・ホームページと照合し、内容が変わった項目は使わない）
 //   3. ホームページ … database/website.json（管理画面から再学習した場合はその内容）
 //   4. 管理画面で追加したナレッジ
 // 回答の優先順は「管理画面 → マニュアル → 会社情報 → ホームページ」。食い違いがあればマニュアルが正です。
 import crypto from "crypto";
-import { promises as fs } from "fs";
-import path from "path";
 import companyJson from "../../database/company.json";
+import manualJson from "../../database/manual.json";
 import rulesJson from "../../database/manual-rules.json";
 import websiteJson from "../../database/website.json";
 import { env } from "./env";
 import { gasRequest, sheetsGetValues } from "./google";
-import { DEFAULT_MANUAL_RULES, parseManualGrid, type ManualRules, type PriceTable } from "./manual";
+import { DEFAULT_MANUAL_RULES, gridToManual, type ManualRules, type PriceTable } from "./manual";
 import { getAdminKnowledge, getSiteKnowledge } from "./store";
 import type { KnowledgeEntry, KnowledgeSnapshot, KnowledgeSource } from "./types";
-import { readXlsx } from "./xlsx";
 
 interface Cache {
   snapshot: KnowledgeSnapshot;
   expires: number;
 }
-const g = globalThis as unknown as { __knowledgeCache?: Cache | null; __xlsxCache?: { mtime: number; grid: string[][]; sheet: string } };
+const g = globalThis as unknown as { __knowledgeCache?: Cache | null };
 
 export const SOURCE_LABEL: Record<KnowledgeSource, string> = {
   sheets_api: "顧客対応マニュアル（Googleスプレッドシート・Sheets API）",
   gas: "顧客対応マニュアル（Googleスプレッドシート・GAS連携）",
   csv: "顧客対応マニュアル（Googleスプレッドシート・公開CSV）",
-  xlsx: "顧客対応マニュアル（Excel：database/顧客対応マニュアル.xlsx）",
+  json: "顧客対応マニュアル（database/manual.json・Excel から変換）",
   local: "会社情報・ホームページのみ（マニュアル未読込）",
 };
 
@@ -77,80 +76,20 @@ export function parseCsv(text: string, keepEmpty = false): string[][] {
   return keepEmpty ? rows : rows.filter((r) => r.some((c) => c.trim() !== ""));
 }
 
-function splitKeywords(s: string): string[] {
-  return s
-    .split(/[、,，/／;；|｜\n\s]+/)
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
-
-const HEADER_MAP: { key: keyof KnowledgeEntry; patterns: RegExp }[] = [
-  { key: "category", patterns: /(カテゴリ|分類|区分|category)/i },
-  { key: "title", patterns: /(質問|項目|タイトル|見出し|件名|title|question)/i },
-  { key: "content", patterns: /(回答|内容|本文|説明|answer|content)/i },
-  { key: "keywords", patterns: /(キーワード|検索語|タグ|keyword|tag)/i },
-  { key: "note", patterns: /(備考|メモ|注意|note)/i },
-];
-
-/** 「カテゴリ／質問／回答／キーワード」形式の表か（1 行目に列名が 2 つ以上） */
-function qaHeader(rows: string[][]): Partial<Record<keyof KnowledgeEntry, number>> | null {
-  const first = rows.find((r) => (r ?? []).some((c) => c && c.trim()));
-  if (!first) return null;
-  const colIndex: Partial<Record<keyof KnowledgeEntry, number>> = {};
-  let matched = 0;
-  first.forEach((h, i) => {
-    for (const { key, patterns } of HEADER_MAP) {
-      if (colIndex[key] === undefined && patterns.test((h ?? "").trim()) && (h ?? "").trim().length <= 20) {
-        colIndex[key] = i;
-        matched++;
-        break;
-      }
-    }
-  });
-  return matched >= 2 && colIndex.content !== undefined ? colIndex : null;
-}
-
-/** Q&A 形式のシート → ナレッジ */
-export function rowsToEntries(rows: string[][]): KnowledgeEntry[] {
-  const colIndex = qaHeader(rows);
-  if (!colIndex) return [];
-  const body = rows.filter((r) => (r ?? []).some((c) => c && c.trim())).slice(1);
-  const pick = (r: string[], key: keyof KnowledgeEntry) => {
-    const i = colIndex[key];
-    return i === undefined ? "" : (r[i] ?? "").toString().trim();
-  };
-  const entries: KnowledgeEntry[] = [];
-  body.forEach((r, idx) => {
-    const title = pick(r, "title");
-    const content = pick(r, "content");
-    if (!title && !content) return;
-    entries.push({
-      id: `s${String(idx + 1).padStart(3, "0")}`,
-      category: pick(r, "category") || "顧客対応マニュアル",
-      title: title || content.slice(0, 30),
-      content: content || title,
-      keywords: splitKeywords(pick(r, "keywords")),
-      note: pick(r, "note") || undefined,
-      origin: "manual",
-    });
-  });
-  return entries;
-}
-
 interface ManualResult {
   entries: KnowledgeEntry[];
   tables: PriceTable[];
+  /** 社内向けとして除外した行（manual.json には内容を残さず、件数だけを持つ） */
   excluded: string[];
+  excludedCount: number;
   source: KnowledgeSource;
   sheetName?: string;
 }
 
 /** シートの全セル → マニュアル（Q&A 形式ならそのまま、自由形式なら文章と料金表に分けて解析） */
 export function manualFromGrid(rows: string[][], source: KnowledgeSource, sheetName?: string): ManualResult {
-  if (qaHeader(rows)) return { entries: rowsToEntries(rows), tables: [], excluded: [], source, sheetName };
-  const parsed = parseManualGrid(rows, MANUAL_RULES);
-  const entries = [...parsed.textEntries, ...parsed.tableEntries].map((e) => ({ ...e, origin: "manual" as const }));
-  return { entries, tables: parsed.tables, excluded: parsed.excluded, source, sheetName };
+  const m = gridToManual(rows, MANUAL_RULES);
+  return { ...m, excludedCount: m.excluded.length, source, sheetName };
 }
 
 export function remoteKnowledgeConfigured(): boolean {
@@ -199,22 +138,26 @@ async function loadRemote(errors: string[]): Promise<ManualResult | null> {
   return null;
 }
 
-/** 同梱の Excel（database/顧客対応マニュアル.xlsx）。更新日時が変わったときだけ読み直す */
-async function loadXlsx(errors: string[]): Promise<ManualResult | null> {
-  const file = path.join(process.cwd(), env.manualXlsxPath);
-  try {
-    const stat = await fs.stat(file);
-    if (!g.__xlsxCache || g.__xlsxCache.mtime !== stat.mtimeMs) {
-      const sheets = readXlsx(await fs.readFile(file));
-      const sheet = sheets.find((s) => s.name === env.knowledgeSheetName) ?? sheets[0];
-      if (!sheet) throw new Error("シートがありません");
-      g.__xlsxCache = { mtime: stat.mtimeMs, grid: sheet.rows, sheet: sheet.name };
-    }
-    return manualFromGrid(g.__xlsxCache.grid, "xlsx", g.__xlsxCache.sheet);
-  } catch (e) {
-    errors.push(`Excel（${env.manualXlsxPath}）: ${(e as Error).message}`);
-    return null;
-  }
+interface ManualFile {
+  source: string;
+  sheet: string;
+  convertedAt: string;
+  excludedCount: number;
+  entries: KnowledgeEntry[];
+  tables: PriceTable[];
+}
+
+/** 同梱のマニュアル（database/manual.json）。Excel を更新したら npm run knowledge:build で作り直す */
+function bundledManual(): ManualResult {
+  const m = manualJson as ManualFile;
+  return {
+    entries: m.entries.map((e) => ({ ...e, origin: "manual" as const })),
+    tables: m.tables,
+    excluded: [],
+    excludedCount: m.excludedCount,
+    source: "json",
+    sheetName: m.sheet,
+  };
 }
 
 /** 照合用の正規化（全角半角・空白・桁区切り・波線・中黒の違いを無視） */
@@ -263,7 +206,7 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
 
   const errors: string[] = [];
   const remote = remoteKnowledgeConfigured() ? await loadRemote(errors) : null;
-  const manual = remote ?? (await loadXlsx(errors));
+  const manual = remote ?? bundledManual();
 
   const [adminEntries, siteStored] = await Promise.all([getAdminKnowledge(), getSiteKnowledge()]);
   const relearned = Boolean(siteStored && siteStored.entries.length > 0);
@@ -272,30 +215,26 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
   );
   const websiteFetchedAt = relearned ? siteStored!.fetchedAt : (websiteJson as { fetchedAt?: string }).fetchedAt;
 
-  const manualEntries = manual?.entries ?? [];
+  const manualEntries = manual.entries;
   const manualText = normalizeForMatch(manualEntries.map((e) => `${e.title}\n${e.content}`).join("\n"));
   const siteText = normalizeForMatch(siteEntries.map((e) => `${e.title}\n${e.content}`).join("\n"));
   const company = checkCompany(manualText, siteText);
   const admin = adminEntries.map((e) => ({ ...e, origin: "admin" as const }));
 
   const entries = [...admin, ...manualEntries, ...company.ok, ...siteEntries];
-  const tables = manual?.tables ?? [];
-  const source: KnowledgeSource = manual?.source ?? "local";
+  const tables = manual.tables;
+  const source: KnowledgeSource = manual.source;
   const snapshot: KnowledgeSnapshot = {
     entries,
     tables,
     source,
     sourceLabel: SOURCE_LABEL[source],
-    sheetName: manual?.sheetName,
+    sheetName: manual.sheetName,
     fetchedAt: new Date(now).toISOString(),
     warning: errors.length
       ? remote
         ? errors.join(" / ")
-        : manual
-          ? remoteKnowledgeConfigured()
-            ? `シートを読めなかったため同梱の Excel を使用中: ${errors.join(" / ")}`
-            : undefined
-          : `マニュアルを読み込めませんでした: ${errors.join(" / ")}`
+        : `シートを読めなかったため同梱のマニュアル（database/manual.json）を使用中: ${errors.join(" / ")}`
       : undefined,
     version: hashEntries(entries, tables),
     stats: {
@@ -305,10 +244,10 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
       companyStale: company.stale.length,
       website: siteEntries.length,
       admin: admin.length,
-      excluded: manual?.excluded.length ?? 0,
+      excluded: manual.excludedCount,
     },
     stale: company.stale,
-    excludedLines: manual?.excluded ?? [],
+    excludedLines: manual.excluded,
     websiteFetchedAt,
     websiteOrigin: relearned ? "relearned" : "bundled",
   };

@@ -27,7 +27,7 @@ export interface KnowledgeEntry {
 }
 
 /** 顧客対応マニュアルの読込元 */
-export type KnowledgeSource = "gas" | "sheets_api" | "csv" | "xlsx" | "local";
+export type KnowledgeSource = "gas" | "sheets_api" | "csv" | "json" | "local";
 
 export interface KnowledgeStats {
   manualText: number;

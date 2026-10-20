@@ -27,17 +27,24 @@ const json = async (path, init) => {
 
 const form = (obj) => new URLSearchParams(obj).toString();
 
-await check("GET / (トップページ)", async () => {
+await check("GET / (トップページ：AIの窓口は文字・声の2つ＋電話ボタン)", async () => {
   const res = await fetch(`${BASE}/`);
   const html = await res.text();
-  if (!res.ok || !html.includes("の相談窓口") || !html.includes("logo-color.svg")) throw new Error(`status ${res.status}`);
-  return `${res.status} ${html.length}B`;
+  if (!res.ok || !html.includes("に相談する") || !html.includes("logo-color.svg")) throw new Error(`status ${res.status}`);
+  const channels = [...html.matchAll(/data-channel="([^"]+)"/g)].map((m) => m[1]);
+  if (channels.join(",") !== "/chat,/voice") throw new Error(`窓口: ${channels.join(",") || "なし"}`);
+  if (!html.includes("営業時間外・土日はAIが受付") || !html.includes('href="tel:0120158108"')) throw new Error("電話ボタンの案内がありません");
+  return `${res.status} ${html.length}B 窓口=${channels.join("・")}`;
 });
-for (const p of ["/chat", "/voice", "/phone", "/admin"]) {
+for (const p of ["/", "/chat", "/voice", "/phone", "/admin"]) {
   await check(`GET ${p}`, async () => {
     const res = await fetch(`${BASE}${p}`);
+    const html = await res.text();
     if (!res.ok) throw new Error(`status ${res.status}`);
-    return `${res.status}`;
+    // 電話受付のテスト画面（/phone）はスタッフ用：お客様向けのメニューには出さず、検索にも載せない
+    if (p !== "/admin" && /href="\/phone"/.test(html)) throw new Error("お客様向けの画面に /phone へのリンクがあります");
+    if (p === "/phone" && !/<meta name="robots" content="noindex/.test(html)) throw new Error("noindex がありません");
+    return `${res.status}${p === "/phone" ? " noindex" : ""}`;
   });
 }
 await check("GET /api/status", async () => {
@@ -45,12 +52,28 @@ await check("GET /api/status", async () => {
   if (!res.ok || !body.ok) throw new Error(`status ${res.status}`);
   return `openai=${body.openai.configured} knowledge=${body.knowledge.source}(${body.knowledge.entries}) reception=${body.reception.sink}`;
 });
-await check("GET /api/knowledge（マニュアル・会社情報・ホームページ）", async () => {
+await check("GET /api/knowledge（マニュアル・会社情報・ホームページの JSON）", async () => {
   const { res, body } = await json("/api/knowledge");
+  if (res.status === 401) {
+    // 管理画面のパスワード保護あり → 公開の接続状況で件数だけ確認
+    const k = (await json("/api/status")).body.knowledge;
+    if (k.source === "local" || !(k.entries > 0)) throw new Error(`knowledge ${k.source}(${k.entries}) ${k.warning ?? ""}`);
+    return `401（管理画面のパスワード保護あり）／ ${k.source}: ${k.entries} entries`;
+  }
   if (!res.ok || !Array.isArray(body.entries) || body.entries.length === 0) throw new Error(`status ${res.status}`);
   const st = body.stats ?? {};
-  if (!(st.manualTables > 0) || !(st.company > 0) || !(st.website > 0)) throw new Error(`sources missing: ${JSON.stringify(st)}`);
+  if (body.source === "local" || !(st.manualTables > 0) || !(st.company > 0) || !(st.website > 0)) throw new Error(`sources missing: ${body.source} ${JSON.stringify(st)}`);
   return `${body.entries.length} entries（${body.source}: 文章${st.manualText}・料金表${st.manualTables} / 会社情報${st.company} / HP${st.website}）`;
+});
+await check("管理画面の API（ADMIN_PASSWORD 設定時はログインが必要）", async () => {
+  const { body } = await json("/api/status");
+  const paths = ["/api/knowledge", "/api/estimates", "/api/conversations", "/api/usage", "/api/settings"];
+  const codes = await Promise.all(paths.map(async (p) => (await fetch(`${BASE}${p}`)).status));
+  const refresh = (await fetch(`${BASE}/api/knowledge/refresh`, { method: "POST" })).status;
+  const all = [...codes, refresh];
+  if (!body.admin.protected) return `未設定のため誰でも閲覧可（公開 URL では ADMIN_PASSWORD を設定）: ${all.join(",")}`;
+  if (all.some((c) => c !== 401)) throw new Error(`保護されていない API: ${[...paths, "/api/knowledge/refresh"].filter((_, i) => all[i] !== 401).join(", ")}`);
+  return `保護あり（${all.length} 件とも 401）`;
 });
 await check("POST /api/knowledge/search（料金は料金表から回答）", async () => {
   const { res, body } = await json("/api/knowledge/search", { method: "POST", body: JSON.stringify({ query: "6畳の畳の表替えはいくら？" }) });
@@ -171,6 +194,7 @@ await check("GET /api/line/webhook", async () => {
 });
 await check("GET /api/settings", async () => {
   const { res, body } = await json("/api/settings");
+  if (res.status === 401) return "401（管理画面のパスワード保護あり）";
   if (!res.ok || !body.routing) throw new Error(`status ${res.status}`);
   return `${body.routing.handler}: ${body.routing.reason}`;
 });

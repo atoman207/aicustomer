@@ -69,10 +69,6 @@ export const env = {
   get knowledgeSheetName() {
     return str("KNOWLEDGE_SHEET_NAME", "ＡＩ相談ソース");
   },
-  /** シート未接続時に使う顧客対応マニュアル（Excel）。リポジトリ内の相対パス */
-  get manualXlsxPath() {
-    return str("MANUAL_XLSX_PATH", "database/顧客対応マニュアル.xlsx");
-  },
   get knowledgeCsvUrl() {
     return str("KNOWLEDGE_SHEET_CSV_URL");
   },

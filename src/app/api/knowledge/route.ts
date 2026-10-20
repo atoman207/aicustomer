@@ -7,7 +7,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+/** ナレッジの一覧と情報源ごとの件数（管理画面専用） */
 export async function GET() {
+  const denied = await requireAdmin();
+  if (denied) return denied;
   return json(describeKnowledge(await getKnowledge()));
 }
 

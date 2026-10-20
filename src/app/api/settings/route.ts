@@ -22,7 +22,10 @@ async function describe() {
   };
 }
 
+/** 設定と現在の電話の振り分け（スタッフの転送先番号を含むため管理画面専用） */
 export async function GET() {
+  const denied = await requireAdmin();
+  if (denied) return denied;
   return json(await describe());
 }
 

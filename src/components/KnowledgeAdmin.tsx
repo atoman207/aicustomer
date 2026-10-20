@@ -451,7 +451,9 @@ function SourcesCard({
       {data ? (
         <p className="mt-3 text-[11px] text-sumi-400">
           最終読込 {formatJst(data.fetchedAt, true)}
-          {!data.remoteConfigured ? "　※ GAS_WEBHOOK_URL などでスプレッドシートを接続すると、シートの更新が約1分で反映されます（未接続時は同梱の Excel を使用）。" : ""}
+          {!data.remoteConfigured
+            ? "　※ マニュアルは同梱の database/manual.json を使用中です（Excel を更新したら npm run knowledge:build で作り直して再デプロイ）。GAS_WEBHOOK_URL などでスプレッドシートを接続すると、シートの更新が約1分で反映されます。"
+            : ""}
         </p>
       ) : null}
     </div>
