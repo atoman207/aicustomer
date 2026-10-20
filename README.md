@@ -49,11 +49,13 @@ npm run smoke
 
 GitHub リポジトリを Vercel にインポートするだけでビルド・デプロイできます（追加設定なしで `next build` が通ります）。AI の回答情報源（`database/*.json`）はビルドに同梱されるため、ナレッジのための設定は不要です。
 
-**テスト環境で設定する環境変数は次の 2 つだけです**（Settings › Environment Variables。変更後は Redeploy で反映）。
+**設定する環境変数**（Settings › Environment Variables。変更後は Redeploy で反映。`.env.example` と同じ内容です）。
 
 | 設定 | 目的 |
 | --- | --- |
-| `OPENAI_API_KEY` | AI 応答・音声・要約（未設定時はデモモード） |
+| `OPENAI_API_KEY` | AI 応答・音声・要約・ファイルの解析（未設定時はデモモード） |
+| `OPENAI_CHAT_MODEL` など 6 つ | 使用するモデル（`.env.example` の値のままで可） |
+| `SUPABASE_URL` / `SUPABASE_SECRET_KEY` | ナレッジ・アップロードしたファイル・会話履歴・受付・設定の保存先（§2.5）。secret キーはサーバー専用 |
 | `ADMIN_PASSWORD` | **公開 URL では必須。** 管理画面（受付一覧＝お客様情報、AI／人間切替）を保護 |
 
 本番運用（VPS・独自ドメインへの移行時など）で必要に応じて追加するもの：
@@ -61,11 +63,11 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | 設定 | 目的 |
 | --- | --- |
 | `PUBLIC_BASE_URL` | 独自ドメインの公開 URL（例：`https://ai.example.jp`）。Twilio/LINE の署名検証と OGP に使用（Vercel では自動判定） |
-| Storage › **Upstash Redis** | 受付・会話・設定・会話セッションの永続化。追加すると `UPSTASH_REDIS_REST_URL/TOKEN` が自動設定されます（VPS では不要：`data/runtime/` にファイル保存） |
+| Storage › **Upstash Redis** | Supabase を使わない場合の永続化。追加すると `UPSTASH_REDIS_REST_URL/TOKEN` が自動設定されます |
 | `GAS_WEBHOOK_URL` | 受付のスプレッドシート記録（とスプレッドシートからのナレッジ読み取り。§3） |
 | `TWILIO_*` / `STAFF_FORWARD_NUMBER` | 0120 番号の AI 電話受付（§5） |
 
-**サーバーレスでの保存について**：Vercel ではファイル書き込みが一時的（インスタンスごとの `/tmp`）です。Redis 未設定でも次の工夫で動作しますが、受付一覧・会話履歴・管理画面の設定変更は再デプロイやスリープで消えます。
+**サーバーレスでの保存について**：Vercel ではファイル書き込みが一時的（インスタンスごとの `/tmp`）です。Supabase を設定すれば受付・会話・設定はすべてデータベースに保存されます。Supabase・Redis が未設定でも次の工夫で動作しますが、受付一覧・会話履歴・管理画面の設定変更は再デプロイやスリープで消えます。
 
 - ブラウザの電話シミュレーター／音声相談（デモモード）は会話セッションをクライアントと往復させるため、インスタンスが変わっても途切れません
 - Twilio の電話受付は通話ごとの Cookie に会話状態を圧縮して持たせるため、Redis なしでも 1 通話内の状態が保たれます
@@ -82,6 +84,7 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | 変数 | 必須 | 説明 |
 | --- | --- | --- |
 | `OPENAI_API_KEY` | **必須** | 未設定時はデモモード |
+| `SUPABASE_URL` / `SUPABASE_SECRET_KEY` | **推奨** | Supabase のプロジェクト URL と secret キー（旧 `SUPABASE_SERVICE_ROLE_KEY` も可）。§2.5 |
 | `ADMIN_PASSWORD` | **公開 URL では必須** | 管理画面の保護（未設定時は誰でも閲覧可） |
 | `OPENAI_CHAT_MODEL` | | 既定 `gpt-4.1-mini`（テキスト相談・電話・LINE・要約） |
 | `OPENAI_REALTIME_MODEL` / `OPENAI_REALTIME_VOICE` | | 既定 `gpt-realtime` / `marin`（音声相談） |
@@ -104,6 +107,30 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | `COMPANY_NAME` / `COMPANY_PHONE` | | 会社名・0120 番号（既定 一畳屋・0120-158-108。管理画面でも変更可） |
 
 顧客対応マニュアルは **A（GAS）→ B（Sheets API）→ C（CSV）→ 同梱の JSON（`database/manual.json`）** の優先順で自動選択されます（未接続なら JSON）。
+
+---
+
+## 2.5 Supabase（データベース）
+
+`SUPABASE_URL` と `SUPABASE_SECRET_KEY` を設定すると、次のものがすべて Supabase に保存されます。未設定・接続できない場合は従来どおりファイル／メモリと同梱の JSON で動作します。
+
+| テーブル | 内容 |
+| --- | --- |
+| `knowledge` | AI の回答情報源（顧客対応マニュアル・会社情報・ホームページ・管理画面で入力・アップロードしたファイルから作った情報）。AI はここだけを根拠に回答 |
+| `knowledge_sources` | 管理画面で追加した文章・アップロードしたファイルの履歴（ファイルの原本は Storage の非公開バケット `knowledge-files`） |
+| `conversations` | 文字・声・電話・LINE のすべての会話履歴（質問と AI の回答） |
+| `estimates` | 見積の受付 |
+| `app_kv` | 設定・電話の会話状態・学習済みの回答・答えられなかった質問・利用状況 |
+
+**セットアップ（最初に 1 回）**：
+
+1. `.env`（Vercel では Environment Variables）に `SUPABASE_URL`・`SUPABASE_SECRET_KEY`（Project Settings › API Keys の secret キー）を設定
+2. 管理画面の「セットアップ」で SQL をコピーし、Supabase の SQL Editor で実行（`supabase/schema.sql` と同じ内容。何度実行しても安全）
+3. 「接続を確認」を押すと、同梱の `database/*.json`（マニュアル・会社情報・ホームページ）が自動でデータベースに取り込まれます
+
+- テーブルは RLS（行レベルセキュリティ）を有効にし、ポリシーを作っていません。公開キー（publishable）では読み書きできず、サーバーの secret キーだけが使えます（ブラウザから Supabase には直接つながりません）。
+- 同梱の JSON を更新してデプロイすると、変わった内容が自動で取り込まれます（管理画面で編集した項目・アップロードした顧客対応マニュアルは上書きしません）。
+- 管理画面での追加・編集は数秒以内に全サーバーの AI の回答に反映されます。
 
 ---
 
@@ -214,11 +241,17 @@ AI 電話受付では、折り返し先の電話番号を伺う際に「いま�
 
 ## 7. 管理画面（`/admin`）
 
+ChatGPT のようなシンプルな画面です（左にメニューと「追加した情報」の履歴、上にヘッダー、中央に内容）。お客様向けサイトのヘッダーは表示しません。`/admin?view=receptions` のように各画面を直接開けます。
+
+- **情報を追加**：会社の情報を入力欄に書くか、ファイル（Excel・CSV・Word・PowerPoint・PDF・画像・テキスト、4MB まで）を添付し、プルダウンで分類（会社情報・料金・商品・よくある質問 など）を選んで送信すると、AI が内容を解析して話題ごとのナレッジに整理し、データベースに保存します。資料に書かれた事実だけを使い、原価などの社内向けの情報は登録しません。「料金表・顧客対応マニュアル」を選んで Excel を送ると、顧客対応マニュアル（文章・料金表）を差し替えます（その追加を削除すると元に戻ります）。PDF・画像の読み取りには OpenAI キーが必要です
+- **登録済みナレッジ**：AI が使う情報の一覧（情報源・分類・キーワードで絞り込み）。編集・使う／使わないの切り替え・削除。同梱データの取り込み直し
+- **追加した情報**（サイドバーの履歴）：追加ごとに、作ったナレッジ・元のファイルを確認・編集・削除
+- **AIに質問（テスト）**：お客様と同じ AI に質問して、登録した情報で答えるか確認（どの情報を根拠にしたか・AI を使ったかを表示。会話は「テスト」として会話履歴に保存）
 - **受付一覧**：3 窓口＋LINE の受付を検索・絞り込み・ステータス変更・CSV 出力（受付後に LINE とつながった受付は「LINE連携済み」）
 - **会話履歴**：全窓口の会話ログを閲覧
+- **AIの学習状況**：情報源ごとの件数、ホームページの再学習、回答テスト、AI の利用状況（AI なしで答えた割合・トークン数）、学習済みの回答、答えられなかった質問
 - **電話・営業時間**：AI／人間の切替、営業日・時間、休業日、転送先、会社名、第一声、電話受付のテスト画面（`/phone`）へのリンク
-- **ナレッジ**：情報源（マニュアル・会社情報・ホームページ・追加分）の件数と要確認の項目、マニュアルの再読み込み、ホームページの再学習、回答テスト（AI を使ったか・根拠）、AI の利用状況（AI なしで答えた割合・トークン数）、学習済みの回答、答えられなかった質問、ナレッジの追加・編集
-- **接続状況**：OpenAI・ナレッジ・記録先・Twilio・LINE の設定状況、Webhook URL のコピー
+- **接続状況**・**セットアップ**：Supabase・OpenAI・記録先・Twilio・LINE の設定状況、Webhook URL のコピー、Supabase のテーブルを作る SQL
 
 ---
 
@@ -234,9 +267,15 @@ src/app                 ページと API Route（App Router）
   api/estimates         見積受付（confirmed=true 必須）
   api/knowledge/*       ナレッジ取得・再読込・検索（音声相談のツール）・回答テスト・学習済みの回答・ホームページ再学習
   api/usage             AI の利用状況（日別）
+  api/admin/sources     情報の追加（文章・ファイルの解析と保存）・追加した情報の一覧／詳細／削除
+  api/admin/knowledge   登録済みナレッジの一覧・編集・削除
+  api/admin/setup       Supabase の接続確認・テーブルを作る SQL・同梱データの取り込み
   api/settings, status, conversations, summarize, tts, admin/login
 src/lib
-  knowledge.ts          情報源の統合（マニュアル：GAS / Sheets API / CSV / Excel、会社情報、ホームページ、追加分）・キャッシュ
+  knowledge.ts          情報源の統合（Supabase または同梱の JSON、スプレッドシート連携）・キャッシュ
+  knowledge-db.ts       Supabase のナレッジ（同梱 JSON の自動取り込み・追加・編集・マニュアルの差し替え）
+  ingest.ts             追加した文章・ファイルの解析（Excel / CSV / Word / PowerPoint / PDF / 画像 / テキスト → ナレッジ）
+  supabase.ts / supabase-schema.ts  Supabase（PostgREST・Storage）の接続／テーブル定義
   xlsx.ts / manual.ts   Excel の読み取り／自由形式のマニュアル（文章・料金表）の解析（JSON への変換とシート接続時に使用）
   site-learn.ts         ホームページの学習（scripts/learn-website.mjs からも実行）
   answer.ts             回答エンジン（OpenAI を使うのは必要なときだけ）
@@ -246,11 +285,12 @@ src/lib
   prompts.ts            ナレッジ限定の回答ルール（全窓口共通・短い指示）
   agent.ts / fallback.ts 相談＋見積受付エージェント（OpenAI 構造化出力／ルールベース）
   estimates.ts          受付レコード作成とシート追記
-  store.ts              JSON ストア（data/runtime）。読み取り専用環境ではメモリ動作
+  store.ts              データの保存（Supabase → Redis → data/runtime のファイル → メモリの順に自動選択）
   brand.ts              一畳屋の名称・フリーダイヤル・受付時間・画像パス
   company.ts            トップに表示する会社情報（営業案内・FAQ・選ばれる理由・理念・店舗）
   openai.ts, google.ts, twiml.ts, line.ts, hours.ts
 src/components
+  admin/                管理画面（AdminApp：ヘッダー・サイドバー／情報を追加・登録済みナレッジ・AIに質問・セットアップ）
   SiteHeader / SiteNav  サイトと同じヘッダー（「AIに相談」ボタン）・AI 相談のメニュー（トップ・文字・声＋電話ボタン）・SP ドロワー
   PhoneButton           電話ボタン（フリーダイヤル・営業時間・「営業時間外・土日はAIが受付」）
   StickyActions         SP：画面下の「AIに相談」「電話する」固定ボタン（トップ）
@@ -259,7 +299,8 @@ src/components
   CompanyInfo           トップの会社情報セクション（写真は一畳屋サイトのもの）
   PageHero / Reveal     下層ページのタイトル帯／スクロール表示アニメーション
 database/               AI の回答情報源（manual.json・company.json・website.json）と変換元の Excel・変換規則（manual-rules.json）
-scripts/                build-knowledge.mjs（Excel → manual.json）・learn-website.mjs（ホームページ → website.json）・smoke.mjs（疎通テスト）
+scripts/                build-knowledge.mjs（Excel → manual.json）・learn-website.mjs（ホームページ → website.json）・db-schema.mjs（→ supabase/schema.sql）・smoke.mjs（疎通テスト）
+supabase/schema.sql     Supabase のテーブル定義（SQL Editor で 1 回実行）
 data/seed               サンプル受付
 gas/Code.gs             スプレッドシート連携用 Apps Script
 public/ichijoya         一畳屋サイトのロゴ・画像・テクスチャ・アイコン

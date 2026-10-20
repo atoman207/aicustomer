@@ -42,9 +42,14 @@ async function post(path: string, body: unknown, extra?: Record<string, string>,
 }
 
 export type ChatRole = "system" | "user" | "assistant";
+/** 文字以外（PDF・画像）を渡すときの内容（Chat Completions の content parts） */
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "file"; file: { filename: string; file_data: string } };
 export interface ChatInputMessage {
   role: ChatRole;
-  content: string;
+  content: string | ChatContentPart[];
 }
 
 export interface ChatOptions {
@@ -55,6 +60,8 @@ export interface ChatOptions {
   jsonSchema?: { name: string; schema: Record<string, unknown> };
   /** 利用状況の記録用（chat / agent / summarize など） */
   purpose?: string;
+  /** 既定 45 秒（資料の解析など時間がかかるものは長めに） */
+  timeoutMs?: number;
 }
 
 export interface TokenUsage {
@@ -91,7 +98,7 @@ interface ChatCompletionResponse {
 }
 
 export async function chatCompletion(o: ChatOptions): Promise<string> {
-  const res = await post("/chat/completions", chatBody(o, false), undefined, 45_000);
+  const res = await post("/chat/completions", chatBody(o, false), undefined, o.timeoutMs ?? 45_000);
   const json = (await res.json()) as ChatCompletionResponse;
   void recordTokens(o.purpose ?? "chat", { prompt: json.usage?.prompt_tokens ?? 0, completion: json.usage?.completion_tokens ?? 0 });
   return json.choices?.[0]?.message?.content ?? "";

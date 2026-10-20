@@ -1,6 +1,6 @@
 // トップページの会社情報（営業のご案内・よくあるご質問・選ばれる理由・会社メッセージ・店舗）
 // 写真は一畳屋サイト（ichijoya.co.jp）のもの。内容は src/lib/company.ts
-import { CalendarCheck, ChevronDown, Clock3, MapPin, MessageSquareText, Mic, PhoneCall, Wrench } from "lucide-react";
+import { CalendarCheck, ChevronDown, Clock3, MapPin, MessageSquareText, PhoneCall, Wrench } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import Reveal from "./Reveal";
@@ -264,28 +264,6 @@ export function Stores() {
               </article>
             </Reveal>
           ))}
-          <Reveal effect="fade-up" delay={240}>
-            <div className="flex h-full flex-col items-center justify-center rounded-xl bg-ptn-logo p-6 text-center text-white">
-              <p className="font-hand text-[22px] leading-snug">ご相談はAIが24時間受付</p>
-              <p className="mt-2 text-xs leading-relaxed text-white/85">
-                ご来店の際は、スタッフが出払っている場合があるため、前もって来店日時のお打ち合わせをお願いします。
-              </p>
-              <div className="mt-4 flex flex-wrap justify-center gap-2">
-                <Link href="/chat" className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-bold text-ichi-theme transition-opacity hover:opacity-80">
-                  <MessageSquareText className="h-3.5 w-3.5" />
-                  文字で相談
-                </Link>
-                <Link href="/voice" className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-bold text-ichi-theme transition-opacity hover:opacity-80">
-                  <Mic className="h-3.5 w-3.5" />
-                  声で相談
-                </Link>
-              </div>
-              <a href={`tel:${BRAND.freeDialTel}`} className="mt-3 text-sm font-bold text-ichi-yellow underline-offset-2 hover:underline">
-                フリーダイヤル {BRAND.freeDial}
-              </a>
-              <p className="mt-1 text-[11px] font-bold text-white/85">{BRAND.phoneAiNote}</p>
-            </div>
-          </Reveal>
         </div>
       </div>
     </section>

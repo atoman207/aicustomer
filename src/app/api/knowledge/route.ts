@@ -1,6 +1,8 @@
 import { error, json, readJson, requireAdmin } from "@/lib/http";
 import { describeKnowledge, getKnowledge, invalidateKnowledgeCache } from "@/lib/knowledge";
+import { replaceAdminEntries } from "@/lib/knowledge-db";
 import { saveAdminKnowledge } from "@/lib/store";
+import { supabaseReady } from "@/lib/supabase";
 import type { KnowledgeEntry } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -36,7 +38,8 @@ export async function PUT(req: Request) {
     }))
     .filter((e) => e.title && e.content);
   if (body.entries.length > 0 && entries.length === 0) return error("有効なナレッジがありません（項目名と内容は必須です）");
-  await saveAdminKnowledge(entries);
+  if (await supabaseReady()) await replaceAdminEntries(entries);
+  else await saveAdminKnowledge(entries);
   invalidateKnowledgeCache();
   return json(describeKnowledge(await getKnowledge(true)));
 }

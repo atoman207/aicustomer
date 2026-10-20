@@ -79,6 +79,17 @@ function numberText(v: string): string {
   return String(Math.round(n * 1e6) / 1e6);
 }
 
+/** ZIP の中のファイル名の一覧（docx・pptx の解析用） */
+export function zipEntryNames(buf: Buffer): string[] {
+  return readZipEntries(buf).map((e) => e.name);
+}
+
+/** ZIP の中の 1 ファイルを文字列で取り出す（なければ null） */
+export function readZipText(buf: Buffer, name: string): string | null {
+  const e = readZipEntries(buf).find((x) => x.name === name);
+  return e ? readZipFile(buf, e) : null;
+}
+
 export interface XlsxSheet {
   name: string;
   /** rows[r][c]（0 始まり）。空行・空セルも位置を保つ */

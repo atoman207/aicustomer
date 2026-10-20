@@ -52,6 +52,14 @@ await check("GET /api/status", async () => {
   if (!res.ok || !body.ok) throw new Error(`status ${res.status}`);
   return `openai=${body.openai.configured} knowledge=${body.knowledge.source}(${body.knowledge.entries}) reception=${body.reception.sink}`;
 });
+await check("Supabase（ナレッジ・会話履歴・受付の保存先）", async () => {
+  const { body } = await json("/api/status");
+  const sb = body.supabase;
+  if (!sb?.configured) return "未設定（ファイル／メモリと同梱の JSON で動作）";
+  if (!sb.ready) return `未使用：${sb.error ?? "接続を確認中"}`;
+  if (body.storage.backend !== "supabase" || body.knowledge.source !== "supabase") throw new Error(`storage=${body.storage.backend} knowledge=${body.knowledge.source}`);
+  return `接続済み（保存先 supabase・ナレッジ ${body.knowledge.entries} 件）`;
+});
 await check("GET /api/knowledge（マニュアル・会社情報・ホームページの JSON）", async () => {
   const { res, body } = await json("/api/knowledge");
   if (res.status === 401) {
@@ -67,7 +75,7 @@ await check("GET /api/knowledge（マニュアル・会社情報・ホームペ�
 });
 await check("管理画面の API（ADMIN_PASSWORD 設定時はログインが必要）", async () => {
   const { body } = await json("/api/status");
-  const paths = ["/api/knowledge", "/api/estimates", "/api/conversations", "/api/usage", "/api/settings"];
+  const paths = ["/api/knowledge", "/api/estimates", "/api/conversations", "/api/usage", "/api/settings", "/api/admin/sources", "/api/admin/knowledge", "/api/admin/setup"];
   const codes = await Promise.all(paths.map(async (p) => (await fetch(`${BASE}${p}`)).status));
   const refresh = (await fetch(`${BASE}/api/knowledge/refresh`, { method: "POST" })).status;
   const all = [...codes, refresh];

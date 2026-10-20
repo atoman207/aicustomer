@@ -2,6 +2,7 @@
 import { env } from "./env";
 import { gasRequest, sheetsAppendRow } from "./google";
 import { addEstimate, listEstimates, updateEstimate } from "./store";
+import { supabaseStateCached } from "./supabase";
 import { CHANNEL_LABEL, type Channel, type EstimateRequest } from "./types";
 import { formatJst, isLikelyPhone, newId, normalizePhone, nowJstIso } from "./utils";
 
@@ -43,11 +44,12 @@ export function validateEstimateInput(input: Partial<EstimateInput>): string[] {
   return errors;
 }
 
-export type ReceptionSink = "gas" | "sheets_api" | "local";
+export type ReceptionSink = "gas" | "sheets_api" | "supabase" | "local";
 
 export function receptionSink(): ReceptionSink {
   if (env.gasWebhookUrl) return "gas";
   if (env.hasServiceAccount && env.receptionSheetId) return "sheets_api";
+  if (supabaseStateCached()?.ready) return "supabase";
   return "local";
 }
 
@@ -57,6 +59,8 @@ export function receptionSinkLabel(sink: ReceptionSink): string {
       return `Googleスプレッドシート「${env.receptionSheetName}」（GAS連携）`;
     case "sheets_api":
       return `Googleスプレッドシート「${env.receptionSheetName}」（Sheets API）`;
+    case "supabase":
+      return "Supabase（データベースの estimates テーブル。スプレッドシートは未接続）";
     default:
       return "ローカル保存のみ（スプレッドシート未接続）";
   }
@@ -114,12 +118,12 @@ export async function createEstimate(input: EstimateInput): Promise<EstimateRequ
     status: "new",
     confirmedByCustomer: input.confirmedByCustomer ?? true,
     sessionId: input.sessionId,
-    syncedTo: ["local"],
+    syncedTo: [supabaseStateCached()?.ready ? "supabase" : "local"],
   };
   await addEstimate(record);
 
   const sink = receptionSink();
-  if (sink === "local") return record;
+  if (sink === "local" || sink === "supabase") return record;
   try {
     if (sink === "gas") {
       await gasRequest({

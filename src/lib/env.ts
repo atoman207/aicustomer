@@ -49,6 +49,18 @@ export const env = {
     return str("PUBLIC_BASE_URL").replace(/\/$/, "");
   },
 
+  // Supabase（ナレッジ・アップロードしたファイル・会話履歴・受付・設定の保存先）
+  get supabaseUrl() {
+    return str("SUPABASE_URL", str("NEXT_PUBLIC_SUPABASE_URL")).replace(/\/$/, "");
+  },
+  /** サーバー専用の secret キー（旧 service_role キーも可）。ブラウザには渡さない */
+  get supabaseSecretKey() {
+    return str("SUPABASE_SECRET_KEY", str("SUPABASE_SERVICE_ROLE_KEY"));
+  },
+  get hasSupabase() {
+    return /^https:\/\//.test(this.supabaseUrl) && this.supabaseSecretKey.length > 20;
+  },
+
   // ナレッジ
   get gasWebhookUrl() {
     return str("GAS_WEBHOOK_URL");

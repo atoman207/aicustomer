@@ -1,10 +1,11 @@
 "use client";
 
-// 管理画面「ナレッジ」：AI の回答情報源（マニュアル・会社情報・ホームページ・追加分）、回答テスト、
+// 管理画面「AIの学習状況」：AI の回答情報源（マニュアル・会社情報・ホームページ・追加分）の件数、回答テスト、
 // AI の利用状況（OpenAI を使わずに答えた割合・トークン数）、学習済みの回答、答えられなかった質問
-import { BookOpenCheck, CheckCircle2, Database, Globe, Loader2, Pencil, Plus, RefreshCw, Search, Sparkles, Trash2, Zap } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Badge, Modal } from "./ui";
+// （ナレッジの一覧・編集は「登録済みナレッジ」、追加は「情報を追加」）
+import { BookOpenCheck, Database, Globe, Loader2, Pencil, RefreshCw, Search, Sparkles, Trash2, Zap } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Badge } from "./ui";
 import type { KnowledgeEntry, KnowledgeOrigin, KnowledgeSource, KnowledgeStats } from "@/lib/types";
 import { formatJst, truncate } from "@/lib/utils";
 
@@ -63,6 +64,7 @@ const ORIGIN: Record<KnowledgeOrigin, { label: string; tone: "green" | "blue" | 
   company: { label: "会社情報", tone: "blue" },
   website: { label: "ホームページ", tone: "neutral" },
   admin: { label: "管理画面で追加", tone: "amber" },
+  upload: { label: "アップロード", tone: "amber" },
 };
 
 const MODE_LABEL: Record<string, { label: string; tone: "green" | "blue" | "amber" | "neutral" | "red" }> = {
@@ -80,9 +82,6 @@ export default function KnowledgeAdmin() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
-  const [filter, setFilter] = useState("");
-  const [originFilter, setOriginFilter] = useState<"" | KnowledgeOrigin>("");
-  const [editing, setEditing] = useState<KnowledgeEntry | null>(null);
   const [usage, setUsage] = useState<Usage[]>([]);
   const [learned, setLearned] = useState<Learned[]>([]);
   const [unanswered, setUnanswered] = useState<Unanswered[]>([]);
@@ -129,32 +128,6 @@ export default function KnowledgeAdmin() {
     }
   }
 
-  async function saveAdminEntries(entries: KnowledgeEntry[]) {
-    setBusy("save");
-    setError("");
-    try {
-      const j = await api<KnowledgeResp>("/api/knowledge", { method: "PUT", body: JSON.stringify({ entries }) });
-      setData(j);
-      setEditing(null);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy("");
-    }
-  }
-
-  const adminEntries = useMemo(() => (data?.entries ?? []).filter((e) => e.origin === "admin"), [data]);
-
-  function saveEntry(entry: KnowledgeEntry) {
-    const exists = adminEntries.some((e) => e.id === entry.id);
-    void saveAdminEntries(exists ? adminEntries.map((e) => (e.id === entry.id ? entry : e)) : [...adminEntries, entry]);
-  }
-
-  function removeEntry(id: string) {
-    if (!window.confirm("このナレッジを削除しますか？")) return;
-    void saveAdminEntries(adminEntries.filter((e) => e.id !== id));
-  }
-
   async function removeLearned(key: string) {
     const j = await api<{ learned: Learned[]; unanswered: Unanswered[] }>(`/api/knowledge/learned?type=learned&key=${encodeURIComponent(key)}`, { method: "DELETE" });
     setLearned(j.learned);
@@ -164,13 +137,6 @@ export default function KnowledgeAdmin() {
     const j = await api<{ learned: Learned[]; unanswered: Unanswered[] }>(`/api/knowledge/learned?type=unanswered${key ? `&key=${encodeURIComponent(key)}` : ""}`, { method: "DELETE" });
     setUnanswered(j.unanswered);
   }
-
-  const filtered = useMemo(() => {
-    const f = filter.trim().toLowerCase();
-    return (data?.entries ?? []).filter(
-      (e) => (!originFilter || e.origin === originFilter) && (!f || `${e.category} ${e.title} ${e.content} ${e.keywords.join(" ")}`.toLowerCase().includes(f)),
-    );
-  }, [data, filter, originFilter]);
 
   return (
     <div className="space-y-4">
@@ -245,125 +211,6 @@ export default function KnowledgeAdmin() {
         </div>
       </div>
 
-      <div className="card overflow-hidden">
-        <div className="flex flex-wrap items-center gap-2 border-b border-washi-200 bg-washi-100/70 px-4 py-3">
-          <Database className="h-4 w-4 text-ai-600" />
-          <p className="text-sm font-semibold text-sumi-800">ナレッジ一覧</p>
-          <span className="text-xs text-sumi-400">{filtered.length} 件</span>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <select className="input w-40" value={originFilter} onChange={(e) => setOriginFilter(e.target.value as "" | KnowledgeOrigin)}>
-              <option value="">すべての情報源</option>
-              {(Object.keys(ORIGIN) as KnowledgeOrigin[]).map((o) => (
-                <option key={o} value={o}>
-                  {ORIGIN[o].label}
-                </option>
-              ))}
-            </select>
-            <input className="input w-52" placeholder="絞り込み" value={filter} onChange={(e) => setFilter(e.target.value)} />
-            <button type="button" className="btn-primary px-3 py-1.5 text-xs" onClick={() => setEditing({ id: `a${Date.now().toString(36)}`, category: "追加ナレッジ", title: "", content: "", keywords: [] })}>
-              <Plus className="h-3.5 w-3.5" />
-              ナレッジを追加
-            </button>
-          </div>
-        </div>
-        <div className="max-h-[60vh] overflow-auto">
-          <table className="table-base">
-            <thead>
-              <tr>
-                <th>情報源</th>
-                <th>項目</th>
-                <th>内容</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((e) => (
-                <tr key={`${e.origin}-${e.id}`}>
-                  <td className="whitespace-nowrap">
-                    <Badge tone={ORIGIN[e.origin ?? "manual"].tone}>{ORIGIN[e.origin ?? "manual"].label}</Badge>
-                  </td>
-                  <td className="min-w-[180px] font-medium text-sumi-800">
-                    {e.title}
-                    {e.note ? <span className="block text-[11px] font-normal text-sumi-400">{e.note}</span> : null}
-                  </td>
-                  <td className="min-w-[320px] max-w-[620px] whitespace-pre-wrap text-xs leading-relaxed">{truncate(e.content, 420)}</td>
-                  <td className="whitespace-nowrap">
-                    {e.origin === "admin" ? (
-                      <>
-                        <button type="button" className="rounded p-1 text-sumi-400 hover:bg-washi-200 hover:text-sumi-700" onClick={() => setEditing(e)} aria-label="編集">
-                          <Pencil className="h-4 w-4" />
-                        </button>
-                        <button type="button" className="rounded p-1 text-sumi-400 hover:bg-shu-50 hover:text-shu-600" onClick={() => removeEntry(e.id)} aria-label="削除">
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {data && data.excludedLines.length ? (
-          <details className="border-t border-washi-200 px-4 py-2 text-xs text-sumi-500">
-            <summary className="cursor-pointer">社内向けとして AI の回答に使っていないマニュアルの行（{data.excludedLines.length} 行）</summary>
-            <ul className="mt-2 list-disc space-y-0.5 pl-5">
-              {data.excludedLines.map((l, i) => (
-                <li key={i}>{truncate(l, 160)}</li>
-              ))}
-            </ul>
-            <p className="mt-1 text-sumi-400">除外の規則は database/manual-rules.json で変更できます（例：「思案中」「原価」を含む行、【社内】と書いた行など）。</p>
-          </details>
-        ) : null}
-      </div>
-
-      <Modal open={!!editing} onClose={() => setEditing(null)} title={editing && adminEntries.some((e) => e.id === editing.id) ? "ナレッジを編集" : "ナレッジを追加"}>
-        {editing ? (
-          <form
-            className="space-y-3"
-            onSubmit={(e) => {
-              e.preventDefault();
-              saveEntry(editing);
-            }}
-          >
-            <p className="rounded-lg bg-ichi-cream px-3 py-2 text-xs text-sumi-600">
-              マニュアル・会社情報・ホームページに無い内容の補足に使います（最優先で参照されます）。恒久的な内容は顧客対応マニュアル（シート）への追記をおすすめします。
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label className="label">カテゴリ</label>
-                <input className="input" value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })} placeholder="例：お支払い" />
-              </div>
-              <div>
-                <label className="label">キーワード（読点区切り）</label>
-                <input
-                  className="input"
-                  value={editing.keywords.join("、")}
-                  onChange={(e) => setEditing({ ...editing, keywords: e.target.value.split(/[、,，\s]+/).filter(Boolean) })}
-                  placeholder="例：支払い、クレジットカード、現金"
-                />
-              </div>
-            </div>
-            <div>
-              <label className="label">項目（質問）</label>
-              <input className="input" value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} required />
-            </div>
-            <div>
-              <label className="label">内容（回答）</label>
-              <textarea className="input min-h-[140px]" value={editing.content} onChange={(e) => setEditing({ ...editing, content: e.target.value })} required />
-            </div>
-            <div className="flex justify-end gap-2">
-              <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>
-                キャンセル
-              </button>
-              <button type="submit" className="btn-primary" disabled={busy === "save"}>
-                {busy === "save" ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                保存して反映
-              </button>
-            </div>
-          </form>
-        ) : null}
-      </Modal>
     </div>
   );
 }
@@ -407,7 +254,7 @@ function SourcesCard({
           title: "③ ホームページ（ichijoya.co.jp）",
           detail: `${s?.website ?? 0} 件／${data.websiteFetchedAt ? `${formatJst(data.websiteFetchedAt)} に学習` : "—"}（${data.websiteOrigin === "relearned" ? "管理画面で再学習" : "同梱版"}）`,
         },
-        { icon: Pencil, title: "④ 管理画面で追加", detail: `${s?.admin ?? 0} 件` },
+        { icon: Pencil, title: "④ 管理画面で追加・アップロード", detail: `入力 ${s?.admin ?? 0} 件・ファイルから ${s?.upload ?? 0} 件` },
       ]
     : [];
   return (

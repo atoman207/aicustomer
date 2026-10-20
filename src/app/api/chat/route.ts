@@ -57,7 +57,8 @@ export async function POST(req: Request) {
         updatedAt: now,
         messages: [...messages, { role: "assistant", content: reply, at: now }],
         estimateId: existing?.estimateId,
-        meta: { mode, knowledgeSource: plan.snapshot.source, answer: plan.kind },
+        // 管理画面の「AIに質問（テスト）」の会話は test として記録
+        meta: { mode, knowledgeSource: plan.snapshot.source, answer: plan.kind, ...(sessionId.startsWith("admintest-") ? { test: "1" } : {}) },
       });
     } catch {
       // ログ保存失敗は応答に影響させない

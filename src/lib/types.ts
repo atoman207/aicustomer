@@ -9,8 +9,8 @@ export const CHANNEL_LABEL: Record<Channel, string> = {
   line: "LINE",
 };
 
-/** ナレッジの出どころ（優先順：管理画面 → マニュアル → 会社情報 → ホームページ） */
-export type KnowledgeOrigin = "manual" | "company" | "website" | "admin";
+/** ナレッジの出どころ（優先順：管理画面 → アップロード → マニュアル → 会社情報 → ホームページ） */
+export type KnowledgeOrigin = "manual" | "company" | "website" | "admin" | "upload";
 
 export interface KnowledgeEntry {
   id: string;
@@ -24,10 +24,13 @@ export interface KnowledgeEntry {
   anchors?: string[];
   /** お客様の聞き方の例（近い質問にはこの項目をそのまま回答） */
   questions?: string[];
+  /** Supabase に保存したナレッジ：追加・アップロードの元（knowledge_sources.id）・使うかどうか */
+  sourceId?: string | null;
+  enabled?: boolean;
 }
 
 /** 顧客対応マニュアルの読込元 */
-export type KnowledgeSource = "gas" | "sheets_api" | "csv" | "json" | "local";
+export type KnowledgeSource = "gas" | "sheets_api" | "csv" | "json" | "supabase" | "local";
 
 export interface KnowledgeStats {
   manualText: number;
@@ -36,6 +39,7 @@ export interface KnowledgeStats {
   companyStale: number;
   website: number;
   admin: number;
+  upload?: number;
   excluded: number;
 }
 
@@ -156,7 +160,7 @@ export interface AgentTurnResult {
 }
 
 export interface StorageInfo {
-  backend: "redis" | "file" | "memory";
+  backend: "supabase" | "redis" | "file" | "memory";
   persistent: boolean;
   label: string;
   detail?: string;
@@ -166,8 +170,25 @@ export interface IntegrationStatus {
   openai: { configured: boolean; model: string; realtimeModel: string; ok?: boolean; detail?: string };
   storage: StorageInfo;
   knowledge: { source: KnowledgeSource; label: string; entries: number; fetchedAt: string; warning?: string };
-  reception: { sink: "gas" | "sheets_api" | "local"; label: string };
+  reception: { sink: "gas" | "sheets_api" | "supabase" | "local"; label: string };
+  supabase: { configured: boolean; ready: boolean; setupRequired?: boolean; error?: string; projectRef: string };
   twilio: { configured: boolean; number: string; webhookUrl: string };
   line: { configured: boolean; webhookUrl: string; addFriendUrl: string };
   admin: { protected: boolean };
+}
+
+/** 管理画面で追加した情報・アップロードしたファイル（Supabase の knowledge_sources） */
+export interface KnowledgeSourceRecord {
+  id: string;
+  kind: "text" | "file";
+  name: string;
+  mime?: string | null;
+  size?: number | null;
+  category: string;
+  status: "processing" | "done" | "error";
+  entries_count: number;
+  error?: string | null;
+  storage_path?: string | null;
+  excerpt?: string | null;
+  created_at: string;
 }

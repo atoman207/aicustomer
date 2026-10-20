@@ -1,24 +1,19 @@
 "use client";
 
+// 管理画面の各パネル（受付一覧・会話履歴・電話と営業時間・接続状況）。外枠（ヘッダー・サイドバー）は AdminApp
+
 import {
   CheckCircle2,
-  ClipboardList,
   Copy,
-  Database,
   Download,
   FileSpreadsheet,
   Loader2,
-  LogOut,
   MessageSquareText,
   PhoneCall,
   RefreshCw,
-  Settings2,
-  ShieldCheck,
   XCircle,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import KnowledgeAdmin from "./KnowledgeAdmin";
 import { BRAND } from "@/lib/brand";
 import { Badge, Modal, Spinner } from "./ui";
 import type {
@@ -32,16 +27,6 @@ import type {
 import { CHANNEL_LABEL } from "@/lib/types";
 import { formatJst, truncate } from "@/lib/utils";
 
-type Tab = "receptions" | "conversations" | "phone" | "knowledge" | "status";
-
-const TABS: { key: Tab; label: string; icon: typeof ClipboardList }[] = [
-  { key: "receptions", label: "受付一覧", icon: ClipboardList },
-  { key: "conversations", label: "会話履歴", icon: MessageSquareText },
-  { key: "phone", label: "電話・営業時間", icon: Settings2 },
-  { key: "knowledge", label: "ナレッジ", icon: Database },
-  { key: "status", label: "接続状況", icon: ShieldCheck },
-];
-
 const STATUS_LABEL: Record<EstimateStatus, string> = { new: "新規", contacted: "連絡済み", scheduled: "日程確定", closed: "完了" };
 const DAY_LABEL = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -52,67 +37,9 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return j;
 }
 
-export default function AdminDashboard({
-  initialStatus,
-  initialSettings,
-  protectedMode,
-}: {
-  initialStatus: IntegrationStatus;
-  initialSettings: AppSettings;
-  protectedMode: boolean;
-}) {
-  const [tab, setTab] = useState<Tab>("receptions");
-  const router = useRouter();
-
-  async function logout() {
-    await fetch("/api/admin/login", { method: "DELETE" });
-    router.push("/admin/login");
-    router.refresh();
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <nav className="flex max-w-full gap-1 overflow-x-auto rounded-full border border-washi-300 bg-white/80 p-1">
-          {TABS.map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setTab(key)}
-              className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-sm transition ${
-                tab === key ? "bg-ai-600 text-white shadow-soft" : "text-sumi-600 hover:bg-washi-100"
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
-        </nav>
-        <div className="flex items-center gap-2">
-          <Badge tone={initialStatus.openai.configured ? "green" : "amber"}>{initialStatus.openai.configured ? "OpenAI 接続" : "デモモード"}</Badge>
-          {protectedMode ? (
-            <button type="button" className="btn-ghost text-xs" onClick={logout}>
-              <LogOut className="h-4 w-4" />
-              ログアウト
-            </button>
-          ) : (
-            <Badge tone="amber">ADMIN_PASSWORD 未設定（誰でも閲覧可）</Badge>
-          )}
-        </div>
-      </div>
-
-      {tab === "receptions" ? <ReceptionsTab storage={initialStatus.storage} /> : null}
-      {tab === "conversations" ? <ConversationsTab /> : null}
-      {tab === "phone" ? <PhoneSettingsTab initialSettings={initialSettings} /> : null}
-      {tab === "knowledge" ? <KnowledgeAdmin /> : null}
-      {tab === "status" ? <StatusTab initialStatus={initialStatus} /> : null}
-    </div>
-  );
-}
-
 // ---------------- 受付一覧 ----------------
 
-function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage"] }) {
+export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage"] }) {
   const [items, setItems] = useState<EstimateRequest[]>([]);
   const [sinkLabel, setSinkLabel] = useState("");
   const [loading, setLoading] = useState(true);
@@ -343,7 +270,7 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
 
 // ---------------- 会話履歴 ----------------
 
-function ConversationsTab() {
+export function ConversationsTab() {
   const [items, setItems] = useState<ConversationLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -405,6 +332,7 @@ function ConversationsTab() {
                   <td className="whitespace-nowrap">{formatJst(c.updatedAt)}</td>
                   <td className="whitespace-nowrap">
                     <Badge tone={c.channel === "phone" ? "blue" : c.channel === "line" ? "green" : "neutral"}>{CHANNEL_LABEL[c.channel]}</Badge>
+                    {c.meta?.test ? <Badge tone="amber">テスト</Badge> : null}
                   </td>
                   <td>{c.messages.length}</td>
                   <td className="text-xs">{c.meta?.mode ?? "—"}</td>
@@ -446,7 +374,7 @@ function ConversationsTab() {
 
 // ---------------- 電話・営業時間 ----------------
 
-function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSettings }) {
+export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSettings }) {
   const [s, setS] = useState<AppSettings>(initialSettings);
   const [holidaysText, setHolidaysText] = useState(initialSettings.phone.holidays.join("\n"));
   const [saving, setSaving] = useState(false);
@@ -631,7 +559,7 @@ function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSettings })
 
 // ---------------- 接続状況 ----------------
 
-function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus }) {
+export function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus }) {
   const [status, setStatus] = useState<IntegrationStatus>(initialStatus);
   const [checking, setChecking] = useState(false);
   const [copied, setCopied] = useState("");
@@ -685,6 +613,16 @@ function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus }) {
         </button>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
+        <Card title="Supabase（ナレッジ・会話履歴・受付の保存先）" ok={status.supabase.ready}>
+          <p>
+            {status.supabase.ready
+              ? `接続済み（プロジェクト ${status.supabase.projectRef}）`
+              : status.supabase.configured
+                ? status.supabase.error ?? "接続を確認中"
+                : "SUPABASE_URL・SUPABASE_SECRET_KEY が未設定です"}
+          </p>
+          {status.supabase.setupRequired ? <p className="text-xs text-amber-700">サイドバーの「セットアップ」から、テーブルを作る SQL を実行してください。</p> : null}
+        </Card>
         <Card title="OpenAI API（AI応答・音声・要約）" ok={status.openai.configured}>
           <p>チャットモデル：{status.openai.model}</p>
           <p>音声会話モデル：{status.openai.realtimeModel}</p>
@@ -698,16 +636,14 @@ function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus }) {
           </p>
           {status.knowledge.warning ? <p className="text-xs text-amber-700">{status.knowledge.warning}</p> : null}
         </Card>
-        <Card title="受付情報の記録先（スプレッドシート）" ok={status.reception.sink !== "local"}>
+        <Card title="受付情報の記録先" ok={status.reception.sink !== "local"}>
           <p>{status.reception.label}</p>
           <p className="text-xs text-sumi-400">3窓口（テキスト・音声・電話）＋LINE の受付を1つのシートに一元管理します。</p>
         </Card>
         <Card title="アプリ内データの保存先（受付・会話・設定・セッション）" ok={status.storage.persistent}>
           <p>{status.storage.label}</p>
           {status.storage.detail ? <p className="text-xs text-amber-700">{status.storage.detail}</p> : null}
-          <p className="text-xs text-sumi-400">
-            Vercel では Storage › Upstash Redis を追加すると UPSTASH_REDIS_REST_URL / TOKEN が自動設定され、再デプロイ後に永続化されます。
-          </p>
+          <p className="text-xs text-sumi-400">Supabase を設定すると、受付・会話・設定・電話の会話状態がデータベースに保存されます。</p>
         </Card>
         <Card title="Twilio（AI電話受付）" ok={status.twilio.configured}>
           <p>Twilio 番号：{status.twilio.number || "未設定"}</p>

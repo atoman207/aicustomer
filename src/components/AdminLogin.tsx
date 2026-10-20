@@ -35,19 +35,31 @@ export default function AdminLogin() {
   }
 
   return (
-    <form onSubmit={submit} className="card mx-auto w-full max-w-sm space-y-4 p-6">
-      <div className="flex items-center gap-2">
-        <span className="grid h-9 w-9 place-items-center rounded-full bg-ai-600 text-white">
+    <form onSubmit={submit} className="w-full max-w-sm space-y-4 rounded-2xl border border-black/[0.08] bg-white p-6 shadow-[0_2px_14px_rgba(0,0,0,0.05)]">
+      <div className="flex items-center gap-3">
+        <span className="grid h-10 w-10 place-items-center rounded-full bg-[#0d0d0d] text-white">
           <LockKeyhole className="h-4 w-4" />
         </span>
         <div>
-          <p className="font-serif text-lg font-bold text-sumi-800">管理画面ログイン</p>
-          <p className="text-xs text-sumi-400">ADMIN_PASSWORD を入力してください</p>
+          <p className="text-base font-semibold text-[#0d0d0d]">管理画面にログイン</p>
+          <p className="text-xs text-[#8f8f8f]">スタッフ用のパスワードを入力してください</p>
         </div>
       </div>
-      <input type="password" className="input" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="パスワード" autoFocus />
-      {error ? <p className="text-sm text-shu-600">{error}</p> : null}
-      <button type="submit" className="btn-primary w-full" disabled={busy || !password}>
+      <input
+        type="password"
+        className="w-full rounded-xl border border-black/10 px-3 py-2.5 text-sm outline-none transition focus:border-black/30 focus:ring-2 focus:ring-black/5"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        placeholder="パスワード"
+        autoFocus
+        aria-label="パスワード"
+      />
+      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+      <button
+        type="submit"
+        className="flex w-full items-center justify-center gap-1.5 rounded-full bg-[#0d0d0d] py-2.5 text-sm font-medium text-white transition hover:bg-black/80 disabled:bg-black/20"
+        disabled={busy || !password}
+      >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
         ログイン
       </button>

@@ -30,7 +30,7 @@ interface UiMessage {
 }
 
 // お客様に見せる参照元の呼び名（社内向けの「マニュアル」などの言い方は出さない）
-const ORIGIN_SHORT: Record<string, string> = { manual: "サービス案内", company: "会社案内", website: "公式サイト", admin: "最新のご案内" };
+const ORIGIN_SHORT: Record<string, string> = { manual: "サービス案内", company: "会社案内", website: "公式サイト", admin: "最新のご案内", upload: "一畳屋の資料" };
 
 /** OpenAI を使わずに答えた回答の表示（お客様には「公式情報から」。スタッフ向けの詳細はツールチップ） */
 function answeredLocally(mode?: string): { label: string; detail: string } | null {

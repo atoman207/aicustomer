@@ -1,7 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import SiteFooter from "@/components/SiteFooter";
-import SiteHeader from "@/components/SiteHeader";
 import { ASSETS } from "@/lib/brand";
 
 export const dynamic = "force-dynamic";
@@ -53,11 +51,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body className="flex min-h-screen flex-col">
-        <SiteHeader />
-        <main className="flex-1">{children}</main>
-        <SiteFooter />
-      </body>
+      {/* ヘッダー・フッターはお客様向けページ（app/(site)/layout.tsx）と管理画面（独自のヘッダー）でそれぞれ持つ */}
+      <body className="min-h-screen">{children}</body>
     </html>
   );
 }

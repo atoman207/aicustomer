@@ -54,7 +54,13 @@ const SMALLTALK: { re: RegExp; reply: string }[] = [
   { re: /^(さようなら|失礼します|またね|では(また)?|以上です)[!！。、…〜ー]*$/, reply: "ご相談ありがとうございました。またいつでもお気軽にご相談ください。" },
 ];
 
-const ORIGIN_LABEL: Record<string, string> = { manual: "顧客対応マニュアル", company: "会社情報", website: "ホームページ", admin: "管理画面で追加" };
+const ORIGIN_LABEL: Record<string, string> = {
+  manual: "顧客対応マニュアル",
+  company: "会社情報",
+  website: "ホームページ",
+  admin: "管理画面で追加",
+  upload: "一畳屋の資料（管理画面で登録）",
+};
 
 function toSource(h: SearchHit): AnswerSource {
   return { id: h.entry.id, title: h.entry.title, category: h.entry.category, origin: h.entry.origin, score: Math.round(h.score * 100) / 100 };
@@ -115,7 +121,7 @@ function matchFaq(query: string, entries: KnowledgeEntry[]): SearchHit | null {
   // 質問と違う商品の項目には答えない（「障子紙の違い」に襖紙の項目、「網戸」に障子の項目、など）
   const asked = productFamilies(query);
   const candidates = entries.filter((e) => {
-    if (e.origin !== "company" && e.origin !== "admin") return false;
+    if (e.origin !== "company" && e.origin !== "admin" && e.origin !== "upload") return false;
     if (!asked.length) return true;
     const own = productFamilies(`${e.title} ${(e.questions ?? []).join(" ")}`);
     return own.length === 0 || own.some((f) => asked.includes(f));
