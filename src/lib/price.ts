@@ -13,7 +13,14 @@ export interface PriceAnswer {
 }
 
 const PRICE_INTENT = /(いくら|幾ら|料金|価格|値段|費用|単価|相場|金額|円|安い|安く|高い|コスト|予算|お手頃|手頃|費(は|って|を|が|$|\?|？))/;
-const OTHER_INTENT = /(違い|特徴|とは|どんな|おすすめ|オススメ|何日|日数|工期|いつ|期間|仕上が|納期|強度|破れ|選び方|メリット|デメリット|できますか|対応)/;
+const OTHER_INTENT =
+  /(違い|特徴|とは|どんな|おすすめ|オススメ|何日|日数|工期|いつ|期間|仕上が|納期|強度|破れ|選び方|メリット|デメリット|できますか|対応|何年|年数|耐用|寿命|長持ち|もちます|持ちます|もつ|持つ|タイミング|替え時|時期|目安|人気|選ばれ|種類|効果|効き目|安全|ブヨブヨ|江戸間|京間|サンプル|見本)/;
+/** 「値段の違いは？」「大きさで料金は変わる？」は、料金表ではなく理由の説明（会社情報）で答える */
+const WHY_PRICE = /((値段|金額|価格|料金)(の|は|が)?(違い|違う|違います|差|変わ)|価格差|何が違|なぜ(高い|安い)|(高い|安い)(もの|物|の)?と(安い|高い))/;
+/** 「処分費は含まれますか」のような、料金に含まれるかどうかの確認（会社情報で答える） */
+const INCLUSION = /(含まれ|込み(です|でしょう|になり)|入って(い)?ますか|別途(かかり|必要))/;
+/** 新しく作る（新調）の質問。新調の料金がない表（障子など）では答えない */
+const NEW_MAKE = /(新調|作り替え|作りかえ|新しく作)/;
 const CHEAP = /(一番安い|いちばん安い|最安|安い|お手頃|手頃|安く|格安)/;
 const PREMIUM = /(一番高い|いちばん高い|最高級|高級|一番良い|いちばん良い|グレードの高い)/;
 const QUANTITY = /([0-9０-９]+|[一二三四五六七八九十]+)\s*(畳|帖|枚|本|部屋|間|か所|箇所)/;
@@ -37,6 +44,8 @@ export function normPrice(s: string): string {
     .replace(/しょうじ/g, "障子")
     .replace(/あみど|アミ戸|アミド/g, "網戸")
     .replace(/たたみ/g, "畳")
+    // 「畳のヘリ（畳の縁）」はヘリのこと
+    .replace(/畳のヘリ(?!有り|無し)/g, "ヘリ")
     .replace(/張り替え|貼り替え|貼替え/g, "張替え");
 }
 
@@ -70,6 +79,61 @@ function colMatches(label: string, nq: string): boolean {
   return parts.some((p) => nq.includes(p)) || (/ボード/.test(n) && /ボード/.test(nq)) || (/ワラ/.test(n) && /ワラ/.test(nq)) || (/床暖/.test(n) && /床暖/.test(nq));
 }
 
+/** 列名のうち、ほかの列と区別できる部分（「新調（畳床：本ワラ）」なら「本ワラ」）が質問に含まれるか */
+function colDistinct(label: string, nq: string): boolean {
+  const n = normPrice(label);
+  if (nq.includes(n)) return true;
+  const parts = n
+    .split(/[（）():：]/)
+    .filter((p) => p.length >= 2)
+    .slice(1)
+    .filter((p) => p !== "畳床");
+  return (
+    parts.some((p) => nq.includes(p)) ||
+    (/ボード/.test(n) && /ボード/.test(nq)) ||
+    (/ワラ/.test(n) && /ワラ/.test(nq)) ||
+    (/床暖/.test(n) && /床暖/.test(nq)) ||
+    (/3型/.test(n) && /(3型|建材)/.test(nq)) ||
+    (/置き畳/.test(n) && /置き畳/.test(nq))
+  );
+}
+
+/**
+ * 「新調はいくら？」のように列の共通部分（新調）だけで一致したときは、その種類の最初の列だけで答える。
+ * 畳の新調は最も一般的な建材床（3型）が最初の列（一畳屋の案内の基準）。
+ */
+function narrowCols(t: PriceTable, cols: number[], nq: string): number[] {
+  if (cols.length < 2) return cols;
+  const head = (i: number) => normPrice(t.columns[i]).split("(")[0];
+  const out = cols.filter((i) => colDistinct(t.columns[i], nq));
+  const heads = new Set(out.map(head));
+  for (const i of cols) {
+    if (out.includes(i) || heads.has(head(i))) continue;
+    out.push(i);
+    heads.add(head(i));
+  }
+  return out.sort((a, b) => a - b);
+}
+
+/** この表で新調の料金を答えられるか（列名・品名・表題に「新調」がある） */
+function hasNewPrices(t: PriceTable): boolean {
+  return /新調/.test(t.title) || t.columns.some((c) => /新調/.test(c)) || t.rows.some((r) => /新調/.test(r.label));
+}
+
+/** 表に添える一畳屋からの案内（manual-rules.json の tableGuides） */
+function guidesFor(t: PriceTable, nq: string): string[] {
+  return (t.guides ?? [])
+    .filter((g) => {
+      if (!g.when) return true;
+      try {
+        return new RegExp(g.when).test(nq);
+      } catch {
+        return false;
+      }
+    })
+    .map((g) => g.text);
+}
+
 function num(v: string): number {
   const n = Number(v.replace(/[^\d.]/g, ""));
   return Number.isFinite(n) && /\d/.test(v) ? n : NaN;
@@ -97,9 +161,16 @@ function scoreTables(nq: string, tables: PriceTable[]): Scored[] {
       score += ((kwCount.get(k) ?? 1) === 1 ? 2 : 1) + k.length / 6;
     }
     if (labelTokens(t.title).some((tok) => tok.length >= 3 && nq.includes(tok))) score += 1.5;
+    // 表題そのもの（「ヘリ」など短いものも）が質問にあれば優先（「ヘリ無し」「ヘリ有り」は別の表）
+    const title = normPrice(t.title);
+    if (title.length >= 2 && nq.replace(/ヘリ(無し|有り)/g, "").includes(title)) score += 2;
     const rows = t.rows.filter((r) => rowMatches(r, nq, words));
     if (rows.length) score += 3;
-    const cols = t.columns.map((c, i) => (colMatches(c, nq) ? i : -1)).filter((i) => i >= 0);
+    const cols = narrowCols(
+      t,
+      t.columns.map((c, i) => (colMatches(c, nq) ? i : -1)).filter((i) => i >= 0),
+      nq,
+    );
     if (cols.length) score += 0.5;
     return { t, index, score, rows, cols, keywordHit };
   });
@@ -200,15 +271,22 @@ function tableBlock(s: Scored, nq: string, style: AnswerStyle, info: ReturnType<
 
   // 行・列の指定がなく、質問の中身の語が注記に当たる場合（処分費・ダニ対策など）は注記で答える
   const words = contentWords(nq, t);
-  if (!s.rows.length && !s.cols.length && words.length) {
+  const guides = guidesFor(t, nq);
+  const newRows = NEW_MAKE.test(nq) && t.rows.some((r) => /新調/.test(r.label));
+  if (!s.rows.length && !s.cols.length && words.length && !newRows) {
     const notes = matchingNotes(t, words, true);
     if (notes.length) {
-      const text = style === "voice" ? `${notes.slice(0, 2).join("、").replace(/※/g, "")}です。` : [`【${name}】の料金表の注記より`, ...notes.slice(0, 4)].join("\n");
+      const text =
+        style === "voice"
+          ? `${notes.slice(0, 2).join("、").replace(/※/g, "")}です。${guides.slice(0, 1).join("").replace(/※/g, "")}`
+          : [`【${name}】の料金表の注記より`, ...notes.slice(0, 4), ...guides].join("\n");
       return { text, rows: 0 };
     }
   }
 
   let rows = s.rows.length ? s.rows : t.rows.filter((r) => r.values.some(Boolean) || r.extra.length);
+  // 「網戸の新調は？」のように品名に「新調」がある表は、新調の行だけで答える
+  if (!s.rows.length && NEW_MAKE.test(nq) && !/張替え/.test(nq) && rows.some((r) => /新調/.test(r.label))) rows = rows.filter((r) => /新調/.test(r.label));
   const cheap = CHEAP.test(nq);
   const premium = PREMIUM.test(nq);
   if (!s.rows.length && (cheap || premium) && t.columns.length) {
@@ -227,6 +305,7 @@ function tableBlock(s: Scored, nq: string, style: AnswerStyle, info: ReturnType<
       const vals = rows.map((r) => num(r.values[cols[0]] ?? "")).filter((n) => Number.isFinite(n));
       if (vals.length) text += `種類によって${Math.min(...vals).toLocaleString("ja-JP")}円から${Math.max(...vals).toLocaleString("ja-JP")}円まであります。`;
     }
+    if (guides.length) text += guides[0].replace(/※/g, "");
     return { text: text.replace(/。です。/g, "です。"), rows: rows.length };
   }
   const lines = rows.slice(0, 24).map((r) => `・${rowLine(t, r, cols)}`);
@@ -243,6 +322,7 @@ function tableBlock(s: Scored, nq: string, style: AnswerStyle, info: ReturnType<
     ...lines,
     others.length ? `（このほか ${others.join("・")} の料金もご案内できます）` : "",
     ...notes,
+    ...guides,
   ]
     .filter(Boolean)
     .join("\n");
@@ -284,15 +364,16 @@ function answerFromAnyNotes(question: string, nq: string, tables: PriceTable[], 
   const found: { t: PriceTable; notes: string[] }[] = [];
   for (const t of tables) {
     const notes = matchingNotes(t, contentWords(nq, t), true);
-    if (notes.length) found.push({ t, notes });
+    if (notes.length) found.push({ t, notes: [...notes.slice(0, 4), ...guidesFor(t, nq)] });
   }
   if (found.length === 0 || found.length > 2) return null;
   const info = globalInfo(tables);
   if (style === "voice") {
     const text = found.flatMap((f) => f.notes.slice(0, 2)).join("、").replace(/※/g, "");
-    return { reply: `${text}です。正式なお見積りは、担当者が現地を見てから無料でお出しします。`, tableIds: found.map((f) => f.t.id), rows: 0 };
+    const spoken = /。$/.test(text) ? text : `${text}です。`;
+    return { reply: voiceClean(`${spoken}正式なお見積りは、担当者が現地を見てから無料でお出しします。`), tableIds: found.map((f) => f.t.id), rows: 0 };
   }
-  const blocks = found.map((f) => [`【${displayTitle(f.t).name}】の料金表の注記より`, ...f.notes.slice(0, 4)].join("\n"));
+  const blocks = found.map((f) => [`【${displayTitle(f.t).name}】の料金表の注記より`, ...f.notes].join("\n"));
   const footer = [info.expenses ? `※別途、諸経費${info.expenses}が工事全体に対してかかります。` : "", "正式なお見積りは、担当者が現地を見てから無料で提出します。"];
   void question;
   return { reply: [...blocks, ...footer].filter(Boolean).join("\n"), tableIds: found.map((f) => f.t.id), rows: 0 };
@@ -304,24 +385,47 @@ function answerFromAnyNotes(question: string, nq: string, tables: PriceTable[], 
 export function answerPrice(question: string, tables: PriceTable[], style: AnswerStyle = "text"): PriceAnswer | null {
   if (tables.length === 0) return null;
   const nq = normPrice(question);
+  if (INCLUSION.test(nq)) return null;
   const priceIntent = PRICE_INTENT.test(nq);
   const scored = scoreTables(nq, tables).filter((s) => s.score >= 1);
+  // 品名・列の指定がない「値段の違いは？」は理由の説明で答える（「古都とさくらの値段の違い」は料金表で）
+  if (WHY_PRICE.test(nq) && !scored.some((s) => s.rows.length > 0 || s.cols.length > 0)) return null;
   if (scored.length === 0) return priceIntent ? answerFromAnyNotes(question, nq, tables, style) : null;
   const specific = scored.some((s) => s.rows.length > 0 || (s.cols.length > 0 && s.keywordHit));
   if (!priceIntent && (!specific || OTHER_INTENT.test(nq))) return null;
 
   scored.sort((a, b) => b.score - a.score || a.index - b.index);
   // 「襖と障子の料金」のように複数の種類を聞かれたら、種類ごとに一番合う表を答える（文字の相談のみ）
-  const families = FAMILIES.filter((f) => nq.includes(normPrice(f)));
+  // 種類が 1 つなのに、一番合った表が別の種類の表なら、聞かれた種類の表で答える
+  // （「網戸の張替えと新調」が「新調」の語で畳の表にならないように）。「ヘリ無し畳」「ヘリ有り畳」は畳として数える
+  const famQ = nq.replace(/ヘリ(無し|有り)/g, "");
+  const families = FAMILIES.filter((f) => famQ.includes(normPrice(f)));
+  const tableOf = (f: string) => {
+    const nf = normPrice(f);
+    return (
+      scored.find((s) => normPrice(s.t.title) === nf) ??
+      scored.find((s) => s.t.keywords.some((k) => normPrice(k) === nf) || normPrice(s.t.title).startsWith(nf))
+    );
+  };
+  const familyOfTable = (t: PriceTable) => {
+    const title = normPrice(t.title).replace(/^ヘリ(無し|有り)/, "畳");
+    return FAMILIES.find((f) => title.startsWith(normPrice(f)));
+  };
   let picks: Scored[] = [scored[0]];
-  if (style === "text" && families.length >= 2) {
+  if (families.length === 1) {
+    const top = familyOfTable(scored[0].t);
+    if (top && top !== families[0]) picks = [tableOf(families[0]) ?? scored[0]];
+  } else if (style === "text" && families.length >= 2) {
     picks = families
-      .map((f) => scored.find((s) => s.t.keywords.some((k) => normPrice(k) === normPrice(f)) || normPrice(s.t.title).startsWith(normPrice(f))))
+      .map(tableOf)
       .filter((s): s is Scored => Boolean(s))
       .filter((s, i, arr) => arr.indexOf(s) === i)
       .slice(0, 3);
     if (picks.length === 0) picks = [scored[0]];
   }
+  // 新調の料金がない表（障子など）では新調の質問に答えない（現場を見てからのお見積り。会社情報で案内）
+  if (NEW_MAKE.test(nq)) picks = picks.filter((s) => hasNewPrices(s.t));
+  if (picks.length === 0) return null;
 
   const info = globalInfo(tables);
   const blocks: string[] = [];

@@ -10,7 +10,7 @@ import { answerArea } from "./area";
 import { env } from "./env";
 import { entryHash, getKnowledge } from "./knowledge";
 import { findLearned, logUnanswered, questionKey, saveLearned } from "./learned";
-import { answerPrice, sliceTableForQuestion, voiceClean, type AnswerStyle } from "./price";
+import { answerPrice, normPrice, sliceTableForQuestion, voiceClean, type AnswerStyle } from "./price";
 import { hybridSearch, keywordScore, keywordSearch } from "./retrieval";
 import { recordAnswer, type AnswerOriginKind } from "./usage";
 import type { Channel, ChatMessage, KnowledgeEntry, KnowledgeSnapshot, SearchHit } from "./types";
@@ -102,10 +102,24 @@ function similarity(a: string, b: string): number {
  * 会社情報・管理画面で追加したナレッジのうち、質問にはっきり当てはまるもの。
  * 「お客様の聞き方の例（questions）」との近さを主に、キーワードの一致も合わせて判定する。
  */
+/** 商品の種類（「ヘリ無し畳」「ヘリ付き」は畳として数える） */
+const PRODUCT_FAMILIES = ["畳", "襖", "障子", "網戸", "ヘリ"];
+function productFamilies(text: string): string[] {
+  const n = normPrice(text).replace(/ヘリ(無し|有り)/g, "");
+  return PRODUCT_FAMILIES.filter((f) => n.includes(f));
+}
+
 function matchFaq(query: string, entries: KnowledgeEntry[]): SearchHit | null {
   const qk = questionKey(query);
   if (!qk) return null;
-  const candidates = entries.filter((e) => e.origin === "company" || e.origin === "admin");
+  // 質問と違う商品の項目には答えない（「障子紙の違い」に襖紙の項目、「網戸」に障子の項目、など）
+  const asked = productFamilies(query);
+  const candidates = entries.filter((e) => {
+    if (e.origin !== "company" && e.origin !== "admin") return false;
+    if (!asked.length) return true;
+    const own = productFamilies(`${e.title} ${(e.questions ?? []).join(" ")}`);
+    return own.length === 0 || own.some((f) => asked.includes(f));
+  });
   const scored = candidates
     .map((entry) => {
       const ex = Math.max(0, ...(entry.questions ?? []).map((x) => similarity(qk, questionKey(x))));

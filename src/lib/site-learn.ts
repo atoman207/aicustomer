@@ -19,6 +19,8 @@ export const SITE_PAGES: { path: string; label: string }[] = [
  */
 const SITE_OVERRIDES: { pattern: RegExp; replace?: string }[] = [
   { pattern: /2日仕上げ/g, replace: "" },
+  // 一畳屋の案内では「迷ったら さくら」「一番人気は やすらぎ」
+  { pattern: /「迷ったらコレ」と言える商品です/g, replace: "一番人気の商品です" },
   { pattern: /^※\s*$/ },
   { pattern: /7名在中|県内最多/ },
   { pattern: /年間2,000件/ },

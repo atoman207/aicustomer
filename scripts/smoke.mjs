@@ -96,6 +96,20 @@ await check("POST /api/knowledge/answer（よくある質問は AI なし）", a
   if (!res.ok || body.mode !== "local" || !/17:00/.test(body.reply)) throw new Error(`${body.mode} ${String(body.reply).slice(0, 80)}`);
   return `${body.mode}/${body.kind}: ${body.reply.slice(0, 30)}…`;
 });
+await check("POST /api/knowledge/answer（商品知識：耐用年数・障子の新調・ヘリの料金）", async () => {
+  const cases = [
+    ["極みは何年もちますか？", "faq", /30年/],
+    ["障子の新調はいくらですか？", "faq", /現場を見て/],
+    ["畳のヘリの値段は？", "price", /純金/],
+  ];
+  const out = [];
+  for (const [question, kind, re] of cases) {
+    const { res, body } = await json("/api/knowledge/answer", { method: "POST", body: JSON.stringify({ question }) });
+    if (!res.ok || body.kind !== kind || !re.test(body.reply)) throw new Error(`${question} → ${body.mode}/${body.kind} ${String(body.reply).slice(0, 50)}`);
+    out.push(`${body.kind}`);
+  }
+  return out.join("・");
+});
 await check("GET /api/usage", async () => {
   const { res, body } = await json("/api/usage");
   if (res.status === 401) return "401（管理画面のパスワード保護あり）";

@@ -16,6 +16,13 @@ export interface ManualRules {
   columnAlias: Record<string, Record<string, string>>;
   /** 表題ごとの検索語（お客様の言い方） */
   tableKeywords: Record<string, string[]>;
+  /** 料金表の回答に添える案内（一畳屋からの補足。when は質問に含まれる語の正規表現。省略時は常に添える） */
+  tableGuides?: (TableGuide & { table: string })[];
+}
+
+export interface TableGuide {
+  when?: string;
+  text: string;
 }
 
 export const DEFAULT_MANUAL_RULES: ManualRules = {
@@ -24,6 +31,7 @@ export const DEFAULT_MANUAL_RULES: ManualRules = {
   removeText: ["【個人[^】]*】", "（スエヨシ）", "\\(スエヨシ\\)", "（安企画）", "\\(安企画\\)"],
   columnAlias: {},
   tableKeywords: {},
+  tableGuides: [],
 };
 
 export interface PriceRow {
@@ -42,6 +50,8 @@ export interface PriceTable {
   rows: PriceRow[];
   notes: string[];
   keywords: string[];
+  /** 回答に添える案内（manual-rules.json の tableGuides から） */
+  guides?: TableGuide[];
 }
 
 export interface ParsedManual {
@@ -79,6 +89,7 @@ interface CompiledRules {
   remove: RegExp[];
   alias: Record<string, Record<string, string>>;
   keywords: Record<string, string[]>;
+  guides: (TableGuide & { table: string })[];
 }
 
 function compileRules(r: ManualRules): CompiledRules {
@@ -88,6 +99,7 @@ function compileRules(r: ManualRules): CompiledRules {
     remove: compile(r.removeText).map((x) => new RegExp(x.source, "g")),
     alias: r.columnAlias ?? {},
     keywords: r.tableKeywords ?? {},
+    guides: r.tableGuides ?? [],
   };
 }
 
@@ -484,7 +496,7 @@ function rowText(t: PriceTable, row: PriceRow, onlyCols?: number[]): string {
 export function tableToText(t: PriceTable, opts: { rows?: PriceRow[]; cols?: number[]; notes?: boolean } = {}): string {
   const head = `【${t.title}】${t.caption ? `（${t.caption}）` : ""}`;
   const rows = (opts.rows ?? t.rows).map((r) => rowText(t, r, opts.cols));
-  const notes = opts.notes === false ? [] : t.notes;
+  const notes = opts.notes === false ? [] : [...t.notes, ...(t.guides ?? []).map((g) => g.text)];
   return [head, ...rows, ...notes].join("\n");
 }
 
@@ -539,6 +551,8 @@ export function parseManualGrid(rows: string[][], rulesIn: ManualRules = DEFAULT
   kept.forEach((t, i) => {
     t.id = `m-p${String(i + 1).padStart(2, "0")}`;
     t.keywords = keywordsFor(t, rules);
+    const guides = rules.guides.filter((g) => g.table === t.title).map(({ when, text }) => (when ? { when, text } : { text }));
+    if (guides.length) t.guides = guides;
   });
   const tableEntries: KnowledgeEntry[] = kept.map((t) => ({
     id: t.id,
