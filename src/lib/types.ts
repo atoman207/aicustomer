@@ -22,6 +22,8 @@ export interface KnowledgeEntry {
   origin?: KnowledgeOrigin;
   /** お客様の聞き方の例 */
   questions?: string[];
+  /** 話題（畳・襖・障子・網戸・店舗・会社・工期）。スプレッドシートとホームページで同じ話題ならスプレッドシートを正にする */
+  topics?: string[];
 }
 
 /** 顧客対応マニュアルの読込元 */
@@ -60,6 +62,9 @@ export interface SearchHit {
 }
 
 export type EstimateStatus = "new" | "contacted" | "scheduled" | "closed";
+
+/** 対応状況（管理画面と、受付一覧のシートの「ステータス」の欄で同じ言葉を使う） */
+export const ESTIMATE_STATUS_LABEL: Record<EstimateStatus, string> = { new: "新規", contacted: "連絡済み", scheduled: "日程確定", closed: "完了" };
 
 export interface EstimateRequest {
   id: string;

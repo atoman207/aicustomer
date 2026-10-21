@@ -283,6 +283,29 @@ function checkPrices(list: KnowledgeEntry[], index: PriceIndex) {
   return { ok, stale };
 }
 
+/**
+ * 話題の見分け（スプレッドシートとホームページの同じ話題を結びつけ、回答ではスプレッドシートを正にするため）
+ *   ホームページは見出しの分類（「畳替え｜」「襖・障子・アミ戸｜」）より後ろの語で見る（分類だけでは話題が広すぎるため）
+ */
+const TOPIC_RULES: [string, RegExp][] = [
+  ["tatami", /畳替え|表替え|畳表|畳床|畳について|畳（|ヘリ|へり無し|置き畳|琉球|極み|古都|雅|さくら|やすらぎ|きずな|なごみ|めぐみ|当日仕上げ/],
+  ["fusuma", /襖|ふすま/],
+  ["shoji", /障子/],
+  ["amido", /網戸|アミ戸|アミド/],
+  ["store", /店舗|ショールーム|合志店|中央店|西店|玉名店|名古屋店|来店/],
+  ["company", /会社概要|株式会社|営業時間|定休日|営業範囲|対応エリア/],
+  ["schedule", /工期|当日仕上げ|何日/],
+];
+
+export function topicsOf(e: KnowledgeEntry): string[] {
+  const parts = e.title.split("｜");
+  const text = e.origin === "website" && parts.length > 1 ? parts.slice(1).join("｜") : e.title;
+  const found = TOPIC_RULES.filter(([, re]) => re.test(text)).map(([t]) => t);
+  // ホームページの見出しに話題の語がなければ分類で判断（「畳替え｜一畳屋が選ばれる理由｜品質」→ 畳）
+  if (!found.length && e.origin === "website" && parts.length > 1) return TOPIC_RULES.filter(([, re]) => re.test(parts[0]) && !/・/.test(parts[0])).map(([t]) => t);
+  return found;
+}
+
 function hashEntries(entries: KnowledgeEntry[], tables: PriceTable[]): string {
   const h = crypto.createHash("sha1");
   for (const e of entries) h.update(`${e.id}|${e.title}|${e.content}\n`);
@@ -315,7 +338,8 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
 
   // 料金はスプレッドシートの料金表が正：違う金額を書いたホームページの項目は使わない
   const site = checkPrices(siteAll, priceIndex(manual.tables));
-  const entries = [...manual.entries, ...site.ok];
+  // 話題をつけておく（同じ話題がスプレッドシートにもあるときは、回答でスプレッドシートを先に・正として使う）
+  const entries = [...manual.entries, ...site.ok].map((e) => ({ ...e, topics: topicsOf(e) }));
   const tables = manual.tables;
   const source: KnowledgeSource = manual.source;
   const settingsLink = parseSheetLink(sheetUrl);

@@ -5,9 +5,14 @@ import SiteHeader from "@/components/SiteHeader";
 export default function SiteLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
-      <SiteHeader />
+      {/* site-chrome：今のホームページの窓（embed.js）の中では出さない */}
+      <div className="site-chrome contents">
+        <SiteHeader />
+      </div>
       <main className="flex-1">{children}</main>
-      <SiteFooter />
+      <div className="site-chrome contents">
+        <SiteFooter />
+      </div>
     </div>
   );
 }

@@ -1,6 +1,8 @@
 // AI の回答を読みやすく表示する（【見出し】・「・」の箇条書き・「※」の注記・電話番号／URL のリンク）
-//   文字を少しずつ受け取っている途中（ストリーミング中）でもそのまま使える
+//   ・日本語の本文の書き方にそろえる：全角の英数字は半角、金額は 3 桁区切り、長い段落は 1〜2 文ずつの段落に（jtext.ts）
+//   ・文字を少しずつ受け取っている途中（ストリーミング中）でもそのまま使える
 import type { ReactNode } from "react";
+import { polishJa, toParagraphs } from "@/lib/jtext";
 
 const TOKEN = /(https?:\/\/[^\s）)」』]+|0120[-‐ー－]?\d{2,3}[-‐ー－]?\d{3}|0\d{1,4}[-‐ー－]\d{1,4}[-‐ー－]\d{3,4})/g;
 
@@ -35,7 +37,7 @@ type Block = { type: "p" | "note" | "head" | "total"; text: string; rest?: strin
 
 function blocks(text: string): Block[] {
   const out: Block[] = [];
-  for (const raw of text.split("\n")) {
+  for (const raw of polishJa(text).split("\n")) {
     const line = raw.trimEnd();
     if (!line.trim()) continue;
     const item = line.match(/^\s*(?:[・･•]|[-*]\s)\s*(.*)$/);
@@ -56,7 +58,12 @@ function blocks(text: string): Block[] {
       out.push({ type: "head", text: head[1], rest: head[2] });
       continue;
     }
-    out.push({ type: /^\s*※/.test(line) ? "note" : "p", text: line.trim() });
+    if (/^\s*※/.test(line)) {
+      out.push({ type: "note", text: line.trim() });
+      continue;
+    }
+    // 文章は 1〜2 文ずつの段落に分ける
+    for (const p of toParagraphs(line.trim())) out.push({ type: "p", text: p });
   }
   return out;
 }
@@ -64,7 +71,7 @@ function blocks(text: string): Block[] {
 export default function RichText({ text }: { text: string }) {
   const list = blocks(text);
   return (
-    <div className="space-y-1.5">
+    <div className="rich-ja space-y-2.5">
       {list.map((b, i) => {
         if (b.type === "list") {
           return (

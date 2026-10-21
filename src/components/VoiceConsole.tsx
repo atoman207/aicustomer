@@ -26,6 +26,10 @@ import { clearConversation, loadConversation, saveConversation, transcriptForAi,
 import { FIELD_LABEL, emptyDraft, keepTouched, mergeDraft, missingFields, normalizeDraft, type IntakeState } from "@/lib/intake";
 import type { ChatMessage, EstimateRequest, IntakeDraft } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { createVoiceGate, unlockAudioContext, type VoiceGate } from "@/lib/voice-gate";
+
+/** 割り込んだ直後に始まった発話は、割り込み（AI を止めて話した）として扱う */
+const BARGE_SPEECH_MS = 3000;
 
 type Status = "idle" | "connecting" | "live" | "ended";
 type Mode = "openai" | "demo";
@@ -153,6 +157,17 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   const saveTimerRef = useRef<number | undefined>(undefined);
   const dirtyRef = useRef(false);
   const savedSigRef = useRef("");
+  // 割り込みの判定（AI の声が、相づち「はい」・咳・雑音・スピーカーの回り込みで途切れないように）
+  const aiAudioRef = useRef(false); // AI の音声が流れている
+  const speechRef = useRef<{ duringAi: boolean; bargedIn: boolean } | null>(null); // お客様の発話（AI が話している間に始まったか）
+  const ignoredItemsRef = useRef<Set<string>>(new Set()); // 聞き流した短い音（会話から消した項目）
+  const pendingCreateRef = useRef(false); // 止めた応答が終わってから次の応答を始める
+  const mutedRef = useRef(false);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  // マイクの関所（AI の声が流れている間はマイクを送らない・はっきりした発話で割り込む。voice-gate.ts）
+  const gateRef = useRef<VoiceGate | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const lastBargeRef = useRef(-1e9);
 
   useEffect(() => {
     linesRef.current = lines;
@@ -223,6 +238,8 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         }
       }
       void endSession(false);
+      void audioCtxRef.current?.close().catch(() => undefined);
+      audioCtxRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -260,9 +277,23 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     }
   };
 
+  /** お客様が AI の声にかぶせてはっきり話し続けた（マイクの関所から）：AI を止めて聞く */
+  function bargeIn() {
+    lastBargeRef.current = performance.now();
+    if (speechRef.current) speechRef.current.bargedIn = true;
+    interruptAi();
+  }
+
+  function stopGate() {
+    gateRef.current?.close();
+    gateRef.current = null;
+  }
+
   async function endSession(save = true) {
     liveRef.current = false;
     pendingRef.current = null;
+    stopGate();
+    remoteStreamRef.current = null;
     recRef.current?.abort();
     recRef.current = null;
     stopSpeaking();
@@ -305,7 +336,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ query: args.query ?? "", k: 4 }),
         });
-        const j = (await res.json()) as { answer?: string; mode?: string; hits?: { title: string; content: string }[]; sources?: { title: string }[] };
+        const j = (await res.json()) as { answer?: string; mode?: string; hits?: { title: string; content: string; from?: string }[]; sources?: { title: string }[] };
         const hits = j.hits ?? [];
         setSources((j.sources?.length ? j.sources : hits).map((h) => h.title));
         // answer があれば（料金表・会社情報・学習済みの回答）それを根拠に話す。なければ関係するナレッジだけを渡す
@@ -313,7 +344,8 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
           j.answer
             ? { answer: j.answer }
             : {
-                results: hits.map((h) => ({ title: h.title, content: h.content })),
+                // from：スプレッドシート（正）／ホームページ（補足）。同じ内容はスプレッドシートで答える
+                results: hits.map((h) => ({ from: h.from, title: h.title, content: h.content })),
                 note: hits.length === 0 ? "該当するナレッジがありません。推測せず、担当者からの折り返しを案内してください。" : undefined,
               },
         );
@@ -350,23 +382,43 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     const calls = (ev.response?.output ?? []).filter(
       (it) => it.type === "function_call" && it.call_id && it.name && !handledCalls.current.has(it.call_id),
     );
-    if (calls.length === 0) return;
+    if (calls.length === 0) {
+      // お客様が話しかけて止めた応答が終わったら、その発言への応答を始める
+      if (pendingCreateRef.current) {
+        pendingCreateRef.current = false;
+        sendEvent({ type: "response.create" });
+      }
+      return;
+    }
     calls.forEach((c) => handledCalls.current.add(c.call_id!));
     const outputs = await Promise.all(calls.map((c) => toolOutput(c.name!, c.arguments ?? "{}")));
     calls.forEach((c, i) => {
       sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: c.call_id, output: outputs[i] } });
     });
+    pendingCreateRef.current = false;
+    sendEvent({ type: "response.create" });
+  }
+
+  /** AI の発話を止める（お客様が話し続けたとき・文字で話しかけたとき）。生成中の応答と、再生中の音声の両方 */
+  function interruptAi() {
+    if (responseActiveRef.current) sendEvent({ type: "response.cancel" });
+    if (aiAudioRef.current) sendEvent({ type: "output_audio_buffer.clear" });
+  }
+
+  /** お客様の発言に応答させる（止めた応答がまだ終わっていなければ、終わってから） */
+  function requestResponse() {
+    if (responseActiveRef.current) {
+      pendingCreateRef.current = true;
+      return;
+    }
     sendEvent({ type: "response.create" });
   }
 
   /** お客様の文字入力・システム通知をモデルに渡して応答させる（AIが話している途中なら止めてから） */
   function sendUserText(text: string) {
-    if (responseActiveRef.current) {
-      sendEvent({ type: "response.cancel" });
-      sendEvent({ type: "output_audio_buffer.clear" });
-    }
+    interruptAi();
     sendEvent({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text }] } });
-    sendEvent({ type: "response.create" });
+    requestResponse();
   }
 
   function handleServerEvent(ev: RtEvent) {
@@ -374,11 +426,22 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
       case "response.created":
         responseActiveRef.current = true;
         break;
-      case "input_audio_buffer.committed":
-        if (ev.item_id) upsertLine(ev.item_id, "user", "…", false);
+      case "input_audio_buffer.committed": {
+        if (!ev.item_id) break;
+        const s = speechRef.current;
+        speechRef.current = null;
+        // AI が話している間の短い音（相づち・咳・雑音）で、AI がまだ話し続けているなら聞き流す（会話からも消す）
+        if (s?.duringAi && !s.bargedIn && (aiAudioRef.current || responseActiveRef.current)) {
+          ignoredItemsRef.current.add(ev.item_id);
+          sendEvent({ type: "conversation.item.delete", item_id: ev.item_id });
+          break;
+        }
+        upsertLine(ev.item_id, "user", "…", false);
+        requestResponse();
         break;
+      }
       case "conversation.item.input_audio_transcription.delta":
-        if (ev.item_id) {
+        if (ev.item_id && !ignoredItemsRef.current.has(ev.item_id)) {
           setLines((prev) => {
             const idx = prev.findIndex((l) => l.id === ev.item_id);
             if (idx < 0) return [...prev, { id: ev.item_id!, role: "user", text: ev.delta ?? "", final: false, channel: "voice", at: Date.now() }];
@@ -390,7 +453,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         }
         break;
       case "conversation.item.input_audio_transcription.completed": {
-        if (!ev.item_id) break;
+        if (!ev.item_id || ignoredItemsRef.current.has(ev.item_id)) break;
         const text = ev.transcript?.trim() ?? "";
         // 物音などで文字にならなかった発話は表示しない
         if (text) upsertLine(ev.item_id, "user", text, true);
@@ -402,6 +465,12 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         break;
       case "input_audio_buffer.speech_started":
         setUserSpeaking(true);
+        // AI が話している間に始まった発話か（割り込みの判定はマイクの関所＝voice-gate.ts が行う。
+        // 割り込んだ発話は、関所が送らずにおいた話し始めから届くので、届いた時点ではもう割り込み済み）
+        speechRef.current = {
+          duringAi: aiAudioRef.current || responseActiveRef.current,
+          bargedIn: performance.now() - lastBargeRef.current < BARGE_SPEECH_MS,
+        };
         break;
       case "input_audio_buffer.speech_stopped":
         setUserSpeaking(false);
@@ -415,10 +484,14 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         if (ev.item_id) upsertLine(ev.item_id, "assistant", ev.transcript ?? "", true);
         break;
       case "output_audio_buffer.started":
+        aiAudioRef.current = true;
+        gateRef.current?.setAiPlaying(true);
         setAiSpeaking(true);
         break;
       case "output_audio_buffer.stopped":
       case "output_audio_buffer.cleared":
+        aiAudioRef.current = false;
+        gateRef.current?.setAiPlaying(false);
         setAiSpeaking(false);
         break;
       case "response.done":
@@ -428,6 +501,8 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         // 割り込み時などに出る無害なエラーはお客様に表示しない
         const code = ev.error?.code ?? "";
         if (code === "response_cancel_not_active" || code === "conversation_already_has_active_response") break;
+        // 聞き流した短い音を会話から消すときなどの、お客様に関係のないエラー
+        if (/not_found|invalid_item|item_id/i.test(`${code} ${ev.error?.message ?? ""}`)) break;
         reportError("声の相談（AIとの通信）", `${code ? `${code}: ` : ""}${ev.error?.message ?? ""}`);
         setError(friendlyError(ev.error?.message));
         break;
@@ -446,12 +521,20 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         audioRef.current.srcObject = e.streams[0];
         audioRef.current.play().catch(() => undefined);
       }
+      remoteStreamRef.current = e.streams[0];
+      gateRef.current?.watchRemote(e.streams[0]);
     };
     const ms = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
     streamRef.current = ms;
-    ms.getTracks().forEach((t) => pc.addTrack(t, ms));
+    // マイクはそのまま送らず、関所（AI の声が流れている間は送らない・割り込みは話し始めから送る）を通す
+    stopGate();
+    const gate = await createVoiceGate(audioCtxRef.current, ms, { onBargeIn: bargeIn });
+    gateRef.current = gate;
+    if (mutedRef.current) gate.setMuted(true);
+    if (remoteStreamRef.current) gate.watchRemote(remoteStreamRef.current);
+    pc.addTrack(gate.track, ms);
     const dc = pc.createDataChannel("oai-events");
     dcRef.current = dc;
     dc.onmessage = (e) => {
@@ -484,7 +567,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
           type: "response.create",
           response: {
             instructions:
-              "接続し直したところです。「お待たせしました。先ほどの続きからお伺いします。」と一言だけ伝えて、お客様のお話を待ってください。前の回答は繰り返さず、この発話ではツールも使わないでください。",
+              "接続し直したところです。「お待たせしました。先ほどの続きから伺います。」と一言だけ伝えて、お客様のお話を待ってください。前の回答は繰り返さず、この発話ではツールも使わないでください。",
           },
         });
         return;
@@ -701,12 +784,19 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
 
   /** 開始（それまでの会話があれば続きから）。auto は接続が切れたあとの自動のつなぎ直し */
   async function start(auto = false) {
+    // 音の処理（マイクの関所）は、押した直後に動かしておく（iPhone などは、あとからでは始められない）
+    audioCtxRef.current = unlockAudioContext(audioCtxRef.current);
+    lastBargeRef.current = -1e9;
     setError("");
     if (!auto) reconnectRef.current = 0;
     userEndedRef.current = false;
     setSources([]);
     handledCalls.current = new Set();
     responseActiveRef.current = false;
+    aiAudioRef.current = false;
+    speechRef.current = null;
+    pendingCreateRef.current = false;
+    ignoredItemsRef.current = new Set();
     recFatalRef.current = false;
     if (!sessionIdRef.current) sessionIdRef.current = `voice_${uid()}`;
     setStartedAt(null);
@@ -746,9 +836,11 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   function toggleMute() {
     const next = !muted;
     setMuted(next);
+    mutedRef.current = next;
     streamRef.current?.getAudioTracks().forEach((t) => {
       t.enabled = !next;
     });
+    gateRef.current?.setMuted(next);
   }
 
   function submitTyped() {
@@ -919,7 +1011,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
           </span>
         </button>
 
-        <p className="mt-5 min-h-[1.75rem] text-center text-base font-bold text-sumi-800">{statusLabel}</p>
+        <p className="mt-5 min-h-[1.75rem] text-balance text-center text-base font-bold text-sumi-800 [word-break:auto-phrase]">{statusLabel}</p>
         <p className="mt-0.5 min-h-[1.25rem] text-center text-xs text-sumi-500">{statusHint}</p>
         {interim ? <p className="mt-2 max-w-sm text-center text-sm text-sumi-500">「{interim}」</p> : null}
 

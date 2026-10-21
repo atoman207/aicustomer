@@ -44,6 +44,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         {/* スクロール表示アニメーション用（JS 無効時は最初から表示） */}
         <script dangerouslySetInnerHTML={{ __html: "document.documentElement.classList.add('js')" }} />
+        {/* 今のホームページの「AIに相談」の窓（public/embed.js）の中で開いたとき：ヘッダー・フッター・見出しを出さない */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: "try{if(/[?&]embed=1/.test(location.search)||window.self!==window.top)document.documentElement.dataset.embed='1'}catch(e){document.documentElement.dataset.embed='1'}",
+          }}
+        />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link

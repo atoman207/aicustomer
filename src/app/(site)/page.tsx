@@ -35,8 +35,11 @@ const ASSURANCES = ["ご相談・お見積りは無料", "24時間いつでも",
 export default function HomePage() {
   return (
     <div>
-      <KeyVisual />
-      <AiNav />
+      {/* 最初の画面：キービジュアルの高さを画面に合わせ、AI 相談メニュー（4 つのボタン）を画面の一番下に表示する */}
+      <div className="kv-first">
+        <KeyVisual />
+        <AiNav />
+      </div>
 
       <section id="ai-consult" className="py-12 lg:py-16">
         <div className="container-x max-w-[1000px]">

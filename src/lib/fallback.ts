@@ -18,7 +18,7 @@ const FIX_TARGETS: { key: keyof IntakeDraft; test: RegExp; label: string }[] = [
 ];
 
 export const NOT_FOUND_REPLY =
-  "恐れ入りますが、その件は社内ナレッジに記載がないため、この場で正確にお答えできかねます。担当者より折り返しご案内いたしますので、お見積り・折り返しをご希望の場合は「見積をお願いします」とお伝えください。";
+  "恐れ入りますが、その件はこの場では正確にお答えできかねます。担当者より折り返しご案内いたしますので、お見積り・折り返しをご希望の場合は「見積をお願いします」とお伝えください。";
 
 export function fallbackGreeting(company: string): string {
   return `こんにちは。畳の${company}のAI相談員です（デモモード）。畳・襖・障子・網戸から住まいのリフォームまで、お気軽にご質問ください。`;

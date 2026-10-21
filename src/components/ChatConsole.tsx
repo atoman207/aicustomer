@@ -338,7 +338,7 @@ export default function ChatConsole({
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
       <section
         ref={panelRef}
-        className="card flex h-[calc(100dvh-92px)] min-h-[480px] scroll-mt-[86px] flex-col overflow-hidden rounded-2xl lg:h-[calc(100dvh-230px)] lg:max-h-[860px] lg:min-h-[600px] lg:scroll-mt-4"
+        className="chat-card card flex h-[calc(100dvh-92px)] min-h-[480px] scroll-mt-[86px] flex-col overflow-hidden rounded-2xl lg:h-[calc(100dvh-230px)] lg:max-h-[860px] lg:min-h-[600px] lg:scroll-mt-4"
         data-busy={busy ? "true" : "false"}
         data-mode={mode}
         aria-label="文字でAI相談"

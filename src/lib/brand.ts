@@ -10,7 +10,7 @@ export const BRAND = {
   hoursNote: "土日の工事もOK！（3週間前までに要予約）",
   /** 電話ボタンに添える一言（営業時間外・土日は AI が電話を受け付ける） */
   phoneAiNote: "営業時間外・土日はAIが受付",
-  copyright: "© ICHIJOYA.All Rights Reserved.",
+  copyright: "© ICHIJOYA. All Rights Reserved.",
 } as const;
 
 export const LINKS = {

@@ -246,6 +246,22 @@ export interface RealtimeSecret {
 }
 
 /** Realtime API 用の一時キー（ephemeral key）を発行。GAエンドポイント→旧β版の順に試す */
+/**
+ * 声の相談の話し終わりの判定（server_vad）。応答の開始と割り込みはブラウザ側（VoiceConsole）で行う
+ * （サーバーに任せると、AI が話している間の相づち「はい」や雑音でも AI の声が止まり、途中で切れて聞こえるため）
+ */
+export const REALTIME_TURN_DETECTION = {
+  type: "server_vad",
+  threshold: 0.6,
+  prefix_padding_ms: 300,
+  silence_duration_ms: 650,
+  create_response: false,
+  interrupt_response: false,
+} as const;
+
+/** お客様の声の文字起こしに渡す言葉の手がかり（「網戸」が「アニード」などにならないように） */
+const TRANSCRIBE_PROMPT = "一畳屋への畳・襖・障子・網戸のご相談。表替え、新調、裏返し、ヘリ、天袋、地袋、張替え、見積、熊本。";
+
 export async function createRealtimeSecret(opts: {
   instructions: string;
   tools: unknown[];
@@ -267,9 +283,12 @@ export async function createRealtimeSecret(opts: {
         tool_choice: "auto",
         audio: {
           input: {
-            transcription: { model: "gpt-4o-mini-transcribe", language: "ja" },
-            turn_detection: { type: "semantic_vad", eagerness: "medium", create_response: true, interrupt_response: true },
-            noise_reduction: { type: "near_field" },
+            transcription: { model: "gpt-4o-mini-transcribe", language: "ja", prompt: TRANSCRIBE_PROMPT },
+            // AI の声が途中で切れないように：割り込み（AI の発話を止める）と応答の開始はブラウザが判断する
+            //   （voice-gate.ts：AI が話している間の短い音＝相づち・咳・雑音・スピーカーの回り込みでは止めない）
+            //   threshold は既定 0.5 より少し高め、雑音除去はスマホ・ノート PC のスピーカー利用（far_field）向け
+            turn_detection: { ...REALTIME_TURN_DETECTION },
+            noise_reduction: { type: "far_field" },
           },
           output: { voice },
         },
@@ -294,8 +313,9 @@ export async function createRealtimeSecret(opts: {
         instructions: opts.instructions,
         tools: opts.tools,
         tool_choice: "auto",
-        input_audio_transcription: { model: "whisper-1", language: "ja" },
-        turn_detection: { type: "server_vad" },
+        input_audio_transcription: { model: "whisper-1", language: "ja", prompt: TRANSCRIBE_PROMPT },
+        turn_detection: { ...REALTIME_TURN_DETECTION },
+        input_audio_noise_reduction: { type: "far_field" },
       },
       { "OpenAI-Beta": "realtime=v1" },
       15_000,

@@ -36,7 +36,7 @@ export async function POST(req: Request) {
   session.messages.push(...history);
   // HP の相談：文字の相談などで伺い済みのお名前・ご連絡先・ご希望日時は聞き直さない
   if (body?.draft && (channel === "web_voice" || channel === "web_text")) session.draft = sanitizeDraft(body.draft);
-  const greeting = history.length ? "お待たせしました。先ほどのご相談の続きからお伺いします。どうぞお話しください。" : await greetingFor(channel);
+  const greeting = history.length ? "お待たせしました。先ほどのご相談の続きから伺います。どうぞお話しください。" : await greetingFor(channel);
   session.messages.push({ role: "assistant", content: greeting, at: new Date().toISOString() });
   await saveSession(session);
   if (!session.id) return error("セッションの作成に失敗しました", 500);

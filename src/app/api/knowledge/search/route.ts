@@ -25,8 +25,10 @@ export async function POST(req: Request) {
     kind: plan.kind,
     source: plan.snapshot.source,
     answer,
+    // 同じ内容はスプレッドシートが正（hits はスプレッドシートが先に並ぶ）
     hits: plan.hits.slice(0, k).map((h) => ({
       id: h.entry.id,
+      from: h.entry.origin === "website" ? "ホームページ（補足）" : "スプレッドシート（正）",
       category: h.entry.category,
       title: h.entry.title,
       content: truncate(h.entry.content, 700),

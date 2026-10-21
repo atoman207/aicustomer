@@ -55,6 +55,8 @@ await check("GET /api/status", async () => {
 await check("Googleスプレッドシート（回答の情報源・受付の記録先）", async () => {
   const { body } = await json("/api/status");
   if (body.supabase) throw new Error("Supabase の接続が残っています");
+  // パスワード保護時、ログインしていなければ接続先の詳しい情報は出さない（動いているかどうかだけ）
+  if (!body.sheet && body.admin.protected) return `詳細は管理画面だけ（ナレッジ ${body.knowledge.source}・${body.knowledge.entries} 件／受付 ${body.reception.sink}）`;
   if (!body.sheet?.configured) return `未設定（保存版 ${body.knowledge.source} で回答）`;
   return `サービスアカウントで接続（ナレッジ ${body.knowledge.source}・${body.knowledge.entries} 件${body.knowledge.warning ? `・${body.knowledge.warning.slice(0, 60)}` : ""}／受付 ${body.reception.sink}）`;
 });
@@ -81,7 +83,19 @@ await check("管理画面の API（ADMIN_PASSWORD 設定時はログインが必
   const all = [...codes, refresh];
   if (!body.admin.protected) return `未設定のため誰でも閲覧可（公開 URL では ADMIN_PASSWORD を設定）: ${all.join(",")}`;
   if (all.some((c) => c !== 401)) throw new Error(`保護されていない API: ${[...paths, "/api/knowledge/refresh"].filter((_, i) => all[i] !== 401).join(", ")}`);
-  return `保護あり（${all.length} 件とも 401）`;
+  if (body.sheet || body.twilio || body.line || body.knowledge.warning) throw new Error("ログインなしの /api/status に接続先の詳しい情報があります");
+  return `保護あり（${all.length} 件とも 401・公開の接続状況は動作の有無だけ）`;
+});
+await check("今のホームページへの埋め込み（embed.js）と、ほかのサイトの中で開けない設定", async () => {
+  const js = await fetch(`${BASE}/embed.js`);
+  const code = await js.text();
+  if (!js.ok || !/javascript/.test(js.headers.get("content-type") ?? "") || !code.includes("ichijoyaAi")) throw new Error(`embed.js: ${js.status}`);
+  const chat = (await fetch(`${BASE}/chat`)).headers.get("content-security-policy") ?? "";
+  if (!/frame-ancestors 'self' https?:\/\//.test(chat)) throw new Error(`/chat の frame-ancestors: ${chat || "なし"}`);
+  const admin = await fetch(`${BASE}/admin`);
+  const adminCsp = admin.headers.get("content-security-policy") ?? "";
+  if (!/frame-ancestors 'none'/.test(adminCsp) || admin.headers.get("x-frame-options") !== "DENY") throw new Error(`/admin: ${adminCsp} ${admin.headers.get("x-frame-options")}`);
+  return `embed.js ${Math.round(code.length / 1024)}KB／相談のページ：${chat.replace("frame-ancestors ", "")}／管理画面：none`;
 });
 await check("POST /api/knowledge/search（料金は料金表から回答）", async () => {
   const { res, body } = await json("/api/knowledge/search", { method: "POST", body: JSON.stringify({ query: "6畳の畳の表替えはいくら？" }) });

@@ -6,7 +6,8 @@ import type { PriceRow, PriceTable } from "./manual";
 import { INCLUSION, PRICE_INTENT, WHY_PRICE, labelTokens, normPrice, questionWords, rowMatches, voiceClean, type AnswerStyle, type PriceAnswer } from "./price";
 import type { ChatMessage } from "./types";
 
-type Group = "畳" | "襖" | "障子" | "網戸";
+/** 天地袋：天袋・地袋の襖（料金は襖の表の「天・地袋」の列）。「襖4枚と天袋2枚」のように、ふつうの襖と別に数えられるように */
+type Group = "畳" | "襖" | "天地袋" | "障子" | "網戸";
 type Kind = "tatami" | "herinashi" | "heriari" | "oki" | "fusuma" | "fusumaNew" | "shoji" | "amido";
 type Work = "表替え" | "新調" | "ウラ返し";
 type Addon = "殺菌乾燥" | "マイトスタット" | "ダニシラズ";
@@ -210,11 +211,12 @@ function norm(s: string): string {
     .replace(/(\d),(?=\d{3}(?!\d))/g, "$1");
 }
 
-const SPLIT = /[、,。!?\n]|(?:と|や)(?=\d|[一二三四五六七八九十]+[畳枚本]|襖|障子|網戸|畳|表替え|新調|ウラ返し|半畳|[ァ-ヶ])|あと(?=\d|[一二三四五六七八九十]|襖|障子|網戸|畳)|それと|それから|および|及び|\+/;
+const SPLIT = /[、,。!?\n]|(?:と|や)(?=\d|[一二三四五六七八九十]+[畳枚本]|襖|天袋|地袋|天地袋|障子|網戸|畳|表替え|新調|ウラ返し|半畳|[ァ-ヶ])|あと(?=\d|[一二三四五六七八九十]|襖|天袋|地袋|天地袋|障子|網戸|畳)|それと|それから|および|及び|\+/;
+const TENCHI = /天地袋|天・地袋|天袋|地袋/g;
 const TATAMI_WORD = /(?<![\d一二三四五六七八九十半.])畳(?!間)|表替え|畳替え|ウラ返し|琉球|置き畳|ヘリ無し|ヘリ有り|和紙畳|樹脂畳|カラー畳|ヘリ/;
 const CANCEL = /^(?:半)?(?:間|の部屋|の和室|和室|分)?(?:の畳)?(?:じゃなく|じゃな|ではなく|ではな|でなく|でな|と言|って言|と書|と伝え|と申し|は間違|は誤|から(?=[^、。]*?(?:に|へ)(?:変更|変え|して|なり|しま|お願い)))/;
 const NEW_WORK = /新調|新しく|新品|作り替え|作りかえ|作り直|丸ごと/;
-const ADDITIVE = /追加|増やし|足して|プラスで|もう(?:\d|[一二三四五六七八九十])|あと(?:\d|[一二三四五六七八九十]|襖|障子|網戸|畳)|(?:襖|障子|網戸|畳|表替え|置き畳)も|も(?:お願い|追加|見積|計算|入れ|含め|一緒|あり|ある|あわせ|合わせ|いくら|頼|やり|したい|して)|合わせて|あわせて|一緒に/;
+const ADDITIVE = /追加|増やし|足して|プラスで|もう(?:\d|[一二三四五六七八九十])|あと(?:\d|[一二三四五六七八九十]|襖|天袋|地袋|障子|網戸|畳)|(?:襖|天袋|地袋|障子|網戸|畳|表替え|置き畳)も|も(?:お願い|追加|見積|計算|入れ|含め|一緒|あり|ある|あわせ|合わせ|いくら|頼|やり|したい|して)|合わせて|あわせて|一緒に/;
 const QTY_ADD = /追加|増やし|足して|もう(?:\d|[一二三四五六七八九十])|あと(?:\d|[一二三四五六七八九十])|(?:畳|枚|部屋)も(?:あり|ある)/;
 /** 見積の続きとして扱わない質問（工期・違い・おすすめなど） */
 const QUOTE_OTHER = /違い|特徴|とは|どんな|おすすめ|オススメ|何日|日数|工期|いつ|期間|仕上が|納期|強度|破れ|選び方|メリット|デメリット|何年|年数|耐用|寿命|長持ち|タイミング|替え時|時期|人気|選ばれ|効果|効き目|安全|ブヨブヨ|サンプル|見本|何枚/;
@@ -239,7 +241,10 @@ function groupHits(c: string): Hit[] {
     for (const m of c.matchAll(re)) hits.push({ group: g, index: m.index ?? 0 });
   }
   for (const m of c.matchAll(new RegExp(TATAMI_WORD.source, "g"))) hits.push({ group: "畳", index: m.index ?? 0 });
-  return hits.sort((a, b) => a.index - b.index);
+  // 天袋・地袋（「天袋の襖」「襖の天袋」の「襖」は天袋のこと）
+  const tenchi = [...c.matchAll(TENCHI)].map((m) => ({ group: "天地袋" as const, index: m.index ?? 0 }));
+  const own = (h: Hit) => h.group === "襖" && (/(?:天|地)袋の?$/.test(c.slice(0, h.index)) || /^襖の?(?:天地袋|天・地袋|天袋|地袋)/.test(c.slice(h.index)));
+  return [...hits.filter((h) => !own(h)), ...tenchi].sort((a, b) => a.index - b.index);
 }
 
 /** 「6畳」「4畳半」「6畳の部屋が2つ」など（訂正で取り消された数量は除く） */
@@ -357,7 +362,7 @@ function tatamiRows(ctx: Ctx, c: string, raw: string, prefer?: Kind): { kind: Ki
 }
 
 function fittingKind(group: Group, work?: Work): Kind {
-  if (group === "襖") return work === "新調" ? "fusumaNew" : "fusuma";
+  if (group === "襖" || group === "天地袋") return work === "新調" ? "fusumaNew" : "fusuma";
   if (group === "障子") return "shoji";
   return "amido";
 }
@@ -436,7 +441,8 @@ function clausePatch(ctx: Ctx, c: string, raw: string, group: Group | null, curr
       if (rows.length) p.rows = rows.map((r) => r.label);
     }
   }
-  if (group === "襖" || group === null) {
+  if (group === "天地袋") p.part = "天・地袋";
+  else if (group === "襖" || group === null) {
     if (/両面/.test(c)) p.side = "両面";
     else if (/片面/.test(c)) p.side = "片面";
     if (/仏間/.test(c)) p.part = "仏間";
@@ -527,7 +533,7 @@ function parseMessage(ctx: Ctx, raw: string, state: State): Parsed {
 
   // 取りやめ（「襖はやめて」）・「〜だけ」
   for (const h of allHits) {
-    const rest = text.slice(h.index).replace(/^(?:襖|障子|網戸|畳|表替え|畳替え|ウラ返し)/, "");
+    const rest = text.slice(h.index).replace(/^(?:襖|天地袋|天・地袋|天袋|地袋|障子|網戸|畳|表替え|畳替え|ウラ返し)/, "");
     if (/^(?:の(?:張替え|表替え|新調|分|方|ほう))?(?:は|も)?(?:やめ|なし|無し|いらない|要らない|不要|キャンセル|結構|取りやめ|外し|除い|抜い|なくて)/.test(rest)) parsed.removed.push(h.group);
     if (/^(?:の(?:張替え|表替え|新調))?(?:だけ|のみ)/.test(rest)) parsed.only = h.group;
   }
@@ -608,6 +614,18 @@ function parseMessage(ctx: Ctx, raw: string, state: State): Parsed {
     else if (n) parsed.implicitPieces = (parsed.implicitPieces ?? 0) + n;
   }
   if (isEmptyPatch(parsed.implicit)) parsed.implicit = null;
+  // 天袋・地袋を別に数えるのは、同じ発言に襖の枚数があるとき（「襖4枚と天袋2枚」）・追加のとき（「天袋も2枚」）。
+  // それ以外（「天袋2枚だと？」「天袋の張替えは？」）は、相談中の襖の種類の指定
+  const tp = parsed.patches.get("天地袋");
+  const tq = parsed.qtys.get("天地袋");
+  if ((tp || tq) && !parsed.qtys.has("襖") && !parsed.additive && !state.items.has("天地袋")) {
+    parsed.patches.set("襖", mergePatch(parsed.patches.get("襖") ?? {}, { ...(tp ?? {}), part: "天・地袋" }));
+    if (tq) parsed.qtys.set("襖", tq);
+    parsed.patches.delete("天地袋");
+    parsed.qtys.delete("天地袋");
+    parsed.removed = parsed.removed.map((g) => (g === "天地袋" ? "襖" : g));
+    if (parsed.only === "天地袋") parsed.only = "襖";
+  }
   return parsed;
 }
 
@@ -647,7 +665,8 @@ function applyPatch(ctx: Ctx, item: Item, p: Patch, qty: Qty | null, additive: b
   for (const k of ["side", "part", "size", "okiHeri", "heri", "noDisposal", "thin", "oneMat", "sash", "entrance"] as const) {
     if (p[k] !== undefined) (item as unknown as Record<string, unknown>)[k] = p[k];
   }
-  if (p.side && !p.part && item.part && /中|天・地袋/.test(item.part)) item.part = undefined;
+  if (item.group === "天地袋") item.part = "天・地袋";
+  else if (p.side && !p.part && item.part && /中|天・地袋/.test(item.part)) item.part = undefined;
   if (p.addAddons?.length) item.addons = [...new Set([...item.addons, ...p.addAddons])];
   if (p.removeAddons?.length) item.addons = item.addons.filter((a) => !p.removeAddons?.includes(a));
   if (qty) item.qty = qtyAdd && item.qty ? addQty(item.qty, qty) : qty;
@@ -669,7 +688,7 @@ function mapAmidoRows(ctx: Ctx, rows: string[], toNew: boolean): string[] {
 }
 
 function newItem(group: Group): Item {
-  return { group, rows: [], addons: [] };
+  return { group, rows: [], addons: [], ...(group === "天地袋" ? { part: "天・地袋" } : {}) };
 }
 
 function hasInfo(p: Parsed): boolean {
@@ -919,6 +938,7 @@ function listRows(t: PriceTable, kind: Kind, item: Item, cols: number[]): PriceR
 
 function itemTitle(kind: Kind, item: Item): string {
   const w = item.work === "ウラ返し" ? "裏返し" : item.work;
+  if (item.group === "天地袋") return kind === "fusumaNew" ? "天袋・地袋の襖の新調" : "天袋・地袋の襖の張替え";
   switch (kind) {
     case "tatami":
       return w ? `畳の${w}` : "畳（表替え・新調）";
@@ -1022,7 +1042,7 @@ function footerNotes(ctx: Ctx, rs: Resolved[], question: string): string[] {
     if (r.kind === "tatami" && rules?.heriSeparate && !r.item.heri && !ctx.heriDefault && ctx.heriGrades.length) {
       const sorted = [...ctx.heriGrades].sort((a, b) => a.price - b.price);
       const ex = sorted[Math.floor(sorted.length / 2)];
-      notes.push(`※ヘリ代はグレード（1畳 ${yen(sorted[0].price)}〜${yen(sorted[sorted.length - 1].price)}）によって変わります。ヘリのグレードを教えていただければ、合計を1つの金額で計算します（例：「ヘリは${ex.price.toLocaleString("ja-JP")}円ので」）。`);
+      notes.push(`※ヘリ代はグレード（1畳あたり${yen(sorted[0].price)}〜${yen(sorted[sorted.length - 1].price)}）によって変わります。ヘリのグレードを教えていただければ、合計を1つの金額で計算します（例：「ヘリは${ex.price.toLocaleString("ja-JP")}円ので」）。`);
     }
     if ((r.kind === "tatami" || r.kind === "heriari") && q.half && rules?.halfRate)
       notes.push(`※半畳は料金表のとおり${Math.round((q.n ? rules.halfRate : (rules.allHalfRate ?? rules.halfRate)) * 10)}掛けで計算しています${r.kind === "tatami" ? "（ヘリ代は掛けません）" : ""}。`);
@@ -1079,7 +1099,7 @@ function buildText(ctx: Ctx, rs: Resolved[], unavailable: string[], question: st
       for (const p of [...c.parts, ...(exp ? [exp] : [])]) lines.push(`・${p.label}：${p.calc ? `${p.calc}＝` : ""}${yen(p.amount)}`);
       const o = c.heriOpen;
       if (o) {
-        lines.push(`・ヘリ代（グレードにより 1畳 ${yen(o.min)}〜${yen(o.max)}）：${yen(o.min * o.pieces)}〜${yen(o.max * o.pieces)}`);
+        lines.push(`・ヘリ代（グレードにより1畳あたり${yen(o.min)}〜${yen(o.max)}）：${yen(o.min * o.pieces)}〜${yen(o.max * o.pieces)}`);
         const [lo, hi] = withHeri(c);
         lines.push(`合計の目安：${yen(lo + (exp?.amount ?? 0))}〜${yen(hi + (exp?.amount ?? 0))}（税込・ヘリのグレードによる）`);
       } else lines.push(`合計の目安：${yen(c.total + (exp?.amount ?? 0))}（税込）`);
@@ -1103,7 +1123,7 @@ function buildText(ctx: Ctx, rs: Resolved[], unavailable: string[], question: st
       }
       if (open) {
         // ヘリ代は別に幅で案内し、合計の幅にはヘリ代も含める
-        lines.push(`・ヘリ代：${qtyLabel(r.kind, r.item)}で ${yen(open.min * open.pieces)}〜${yen(open.max * open.pieces)}（1畳 ${yen(open.min)}〜${yen(open.max)}・グレードによる）`);
+        lines.push(`・ヘリ代：${qtyLabel(r.kind, r.item)}で${yen(open.min * open.pieces)}〜${yen(open.max * open.pieces)}（1畳あたり${yen(open.min)}〜${yen(open.max)}・グレードによる）`);
         if (totals.length) lines.push(`合計の目安：${yen(Math.min(...totals) + open.min * open.pieces)}〜${yen(Math.max(...totals) + open.max * open.pieces)}（税込・ヘリ代を含む）`);
       } else if (totals.length > 1) lines.push(`合計の目安：${yen(Math.min(...totals))}〜${yen(Math.max(...totals))}（税込）`);
       else if (totals.length === 1) lines.push(`合計の目安：${yen(totals[0])}（税込）`);
@@ -1116,7 +1136,7 @@ function buildText(ctx: Ctx, rs: Resolved[], unavailable: string[], question: st
         const q = r.item.qty as Qty;
         const qtyWord = r.kind === "herinashi" || r.kind === "oki" ? `半畳${(q.unit === "畳" ? q.n * 2 : q.n) + q.half}枚` : qtyLabel(r.kind, r.item);
         lines.push(
-          `※計算：${head}の単価×${qtyWord}${extras.map((p) => `＋${p.label.replace(/（.*$/, "")}${p.calc ? ` ${p.calc}` : ` ${yen(p.amount)}`}`).join("")}${exp ? `＋諸経費 ${yen(exp.amount)}` : ""}${c0.heriOpen ? "（一覧の金額はヘリ代を含みません）" : ""}`,
+          `※計算：${head}の単価×${qtyWord}${extras.map((p) => `＋${p.label.replace(/（.*$/, "")}${p.calc ? p.calc : yen(p.amount)}`).join("")}${exp ? `＋諸経費${yen(exp.amount)}` : ""}${c0.heriOpen ? "（一覧の金額はヘリ代を含みません）" : ""}`,
         );
       }
       if (r.listing) {
@@ -1124,7 +1144,7 @@ function buildText(ctx: Ctx, rs: Resolved[], unavailable: string[], question: st
         const rest = r.t.rows.filter(
           (x) => !shown.has(nk(x.label)) && r.cols.some((i) => price(x.values[i])) && !/セット|枠交換|ウラ返し/.test(x.label) && (r.kind !== "amido" || /新調/.test(x.label) === (r.item.work === "新調")),
         );
-        if (rest.length) lines.push(`（このほか ${[...new Set(rest.map((x) => shortName(x.label)))].slice(0, 6).join("・")} なども計算できます）`);
+        if (rest.length) lines.push(`（このほか、${[...new Set(rest.map((x) => shortName(x.label)))].slice(0, 6).join("・")}なども計算できます）`);
       }
     }
   } else {
@@ -1140,8 +1160,8 @@ function buildText(ctx: Ctx, rs: Resolved[], unavailable: string[], question: st
         const { row, ci, c } = all[0];
         const calc = c as Calc;
         const o = calc.heriOpen;
-        const pieces = calc.parts.map((p) => `${p.label.replace(/（.*$/, "")} ${yen(p.amount)}`);
-        if (o) pieces.push(`ヘリ代 ${yen(o.min * o.pieces)}〜${yen(o.max * o.pieces)}`);
+        const pieces = calc.parts.map((p) => `${p.label.replace(/（.*$/, "")}${yen(p.amount)}`);
+        if (o) pieces.push(`ヘリ代${yen(o.min * o.pieces)}〜${yen(o.max * o.pieces)}`);
         const detail = pieces.length > 1 ? `（${pieces.join("＋")}）` : "";
         const [lo, hi] = withHeri(calc);
         lines.push(`・${head}（${rowName(row.label)}・${colShort(r.t, ci)}）：${lo === hi ? yen(lo) : `${yen(lo)}〜${yen(hi)}`}${detail}`);

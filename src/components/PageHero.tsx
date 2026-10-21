@@ -20,8 +20,8 @@ export default function PageHero({
   children?: ReactNode;
 }) {
   return (
-    <section className={`relative bg-ichi-cream ${compact ? "pb-8 sm:pb-10" : "pb-14"}`}>
-      <div className={`relative z-10 mx-auto flex w-full max-w-[1200px] flex-col items-center px-5 text-center ${compact ? "pt-4 sm:pt-6" : "pt-7 sm:pt-9"}`}>
+    <section className={`page-hero relative bg-ichi-cream ${compact ? "pb-8 sm:pb-10" : "pb-14"}`}>
+      <div className={`page-hero-head relative z-10 mx-auto flex w-full max-w-[1200px] flex-col items-center px-5 text-center ${compact ? "pt-4 sm:pt-6" : "pt-7 sm:pt-9"}`}>
         <p className="inline-flex items-center gap-2 rounded-full bg-ichi-theme px-4 py-1 text-xs font-bold tracking-wider text-white">{kicker}</p>
         <div className="mt-2 inline-flex items-start justify-center gap-3 sm:gap-5">
           {badge ? (

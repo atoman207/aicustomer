@@ -57,8 +57,15 @@ export const env = {
     return str("GOOGLE_SERVICE_ACCOUNT_EMAIL");
   },
   get googlePrivateKey() {
-    // Vercel などに貼り付けた鍵の「\n」（2文字）を改行に戻す
-    return str("GOOGLE_PRIVATE_KEY").replace(/\\n/g, "\n");
+    // Vercel などに貼り付けた鍵の書き方の違いを吸収する：
+    //   ・.env からそのまま貼ったときの前後の " や '（Vercel では値の一部になってしまう）
+    //   ・「\n」（2文字）での改行、Windows の改行（\r\n）
+    return str("GOOGLE_PRIVATE_KEY")
+      .replace(/^(["'])([\s\S]*)\1$/, "$2")
+      .replace(/\\r\\n|\\n/g, "\n")
+      .replace(/\r\n?/g, "\n")
+      .trim()
+      .concat("\n");
   },
   get hasServiceAccount() {
     return this.googleServiceAccountEmail !== "" && this.googlePrivateKey.includes("PRIVATE KEY");

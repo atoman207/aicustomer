@@ -492,7 +492,8 @@ function rowText(t: PriceTable, row: PriceRow, onlyCols?: number[]): string {
   }
   for (const i of cols) {
     const v = row.values[i];
-    if (!v) continue;
+    // 料金表の「-」（その大きさ・種類は取り扱いがない）は書かない（「中 —」ではお客様に伝わらないため）
+    if (!v || /^[-－―ー—]$/.test(v.trim())) continue;
     parts.push(`${t.columns[i] || "料金"} ${formatValue(v)}`);
   }
   return parts.length ? `${label}：${parts.join("／")}` : `${label}：—`;

@@ -122,13 +122,17 @@ export async function sheetsEnsureTab(sheetId: string, title: string, header: st
   ensured.__sheetTabs.add(key);
 }
 
+/**
+ * 1 行追記する。値は書いたとおりの文字で記録する（RAW）：
+ *   「09012345678」の先頭の 0 が消えたり、お客様の入力（「=」で始まる文字など）が数式として動いたりしない
+ */
 export async function sheetsAppendRow(sheetId: string, sheetName: string, row: (string | number)[], header?: string[]): Promise<void> {
   if (header) await sheetsEnsureTab(sheetId, sheetName, header);
   const token = await getGoogleAccessToken();
   const range = `${quoteTab(sheetName)}!A1`;
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(
     range,
-  )}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  )}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
   const res = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -136,6 +140,41 @@ export async function sheetsAppendRow(sheetId: string, sheetName: string, row: (
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw await sheetsError(res, `シート「${sheetName}」への記録`);
+}
+
+/** 名前でタブの全セルを読む（タブがなければ null） */
+export async function sheetsReadTabByName(sheetId: string, title: string): Promise<string[][] | null> {
+  const { tabs } = await sheetsListTabs(sheetId);
+  if (!tabs.some((t) => t.title === title)) return null;
+  return sheetsGetValues(sheetId, `${quoteTab(title)}!A1:Z5000`);
+}
+
+/** 列の番号（0 始まり）→ A1 形式の列名（0→A, 25→Z, 26→AA） */
+export function columnName(index: number): string {
+  let n = index + 1;
+  let s = "";
+  while (n > 0) {
+    const r = (n - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+/** 1 つのセルを書き換える（row・col は 0 始まり。書いたとおりの文字で記録する） */
+export async function sheetsUpdateCell(sheetId: string, sheetName: string, row: number, col: number, value: string): Promise<void> {
+  const token = await getGoogleAccessToken();
+  const range = `${quoteTab(sheetName)}!${columnName(col)}${row + 1}`;
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}?valueInputOption=RAW`,
+    {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ values: [[value]] }),
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  if (!res.ok) throw await sheetsError(res, `シート「${sheetName}」の書き換え`);
 }
 
 /** GAS Webアプリ呼び出し。GET はクエリ、POST は JSON ボディ（text/plain で送るとCORS回避・GAS側は postData.contents で受信） */

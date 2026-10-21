@@ -11,7 +11,7 @@ import { entryHash, getKnowledge } from "./knowledge";
 import { findLearned, logUnanswered, questionKey, saveLearned } from "./learned";
 import { OTHER_INTENT, PRICE_INTENT, answerPrice, normPrice, sliceTableForQuestion, voiceClean, type AnswerStyle } from "./price";
 import { answerQuote } from "./quote";
-import { hybridSearch, keywordSearch } from "./retrieval";
+import { hybridSearch, keywordScore, keywordSearch } from "./retrieval";
 import { recordAnswer, type AnswerOriginKind } from "./usage";
 import type { Channel, ChatMessage, KnowledgeEntry, KnowledgeSnapshot, SearchHit } from "./types";
 import { truncate } from "./utils";
@@ -43,10 +43,10 @@ export interface AnswerPlan {
 }
 
 export const NOT_FOUND_REPLY =
-  "恐れ入りますが、その件はこの場で正確にお答えできかねます。担当者より折り返しご案内いたしますので、ご希望の場合はお見積り・折り返しのご依頼から承ります。畳・襖・障子・網戸や住まいのリフォームのことでしたら、ほかにもお気軽にお尋ねください。";
+  "恐れ入りますが、その件はこの場では正確にお答えできかねます。担当者より折り返しご案内いたします。\n折り返しやお見積りをご希望の場合は、「見積をお願いします」と送ってください。お名前やご連絡先を伺います。\n畳・襖・障子・網戸や住まいのリフォームのことでしたら、ほかにもお気軽にお尋ねください。";
 
 const NOT_FOUND_VOICE =
-  "恐れ入りますが、その件はこの場で正確にお答えできかねますので、担当者より折り返しご案内いたします。ご希望でしたら、お見積りや折り返しのご依頼を承ります。";
+  "恐れ入りますが、その件はこの場では正確にお答えできかねますので、担当者より折り返しご案内いたします。ご希望でしたら、お見積りや折り返しのご依頼を承ります。";
 
 const SMALLTALK: { re: RegExp; reply: string }[] = [
   { re: /^(こんにちは|こんばんは|おはよう(ございます)?|はじめまして|どうも|もしもし|よろしく(お願い(します|いたします))?)[!！。、…〜ー]*$/, reply: "こんにちは。一畳屋のAI相談員です。料金の目安や工期、対応エリアなど、お気軽にご質問ください。" },
@@ -54,10 +54,59 @@ const SMALLTALK: { re: RegExp; reply: string }[] = [
   { re: /^(さようなら|失礼します|またね|では(また)?|以上です)[!！。、…〜ー]*$/, reply: "ご相談ありがとうございました。またいつでもお気軽にご相談ください。" },
 ];
 
-const ORIGIN_LABEL: Record<string, string> = {
-  manual: "顧客対応マニュアル（Googleスプレッドシート）",
-  website: "ホームページ",
+/** OpenAI に渡す参考情報の見出し（同じ内容はスプレッドシートが正であることを明示） */
+const CONTEXT_LABEL: Record<string, string> = {
+  manual: "スプレッドシート（正）",
+  website: "ホームページ（補足）",
 };
+
+/**
+ * スプレッドシートを正にする：ホームページの項目と同じ話題（畳・襖・障子・網戸・店舗・会社・工期）の
+ * スプレッドシートの項目を、そのホームページの項目より前に置く。検索に出ていなければ、同じ話題で質問に
+ * いちばん近い項目を足す（最大 2 件。検索と同じ範囲から＝料金の質問でなければ料金表は足さない）。
+ * 話題がホームページにしかないもの（スタッフの紹介など）はそのまま
+ */
+function preferSheet(hits: SearchHit[], pool: KnowledgeEntry[], query: string): SearchHit[] {
+  if (!hits.some((h) => h.entry.origin === "website" && h.entry.topics?.length)) return hits;
+  const kq = contentQuery(query);
+  const out: SearchHit[] = [];
+  const used = new Set<string>();
+  let added = 0;
+  const push = (h: SearchHit) => {
+    if (used.has(h.entry.id)) return;
+    used.add(h.entry.id);
+    out.push(h);
+  };
+  for (const h of hits) {
+    const topics = h.entry.origin === "website" ? (h.entry.topics ?? []) : [];
+    // 話題ごとに：検索に出ているスプレッドシートの項目を先に。出ていなければ、その話題で質問にいちばん近い項目を足す
+    for (const t of topics) {
+      const same = (e: KnowledgeEntry) => e.origin !== "website" && (e.topics ?? []).includes(t);
+      const inHits = hits.filter((x) => same(x.entry));
+      inHits.forEach(push);
+      if (inHits.length || added >= 2) continue;
+      const best = pool
+        .filter((e) => same(e) && !used.has(e.id))
+        .map((e) => ({ entry: e, score: keywordScore(kq, e) }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (best && best.score >= 0.1) {
+        push(best);
+        added++;
+      }
+    }
+    push(h);
+  }
+  return out;
+}
+
+/**
+ * OpenAI を使わずに答えるときに使う項目：スプレッドシートを先に並べた順で、いちばん近い項目と同じくらい近いもの
+ * （ホームページにしかない内容の質問＝スタッフの紹介などは、ホームページの項目で答える）
+ */
+function bestForReply(hits: SearchHit[]): SearchHit {
+  const top = Math.max(...hits.map((h) => h.score));
+  return hits.find((h) => h.score >= top * 0.85) ?? hits[0];
+}
 
 function toSource(h: SearchHit): AnswerSource {
   return { id: h.entry.id, title: h.entry.title, category: h.entry.category, origin: h.entry.origin, score: Math.round(h.score * 100) / 100 };
@@ -120,17 +169,50 @@ function manualText(snapshot: KnowledgeSnapshot): string {
 }
 
 /** AI に渡す参考情報（関係するナレッジだけを、合計 3,000 字ほどに） */
+/** ホームページの文の金額（「11,000」「3300円」「¥27,500」）。寸法（185×92cm）や年は残す */
+const SITE_AMOUNT = /[¥￥]?\d{1,3}(?:,\d{3})+(?:\s*円)?(?:\s*[〜~～]\s*)?|\d{3,6}\s*円(?:\s*[〜~～])?/g;
+const hasAmount = (s: string) => /\d{1,3},\d{3}|\d{3,6}\s*円/.test(s.normalize("NFKC"));
+
+/**
+ * OpenAI に渡す参考情報。料金はスプレッドシートの料金表が正なので、
+ * 同じ話題の料金表がスプレッドシートにあるときは、ホームページの項目から金額を消し、その料金表を前に入れる
+ * （ホームページの「ワーロン柄入り 11,000」を料金表の「ワーロンシート 9,900円」より優先して答えないように）
+ */
 function buildContext(hits: SearchHit[], snapshot: KnowledgeSnapshot, query: string): string {
+  const tableIds = new Set(snapshot.tables.map((t) => t.id));
+  const inHits = new Set(hits.map((h) => h.entry.id));
+  const kq = contentQuery(query);
+  const list: { entry: KnowledgeEntry; priceFromSheet?: boolean }[] = [];
+  const addedTables = new Set<string>();
+  for (const h of hits) {
+    const e = h.entry;
+    if (e.origin === "website" && hasAmount(e.content) && e.topics?.length) {
+      const sheetTables = snapshot.entries.filter((x) => tableIds.has(x.id) && (x.topics ?? []).some((t) => e.topics!.includes(t)));
+      if (sheetTables.length) {
+        // 同じ話題で質問（とこの項目の見出し）にいちばん近い料金表を、まだなければ先に入れる
+        if (!sheetTables.some((t) => inHits.has(t.id) || addedTables.has(t.id))) {
+          const best = sheetTables
+            .map((t) => ({ t, s: keywordScore(`${kq} ${e.title.split("｜").slice(1).join(" ")}`, t) }))
+            .sort((a, b) => b.s - a.s)[0].t;
+          addedTables.add(best.id);
+          list.push({ entry: best });
+        }
+        list.push({ entry: e, priceFromSheet: true });
+        continue;
+      }
+    }
+    list.push({ entry: e });
+  }
   const blocks: string[] = [];
   let total = 0;
-  hits.forEach((h, i) => {
-    const e = h.entry;
+  list.forEach(({ entry: e, priceFromSheet }, i) => {
     let body = e.content;
     const table = snapshot.tables.find((t) => t.id === e.id);
     if (table) body = sliceTableForQuestion(table, query) ?? truncate(e.content, 1400);
+    else if (priceFromSheet) body = `${truncate(body.normalize("NFKC").replace(SITE_AMOUNT, "").replace(/[ \t]{2,}/g, " "), 800)}\n（この項目の金額は使わない。料金はスプレッドシートの料金表のとおりに答える）`;
     else body = truncate(body, 800);
-    const block = `[${i + 1}] ${ORIGIN_LABEL[e.origin ?? ""] ?? e.category}｜${e.title}\n${body}`;
-    if (total + block.length > 3200 && blocks.length > 0) return;
+    const block = `[${i + 1}] ${CONTEXT_LABEL[e.origin ?? ""] ?? e.category}｜${e.title}\n${body}`;
+    if (total + block.length > 3600 && blocks.length > 0) return;
     blocks.push(block);
     total += block.length;
   });
@@ -139,7 +221,7 @@ function buildContext(hits: SearchHit[], snapshot: KnowledgeSnapshot, query: str
 
 /** ナレッジ検索の結果からの回答（OpenAI 未設定のデモモード用） */
 function demoReply(hits: SearchHit[], snapshot: KnowledgeSnapshot, query: string, style: AnswerStyle): string {
-  const top = hits[0];
+  const top = bestForReply(hits);
   const table = snapshot.tables.find((t) => t.id === top.entry.id);
   const body = table ? (sliceTableForQuestion(table, query) ?? top.entry.content) : top.entry.content;
   const text = `「${top.entry.title.replace(/^.*｜/, "")}」についてご案内します。\n${truncate(body, 900)}`;
@@ -223,6 +305,8 @@ export async function planAnswer(
     const before = query.slice(0, query.length - q.length).trim();
     if (before) hits = await find(before);
   }
+  // 同じ話題がスプレッドシートとホームページの両方にあるときは、スプレッドシートを先に（回答・参考の表示とも）
+  hits = preferSheet(hits, pool, query);
   const sources = hits.map(toSource);
   if (hits.length === 0) {
     return finish({ ...base, mode: "notfound", kind: "notfound", reply: style === "voice" ? NOT_FOUND_VOICE : NOT_FOUND_REPLY });

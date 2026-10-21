@@ -591,6 +591,99 @@ img {
   width: 33.2em;
 }
 
+/* 今のホームページの「AIに相談」の窓（public/embed.js）の中：ヘッダー・フッター・ページの見出しを出さず、相談の枠を窓いっぱいに */
+html[data-embed] .site-chrome,
+html[data-embed] .page-hero-head {
+  display: none !important;
+}
+html[data-embed] .page-hero {
+  padding-bottom: 0.75rem;
+}
+html[data-embed] .page-hero > .relative > .relative {
+  padding-top: 0.75rem;
+}
+html[data-embed] .chat-card {
+  height: calc(100dvh - 1.5rem);
+  min-height: 0;
+  max-height: none;
+}
+
+/* トップの最初の画面：キービジュアル＋AI 相談メニュー（4 つのボタン）で、ヘッダーの下の画面の高さちょうどにする
+   （メニューが画面の一番下に来る）。キービジュアルは高さ＝画面の残り。絵は「画面の幅」と「残りの高さ」の小さいほうに
+   合わせて拡大縮小する（横長のノート PC でも切れず、縦長のスマホでは幅に合わせて上下中央に配置） */
+.kv-first {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 80px);
+  min-height: calc(100svh - 80px);
+}
+.kv-first > .kv {
+  flex: 1 1 0;
+  min-height: 220px;
+  container-type: size;
+}
+.kv-first .kv__inner,
+.kv-first .kv-fader,
+.kv-first .kv__content {
+  height: 100%;
+  min-height: 0;
+}
+.kv-first .kv__inner {
+  font-size: min(1.2125162973vw, 100cqh / 64);
+}
+@media (min-width: 768px) {
+  .kv-first .kv__inner {
+    font-size: min(0.9775171065vw, 100cqh / 64);
+  }
+}
+@media (min-width: 1024px) {
+  .kv-first {
+    min-height: calc(100vh - 100px);
+    min-height: calc(100svh - 100px);
+  }
+  .kv-first .kv__inner {
+    font-size: min(0.7142857143vw, 100cqh / 64);
+  }
+}
+/* 縦長（スマホ・タブレットの縦向き）は上下が空きやすいので、絵を少し大きく（1.1 倍まで：これ以上だと「いい畳作ります。」が
+   スタッフの写真に重なる）、後ろの円と左下の畳・襖の絵を大きくして余白を埋める */
+@container (orientation: portrait) {
+  .kv-first .kv__inner {
+    font-size: min(1.3337679270vw, 100cqh / 64);
+  }
+  .kv-first .kv-center::before {
+    width: 86em;
+    height: 86em;
+  }
+}
+/* 左下の畳・襖の絵は、上下の余白の大きさに合わせて大きくする（余白が少ない画面では中央の絵に重なるため） */
+@container (aspect-ratio <= 4 / 5) {
+  .kv-first .kv-leftbottom--tatami,
+  .kv-first .kv-leftbottom--fusuma {
+    width: 38em;
+  }
+}
+@container (aspect-ratio <= 5 / 8) {
+  .kv-first .kv-leftbottom--tatami,
+  .kv-first .kv-leftbottom--fusuma {
+    width: 46em;
+  }
+}
+@media (min-width: 768px) {
+  @container (orientation: portrait) {
+    .kv-first .kv__inner {
+      font-size: min(1.0752688172vw, 100cqh / 64);
+    }
+  }
+}
+@media (min-width: 1024px) {
+  @container (orientation: portrait) {
+    .kv-first .kv__inner {
+      font-size: min(0.7857142857vw, 100cqh / 64);
+    }
+  }
+}
+
 @media (max-width: 767.98px) {
   .kv-center--shift,
   .kv-deco--shift {
@@ -667,6 +760,20 @@ img {
 .bubble {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* AI の回答（日本語の本文）：ベタ組み（約物を詰めない）・行間 1.8・禁則処理を厳しめに（行頭に小さい「っ」「ゃ」や長音を置かない）、
+   長い英数字は枠の中で折り返し、最終行が 1〜2 文字だけにならないようにする */
+.rich-ja {
+  font-feature-settings: normal;
+  line-height: 1.8;
+  line-break: strict;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+.rich-ja p,
+.rich-ja li {
+  text-wrap: pretty;
 }
 
 /* よくあるご質問・7つの在り方の開閉（Safari の既定の三角を消す） */

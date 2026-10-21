@@ -261,7 +261,7 @@ export default function EstimateForm({
     <p className="flex items-start gap-2 rounded-xl border border-ichi-green/25 bg-ichi-cream px-4 py-3 text-sm leading-relaxed text-ichi-theme" data-intake-banner="partial">
       <Sparkles className="mt-0.5 h-4 w-4 shrink-0" />
       <span>
-        会話でお伺いした内容は入力済みです。<b>{missing.map((f) => FIELD_LABEL[f]).join("・")}</b>だけご入力ください。
+        会話で伺った内容は入力済みです。<b>{missing.map((f) => FIELD_LABEL[f]).join("・")}</b>だけご入力ください。
       </span>
     </p>
   ) : (
@@ -421,7 +421,7 @@ export default function EstimateForm({
               </ul>,
             )}
             <p className="bg-washi-50/60 px-4 py-2 text-[11px] leading-relaxed text-sumi-500">
-              ※ご希望日時は確定ではありません。担当者よりお電話でご相談のうえ、お伺いする日時を決定いたします。
+              ※ご希望日時は確定ではありません。担当者よりお電話でご相談のうえ、伺う日時を決定いたします。
             </p>
             {field(
               "summary",

@@ -139,7 +139,7 @@ export default function KeyVisual() {
   }, []);
 
   return (
-    <section className="relative w-full select-none" aria-roledescription="carousel" aria-label="一畳屋のご紹介">
+    <section className="kv relative w-full select-none" aria-roledescription="carousel" aria-label="一畳屋のご紹介">
       <div className="kv__inner">
         <div className="kv-fader">
           {SLIDES.map((s, i) => {

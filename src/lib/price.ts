@@ -187,7 +187,7 @@ function globalInfo(tables: PriceTable[]) {
   const heri = tables.find((t) => /^ヘリ$/.test(t.title));
   const heriVals = heri ? heri.rows.flatMap((r) => r.extra.map(num)).filter((n) => Number.isFinite(n)) : [];
   return {
-    expenses: exp ? `${Number(exp[1].replace(/,/g, "")).toLocaleString("ja-JP")}円／一式` : "",
+    expenses: exp ? `${Number(exp[1].replace(/,/g, "")).toLocaleString("ja-JP")}円` : "",
     revised: date ? `${date[1]}年${Number(date[2])}月${Number(date[3])}日` : "",
     tax,
     heriRange: heriVals.length ? `${Math.min(...heriVals).toLocaleString("ja-JP")}円〜${Math.max(...heriVals).toLocaleString("ja-JP")}円` : "",
@@ -322,7 +322,7 @@ function tableBlock(s: Scored, nq: string, style: AnswerStyle, info: ReturnType<
   const text = [
     `【${name}】${head ? `（${head}）` : ""}`,
     ...lines,
-    others.length ? `（このほか ${others.join("・")} の料金もご案内できます）` : "",
+    others.length ? `（このほか、${others.join("・")}の料金もご案内できます）` : "",
     ...notes,
     ...guides,
   ]
@@ -376,7 +376,7 @@ function answerFromAnyNotes(question: string, nq: string, tables: PriceTable[], 
     return { reply: voiceClean(`${spoken}正式なお見積りは、担当者が現地を見てから無料でお出しします。`), tableIds: found.map((f) => f.t.id), rows: 0 };
   }
   const blocks = found.map((f) => [`【${displayTitle(f.t).name}】の料金表の注記より`, ...f.notes].join("\n"));
-  const footer = [info.expenses ? `※別途、諸経費${info.expenses}が工事全体に対してかかります。` : "", "正式なお見積りは、担当者が現地を見てから無料で提出します。"];
+  const footer = [info.expenses ? `※このほか、工事全体に対して諸経費（一式）${info.expenses}がかかります。` : "", "正式なお見積りは、担当者が現地を見てから無料で提出します。"];
   void question;
   return { reply: [...blocks, ...footer].filter(Boolean).join("\n"), tableIds: found.map((f) => f.t.id), rows: 0 };
 }
@@ -445,13 +445,14 @@ export function answerPrice(question: string, tables: PriceTable[], style: Answe
   const tatamiOmote = picks.some((s) => /^畳（ヘリ付き）$/.test(s.t.title)) && /表替え|畳替え/.test(nq);
   const footer: string[] = [];
   if (style === "voice") {
-    footer.push(`別途、${info.expenses ? `諸経費${info.expenses}が` : "諸経費が"}かかります。正式なお見積りは、担当者が現地を見てから無料でお出しします。`);
+    footer.push(`このほか、工事全体に諸経費が${info.expenses ? `一式${info.expenses}` : ""}かかります。正式なお見積りは、担当者が現地を見てから無料でお出しします。`);
   } else {
     if (tatamiOmote && info.heriRange) footer.push(`※表替えはヘリ代が別途かかります（ヘリ：${info.heriRange}）。`);
-    if (info.expenses) footer.push(`※別途、諸経費${info.expenses}が工事全体に対してかかります。`);
+    if (info.expenses) footer.push(`※このほか、工事全体に対して諸経費（一式）${info.expenses}がかかります。`);
     if (QUANTITY.test(question)) footer.push("※正式な合計金額は、担当者が現地を見てからのお見積りでご案内します。");
     else if (picks.some((s) => QUOTABLE.test(s.t.title.normalize("NFKC")))) footer.push("※畳数・枚数を教えていただければ、料金表から合計の目安を計算します。");
-    footer.push(`正式なお見積りは、担当者が現地を見てから無料で提出します。${info.revised ? `（${info.revised}改定の料金表より）` : ""}`);
+    if (info.revised) footer.push(`※${info.revised}改定の料金表による料金です。`);
+    footer.push("正式なお見積りは、担当者が現地を見てから無料で提出します。");
   }
   const reply = [...blocks, ...footer].join(style === "voice" ? "" : "\n");
   return { reply: style === "voice" ? voiceClean(reply) : reply, tableIds: used, rows: rowsShown };

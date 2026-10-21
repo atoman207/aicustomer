@@ -1,6 +1,8 @@
 // 学習済みの回答（OpenAI が一度作った回答を覚えておき、同じ質問には AI を使わずに答える）と、
 // AI が答えられなかった質問（マニュアルに書き足す候補）の記録
 //   ・回答の根拠にしたナレッジが変わったら、その回答は使わない（古い回答を出さないため）
+//   ・回答の書き方のルール（prompts.ts の ANSWER_STYLE_VERSION）が変わったときも、以前の回答は使わない
+import { ANSWER_STYLE_VERSION } from "./prompts";
 import { readCollection, writeCollection } from "./store";
 import type { Channel } from "./types";
 
@@ -15,6 +17,8 @@ export interface LearnedAnswer {
   createdAt: string;
   lastUsedAt: string;
   hits: number;
+  /** 作ったときの回答の書き方の版（ANSWER_STYLE_VERSION） */
+  version?: number;
 }
 
 export interface UnansweredQuestion {
@@ -49,14 +53,15 @@ function serial(fn: () => Promise<void>): Promise<void> {
 
 export async function listLearned(): Promise<LearnedAnswer[]> {
   await queue;
-  return (await readCollection<LearnedAnswer[]>("learned")) ?? [];
+  // 以前の書き方の回答は使わないので、管理画面にも出さない
+  return ((await readCollection<LearnedAnswer[]>("learned")) ?? []).filter((x) => (x.version ?? 1) === ANSWER_STYLE_VERSION);
 }
 
 /** 有効な学習済み回答を探す（根拠のナレッジが今も同じ内容であること） */
 export async function findLearned(key: string, style: "text" | "voice", validHashes: Set<string>): Promise<LearnedAnswer | null> {
   const list = await listLearned();
   const hit = list.find((x) => x.key === key && x.style === style);
-  if (!hit) return null;
+  if (!hit || (hit.version ?? 1) !== ANSWER_STYLE_VERSION) return null;
   if (!hit.sources.every((s) => validHashes.has(s.hash))) return null;
   void serial(async () => {
     const cur = (await readCollection<LearnedAnswer[]>("learned")) ?? [];
@@ -69,11 +74,11 @@ export async function findLearned(key: string, style: "text" | "voice", validHas
   return hit;
 }
 
-export function saveLearned(a: Omit<LearnedAnswer, "createdAt" | "lastUsedAt" | "hits">): Promise<void> {
+export function saveLearned(a: Omit<LearnedAnswer, "createdAt" | "lastUsedAt" | "hits" | "version">): Promise<void> {
   return serial(async () => {
     const cur = (await readCollection<LearnedAnswer[]>("learned")) ?? [];
     const now = new Date().toISOString();
-    const next = [{ ...a, createdAt: now, lastUsedAt: now, hits: 0 }, ...cur.filter((x) => !(x.key === a.key && x.style === a.style))];
+    const next = [{ ...a, createdAt: now, lastUsedAt: now, hits: 0, version: ANSWER_STYLE_VERSION }, ...cur.filter((x) => !(x.key === a.key && x.style === a.style))];
     await writeCollection("learned", next.slice(0, MAX_LEARNED));
   });
 }

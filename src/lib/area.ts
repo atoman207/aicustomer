@@ -70,10 +70,15 @@ export function answerArea(question: string, manualText: string): AreaAnswer | n
   const covered = ward ? area.areas.includes("熊本市") : area.areas.includes(place!.name) || (place!.gun ? area.areas.includes(place!.gun) : false);
   const where = place?.gun ? `（${place.gun}）` : "";
   if (covered) {
-    return { reply: `はい、${name}${where}は当社の営業範囲です。お伺いして現地を確認し、お見積りを提出します（お見積りは無料です）。`, place: name, inArea: true };
+    return { reply: `はい、${name}${where}は当社の営業範囲です。担当者が伺って現地を確認し、お見積り（無料）を提出します。`, place: name, inArea: true };
   }
+  // シートの書き方（「ご相談承ります※配送費が別途掛かります（場所による）」）を文として整える
   const outside = area.outside
-    ? area.outside.replace(/^エリア外でも/, "エリア外でも").replace(/掛かります/, "かかります")
+    ? area.outside
+        .replace(/ご相談承ります/, "ご相談を承ります")
+        .replace(/\s*※\s*/g, "。")
+        .replace(/掛かります/, "かかります")
+        .replace(/（場所による）/, "（金額は場所によります）")
     : "エリア外のご依頼は担当者が確認してご案内します";
   return { reply: `${name}${where}は当社の通常の営業範囲外ですが、${outside.replace(/^エリア外でも/, "")}${/。$/.test(outside) ? "" : "。"}`.replace(/、。/g, "。"), place: name, inArea: false };
 }

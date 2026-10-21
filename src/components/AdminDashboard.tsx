@@ -25,10 +25,9 @@ import type {
   PhoneMode,
 } from "@/lib/types";
 import { autofillLabel } from "@/lib/intake";
-import { CHANNEL_LABEL } from "@/lib/types";
+import { CHANNEL_LABEL, ESTIMATE_STATUS_LABEL as STATUS_LABEL } from "@/lib/types";
 import { formatJst, truncate } from "@/lib/utils";
 
-const STATUS_LABEL: Record<EstimateStatus, string> = { new: "新規", contacted: "連絡済み", scheduled: "日程確定", closed: "完了" };
 const DAY_LABEL = ["日", "月", "火", "水", "木", "金", "土"];
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -43,6 +42,9 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage"] }) {
   const [items, setItems] = useState<EstimateRequest[]>([]);
   const [sinkLabel, setSinkLabel] = useState("");
+  const [sink, setSink] = useState("");
+  const [fromSheet, setFromSheet] = useState(false);
+  const [sheetError, setSheetError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [q, setQ] = useState("");
@@ -54,9 +56,12 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
     setLoading(true);
     setError("");
     try {
-      const j = await api<{ estimates: EstimateRequest[]; sinkLabel: string }>("/api/estimates");
+      const j = await api<{ estimates: EstimateRequest[]; sinkLabel: string; sink: string; fromSheet?: boolean; sheetError?: string }>("/api/estimates");
       setItems(j.estimates);
       setSinkLabel(j.sinkLabel);
+      setSink(j.sink);
+      setFromSheet(Boolean(j.fromSheet));
+      setSheetError(j.sheetError ?? "");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -155,10 +160,25 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
         </div>
       </div>
       {error ? <p className="px-4 py-2 text-sm text-shu-600">{error}</p> : null}
-      {!storage.persistent ? (
+      {fromSheet ? (
+        <p className="border-b border-washi-200 px-4 py-2 text-xs text-sumi-500">
+          受付と対応状況は、スプレッドシート「{sinkLabel.match(/「(.+?)」/)?.[1] ?? "受付一覧"}」から読み込んでいます。ステータスを変えると、シートの「ステータス」の欄も書き換わります。
+        </p>
+      ) : null}
+      {sheetError ? (
         <p className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
-          現在の保存先は「{storage.label}」です。{storage.detail ?? ""}
-          スプレッドシート連携（GAS）を設定すると、受付は常にシートへ記録されます。
+          スプレッドシートの受付一覧を読めなかったため、このサーバーに保存した受付だけを表示しています：{sheetError}
+        </p>
+      ) : null}
+      {sink && !fromSheet && !sheetError && !storage.persistent ? (
+        <p className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+          {sink === "local"
+            ? `スプレッドシートに接続されていないため、受付は「${storage.label}」にだけ保存されています。`
+            : `受付はスプレッドシートに記録していますが、この一覧は「${storage.label}」から表示しています。`}
+          {storage.detail ?? ""}
+          {sink === "local"
+            ? "Vercel の環境変数に GOOGLE_SERVICE_ACCOUNT_EMAIL・GOOGLE_PRIVATE_KEY・KNOWLEDGE_SHEET_ID を設定すると、受付はスプレッドシートの「受付一覧」に記録され、この一覧もシートから表示します。"
+            : null}
         </p>
       ) : null}
       <ul className="divide-y divide-washi-200 md:hidden" data-mobile-list="receptions">

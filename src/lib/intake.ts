@@ -542,7 +542,7 @@ export function intakeQuestion(
       : "";
   if (contact.length >= 2) {
     return {
-      text: `${thanks}お伺いするために、次の内容を教えてください。\n${contact.map((f) => ASK_LINE[f]).join("\n")}\nまとめて1つのメッセージで送っていただいてかまいません。`,
+      text: `${thanks}お見積りに伺うため、次の内容を教えてください。\n${contact.map((f) => ASK_LINE[f]).join("\n")}\nまとめて1つのメッセージで送っていただいてかまいません。`,
       asked: contact,
     };
   }
@@ -571,7 +571,7 @@ export function intakeQuestion(
 /** すべて伺えたときの案内（確認画面のボタンへ） */
 export function intakeReadyText(draft: IntakeDraft): string {
   const more = draft.dates.length < 3 && draft.dates[0] !== "指定なし" ? "第2・第3希望があれば、確認画面で追加できます。\n" : "";
-  return `ありがとうございます。お伺いした内容で、お見積り依頼の確認画面をご用意しました。\n下の「内容を確認して送信」ボタンを押して、ご確認のうえ送信してください（修正もできます）。\n${more}※訪問の日程は確定ではありません。担当者よりお電話でご相談のうえ決定いたします。`;
+  return `ありがとうございます。伺った内容で、お見積り依頼の確認画面をご用意しました。\n下の「内容を確認して送信」ボタンを押して、ご確認のうえ送信してください（修正もできます）。\n${more}※訪問の日程は確定ではありません。担当者よりお電話でご相談のうえ決定いたします。`;
 }
 
 export const INTAKE_CANCEL_TEXT =
@@ -620,4 +620,14 @@ export function autofillLabel(e: Pick<EstimateRequest, "channel" | "autofill">):
   const edited = names(e.autofill.edited);
   if (!filled) return "なし（お客様が入力）";
   return edited ? `${filled}（お客様が修正：${edited}）` : filled;
+}
+
+/** 受付一覧のシートの「会話からの自動入力」の欄を、受付の autofill に戻す（autofillLabel の逆） */
+export function parseAutofillLabel(label: string): EstimateRequest["autofill"] {
+  const s = label.trim();
+  if (!s || s.startsWith("AIが会話で聞き取り")) return undefined;
+  if (s.startsWith("なし")) return { filled: [], edited: [] };
+  const m = s.match(/^(.*?)(?:（お客様が修正：(.*)）)?$/);
+  const fields = (text = "") => AUTOFILL_FIELDS.filter((f) => text.split("・").includes(FIELD_LABEL[f]));
+  return { filled: fields(m?.[1]), edited: fields(m?.[2]) };
 }

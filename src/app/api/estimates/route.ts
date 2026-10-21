@@ -1,6 +1,6 @@
-import { createEstimate, receptionSink, receptionSinkLabel, validateEstimateInput } from "@/lib/estimates";
+import { createEstimate, listReceptions, receptionSink, receptionSinkLabel, validateEstimateInput } from "@/lib/estimates";
 import { error, json, rateLimited, readJson, requireAdmin } from "@/lib/http";
-import { getConversation, listEstimates, storageInfo, upsertConversation } from "@/lib/store";
+import { getConversation, storageInfo, upsertConversation } from "@/lib/store";
 import type { Channel } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -28,9 +28,10 @@ const keys = (v: unknown) => (Array.isArray(v) ? [...new Set(v.map(String).filte
 export async function GET() {
   const denied = await requireAdmin();
   if (denied) return denied;
-  const estimates = await listEstimates();
+  // スプレッドシートに記録しているときは、シートの受付一覧（正）＋このサーバーにだけある受付
+  const { estimates, fromSheet, sheetError } = await listReceptions();
   const sink = receptionSink();
-  return json({ ok: true, estimates, sink, sinkLabel: receptionSinkLabel(sink), storage: storageInfo() });
+  return json({ ok: true, estimates, fromSheet, sheetError, sink, sinkLabel: receptionSinkLabel(sink), storage: storageInfo() });
 }
 
 export async function POST(req: Request) {

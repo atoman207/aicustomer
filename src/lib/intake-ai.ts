@@ -124,7 +124,7 @@ function consultHistory(history: ChatMessage[]): ChatMessage[] {
   return history.filter((m) =>
     m.role === "user"
       ? !wantsEstimate(m.content) && extractIntake(m.content, [], today).found.length === 0
-      : !/お伺いするために|ご希望日時|お見積りのご依頼|確認画面|番地まで|お電話番号を/.test(m.content),
+      : !/お伺いするために|伺うため、|ご希望日時|お見積りのご依頼|確認画面|番地まで|お電話番号を/.test(m.content),
   );
 }
 
