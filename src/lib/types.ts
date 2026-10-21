@@ -9,8 +9,8 @@ export const CHANNEL_LABEL: Record<Channel, string> = {
   line: "LINE",
 };
 
-/** ナレッジの出どころ（優先順：管理画面 → アップロード → マニュアル → 会社情報 → ホームページ） */
-export type KnowledgeOrigin = "manual" | "company" | "website" | "admin" | "upload";
+/** ナレッジの出どころ（manual＝Googleスプレッドシート・website＝ホームページ） */
+export type KnowledgeOrigin = "manual" | "website";
 
 export interface KnowledgeEntry {
   id: string;
@@ -20,26 +20,17 @@ export interface KnowledgeEntry {
   keywords: string[];
   note?: string;
   origin?: KnowledgeOrigin;
-  /** 会社情報の照合語（マニュアル／ホームページに含まれていなければ古い項目として使わない） */
-  anchors?: string[];
-  /** お客様の聞き方の例（近い質問にはこの項目をそのまま回答） */
+  /** お客様の聞き方の例 */
   questions?: string[];
-  /** Supabase に保存したナレッジ：追加・アップロードの元（knowledge_sources.id）・使うかどうか */
-  sourceId?: string | null;
-  enabled?: boolean;
 }
 
 /** 顧客対応マニュアルの読込元 */
-export type KnowledgeSource = "gas" | "sheets_api" | "csv" | "json" | "supabase" | "local";
+export type KnowledgeSource = "gas" | "sheets_api" | "csv" | "json" | "local";
 
 export interface KnowledgeStats {
   manualText: number;
   manualTables: number;
-  company: number;
-  companyStale: number;
   website: number;
-  admin: number;
-  upload?: number;
   excluded: number;
 }
 
@@ -59,6 +50,8 @@ export interface KnowledgeSnapshot {
   excludedLines: string[];
   websiteFetchedAt?: string;
   websiteOrigin: "bundled" | "relearned";
+  /** Googleスプレッドシートの接続状況（connected＝今回シートから読めた） */
+  sheet?: { configured: boolean; connected: boolean; via: "gas" | "csv" | "env" | null; url: string };
 }
 
 export interface SearchHit {
@@ -84,6 +77,8 @@ export interface EstimateRequest {
   syncError?: string;
   lineUserId?: string; // 受付後にお客様が LINE で受付番号を送ると連携される
   lineLinkedAt?: string;
+  /** HP の確認画面：AI が会話から入力した項目と、お客様が修正した項目（name / address / phone / dates / summary） */
+  autofill?: { filled: string[]; edited: string[] };
 }
 
 export interface ChatMessage {
@@ -117,6 +112,8 @@ export interface AppSettings {
   companyName: string;
   companyPhone: string;
   lineAddFriendUrl: string;
+  /** 回答の情報源にする Googleスプレッドシートの URL（Apps Script・共有リンク・ウェブに公開。空なら環境変数） */
+  knowledgeSheetUrl: string;
   greeting: string;
   phone: PhoneSettings;
   updatedAt: string;
@@ -153,6 +150,8 @@ export interface AgentTurnResult {
   draft: IntakeDraft;
   done: boolean; // 通話/会話を終了してよい
   estimate?: EstimateRequest;
+  /** HP の声の相談：項目がそろったので画面に確認画面を表示する */
+  formReady?: boolean;
   mode: "openai" | "demo";
   sources?: SearchHit[];
   /** 回答の出どころ（local / cache は OpenAI を使わずに回答） */
@@ -160,7 +159,7 @@ export interface AgentTurnResult {
 }
 
 export interface StorageInfo {
-  backend: "supabase" | "redis" | "file" | "memory";
+  backend: "redis" | "file" | "memory";
   persistent: boolean;
   label: string;
   detail?: string;
@@ -170,25 +169,10 @@ export interface IntegrationStatus {
   openai: { configured: boolean; model: string; realtimeModel: string; ok?: boolean; detail?: string };
   storage: StorageInfo;
   knowledge: { source: KnowledgeSource; label: string; entries: number; fetchedAt: string; warning?: string };
-  reception: { sink: "gas" | "sheets_api" | "supabase" | "local"; label: string };
-  supabase: { configured: boolean; ready: boolean; setupRequired?: boolean; error?: string; projectRef: string };
+  reception: { sink: "gas" | "sheets_api" | "local"; label: string };
+  sheet: { configured: boolean; serviceAccount: string; sheetId: string };
   twilio: { configured: boolean; number: string; webhookUrl: string };
   line: { configured: boolean; webhookUrl: string; addFriendUrl: string };
   admin: { protected: boolean };
 }
 
-/** 管理画面で追加した情報・アップロードしたファイル（Supabase の knowledge_sources） */
-export interface KnowledgeSourceRecord {
-  id: string;
-  kind: "text" | "file";
-  name: string;
-  mime?: string | null;
-  size?: number | null;
-  category: string;
-  status: "processing" | "done" | "error";
-  entries_count: number;
-  error?: string | null;
-  storage_path?: string | null;
-  excerpt?: string | null;
-  created_at: string;
-}

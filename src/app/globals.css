@@ -81,7 +81,7 @@ img {
     @apply rounded-xl bg-white shadow-card;
   }
   .input {
-    @apply w-full rounded-lg border border-sumi-200 bg-white px-3 py-2 text-sm text-sumi-800 placeholder:text-sumi-300 focus:border-ichi-green focus:outline-none focus:ring-2 focus:ring-ichi-green/20 disabled:bg-sumi-50;
+    @apply w-full rounded-lg border border-sumi-200 bg-white px-3 py-2 text-base text-sumi-800 sm:text-sm placeholder:text-sumi-300 focus:border-ichi-green focus:outline-none focus:ring-2 focus:ring-ichi-green/20 disabled:bg-sumi-50;
   }
   .label {
     @apply mb-1 block text-xs font-bold text-sumi-600;

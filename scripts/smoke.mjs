@@ -52,15 +52,13 @@ await check("GET /api/status", async () => {
   if (!res.ok || !body.ok) throw new Error(`status ${res.status}`);
   return `openai=${body.openai.configured} knowledge=${body.knowledge.source}(${body.knowledge.entries}) reception=${body.reception.sink}`;
 });
-await check("Supabase（ナレッジ・会話履歴・受付の保存先）", async () => {
+await check("Googleスプレッドシート（回答の情報源・受付の記録先）", async () => {
   const { body } = await json("/api/status");
-  const sb = body.supabase;
-  if (!sb?.configured) return "未設定（ファイル／メモリと同梱の JSON で動作）";
-  if (!sb.ready) return `未使用：${sb.error ?? "接続を確認中"}`;
-  if (body.storage.backend !== "supabase" || body.knowledge.source !== "supabase") throw new Error(`storage=${body.storage.backend} knowledge=${body.knowledge.source}`);
-  return `接続済み（保存先 supabase・ナレッジ ${body.knowledge.entries} 件）`;
+  if (body.supabase) throw new Error("Supabase の接続が残っています");
+  if (!body.sheet?.configured) return `未設定（保存版 ${body.knowledge.source} で回答）`;
+  return `サービスアカウントで接続（ナレッジ ${body.knowledge.source}・${body.knowledge.entries} 件${body.knowledge.warning ? `・${body.knowledge.warning.slice(0, 60)}` : ""}／受付 ${body.reception.sink}）`;
 });
-await check("GET /api/knowledge（マニュアル・会社情報・ホームページの JSON）", async () => {
+await check("GET /api/knowledge（スプレッドシート・ホームページ）", async () => {
   const { res, body } = await json("/api/knowledge");
   if (res.status === 401) {
     // 管理画面のパスワード保護あり → 公開の接続状況で件数だけ確認
@@ -70,12 +68,14 @@ await check("GET /api/knowledge（マニュアル・会社情報・ホームペ�
   }
   if (!res.ok || !Array.isArray(body.entries) || body.entries.length === 0) throw new Error(`status ${res.status}`);
   const st = body.stats ?? {};
-  if (body.source === "local" || !(st.manualTables > 0) || !(st.company > 0) || !(st.website > 0)) throw new Error(`sources missing: ${body.source} ${JSON.stringify(st)}`);
-  return `${body.entries.length} entries（${body.source}: 文章${st.manualText}・料金表${st.manualTables} / 会社情報${st.company} / HP${st.website}）`;
+  if (body.source === "local" || !(st.manualTables > 0) || !(st.website > 0)) throw new Error(`sources missing: ${body.source} ${JSON.stringify(st)}`);
+  const origins = [...new Set(body.entries.map((e) => e.origin))];
+  if (origins.some((o) => o !== "manual" && o !== "website")) throw new Error(`スプレッドシート・ホームページ以外の情報源: ${origins.join(",")}`);
+  return `${body.entries.length} entries（${body.source}: 文章${st.manualText}・料金表${st.manualTables} / HP${st.website}）`;
 });
 await check("管理画面の API（ADMIN_PASSWORD 設定時はログインが必要）", async () => {
   const { body } = await json("/api/status");
-  const paths = ["/api/knowledge", "/api/estimates", "/api/conversations", "/api/usage", "/api/settings", "/api/admin/sources", "/api/admin/knowledge", "/api/admin/setup"];
+  const paths = ["/api/knowledge", "/api/estimates", "/api/conversations", "/api/usage", "/api/settings", "/api/admin/knowledge", "/api/admin/errors"];
   const codes = await Promise.all(paths.map(async (p) => (await fetch(`${BASE}${p}`)).status));
   const refresh = (await fetch(`${BASE}/api/knowledge/refresh`, { method: "POST" })).status;
   const all = [...codes, refresh];
@@ -99,16 +99,17 @@ await check("POST /api/chat（料金表から AI なしで即答）", async () =
   if (!res.ok || res.headers.get("x-mode") !== "local" || !/23,100円/.test(text)) throw new Error(`mode=${res.headers.get("x-mode")} ${text.slice(0, 80)}`);
   return `mode=local ${text.split("\n")[1] ?? ""}`;
 });
-await check("POST /api/knowledge/answer（よくある質問は AI なし）", async () => {
+await check("POST /api/knowledge/answer（営業時間はスプレッドシートの内容で回答）", async () => {
   const { res, body } = await json("/api/knowledge/answer", { method: "POST", body: JSON.stringify({ question: "営業時間を教えてください" }) });
-  if (!res.ok || body.mode !== "local" || !/17:00/.test(body.reply)) throw new Error(`${body.mode} ${String(body.reply).slice(0, 80)}`);
+  const reply = String(body.reply ?? "").normalize("NFKC");
+  if (!res.ok || !/(8:00|8時)/.test(reply) || !/(17:00|17時|5時)/.test(reply)) throw new Error(`${body.mode} ${String(body.reply).slice(0, 80)}`);
   return `${body.mode}/${body.kind}: ${body.reply.slice(0, 30)}…`;
 });
-await check("POST /api/knowledge/answer（商品知識：耐用年数・障子の新調・ヘリの料金）", async () => {
+await check("POST /api/knowledge/answer（料金表・シートにない質問）", async () => {
   const cases = [
-    ["極みは何年もちますか？", "faq", /30年/],
-    ["障子の新調はいくらですか？", "faq", /現場を見て/],
     ["畳のヘリの値段は？", "price", /純金/],
+    ["6畳の表替えはいくら？", "price", /合計の目安/],
+    ["駐車場は何台とめられますか？", "notfound", /担当者より折り返し/],
   ];
   const out = [];
   for (const [question, kind, re] of cases) {
@@ -140,6 +141,62 @@ await check("POST /api/summarize", async () => {
   if (!res.ok || !body.ok) throw new Error(`status ${res.status}`);
   return `${body.mode}: ${String(body.summary).slice(0, 40)}`;
 });
+await check("POST /api/chat（見積依頼の聞き取り：お名前・ご住所・お電話番号 → ご希望日時 → 確認画面）", async () => {
+  const messages = [];
+  let intake = { active: false, draft: { dates: [] } };
+  const turns = ["6畳の和室の表替えを考えています", "見積をお願いします", "疎通花子、熊本市中央区水前寺1-2-3、090-1234-5678", "11月2日の午前か11月4日の午後"];
+  let reply = "";
+  for (const t of turns) {
+    messages.push({ role: "user", content: t });
+    const res = await fetch(`${BASE}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "smoke-intake", channel: "web_text", messages, intake }),
+    });
+    reply = await res.text();
+    if (!res.ok) throw new Error(`"${t}" → ${res.status}`);
+    const header = res.headers.get("x-intake");
+    if (header) intake = JSON.parse(decodeURIComponent(header));
+    messages.push({ role: "assistant", content: reply });
+  }
+  const d = intake.draft;
+  if (!intake.ready || d.name !== "疎通花子" || d.phone !== "090-1234-5678" || d.dates.length !== 2 || !/内容を確認して送信/.test(reply)) {
+    throw new Error(`ready=${intake.ready} ${JSON.stringify(d)} ${reply.slice(0, 60)}`);
+  }
+  if (!d.summary || /090|疎通花子/.test(d.summary)) throw new Error(`要約: ${d.summary}`);
+  return `${d.name}／${d.address}／${d.phone}／${d.dates.join("・")}／要約「${d.summary.slice(0, 24)}…」`;
+});
+await check("POST /api/estimates/draft（確認画面：会話から読み取り）", async () => {
+  const messages = [
+    { role: "user", content: "襖を4枚張り替えたいです" },
+    { role: "assistant", content: "かしこまりました。お名前を教えていただけますか？" },
+    { role: "user", content: "疎通次郎です" },
+    { role: "assistant", content: "ご住所をお願いします。" },
+    { role: "user", content: "合志市栄3415-11" },
+  ];
+  const { res, body } = await json("/api/estimates/draft", { method: "POST", body: JSON.stringify({ messages, draft: { dates: [] } }) });
+  if (!res.ok || !body.ok) throw new Error(`status ${res.status}`);
+  const d = body.draft;
+  if (!d.name?.startsWith("疎通次郎") || d.address !== "合志市栄3415-11" || !/襖/.test(d.summary ?? "")) throw new Error(JSON.stringify(d));
+  if (body.missing.join(",") !== "phone,dates") throw new Error(`missing=${body.missing}`);
+  return `${body.mode}: ${d.name}／${d.address}／足りない項目=${body.missing.join("・")}`;
+});
+await check("声の相談（簡易音声）：そろったら確認画面を表示（受付はお客様の送信で）", async () => {
+  const start = await json("/api/agent/start", { method: "POST", body: JSON.stringify({ channel: "web_voice" }) });
+  if (!start.res.ok) throw new Error(`start ${start.res.status}`);
+  const sid = start.body.sessionId;
+  const turns = ["見積をお願いします", "疎通三郎です", "熊本市東区保田窪2-1-21", "09011112222", "11月5日の午前", "なし", "なし", "はい"];
+  let last;
+  let session = start.body.session;
+  for (const t of turns) {
+    last = await json("/api/agent/turn", { method: "POST", body: JSON.stringify({ sessionId: sid, text: t, session }) });
+    if (!last.res.ok) throw new Error(`turn "${t}" → ${last.res.status}`);
+    session = last.body.session;
+    if (last.body.formReady) break;
+  }
+  if (!last.body.formReady || last.body.estimate || !/確認画面/.test(last.body.reply)) throw new Error(`formReady=${last.body.formReady} estimate=${last.body.estimate?.id} ${last.body.reply}`);
+  return `mode=${last.body.mode} draft=${last.body.draft.name}／${last.body.draft.phone}／${last.body.draft.dates.join("・")}`;
+});
 await check("POST /api/estimates (未確認は拒否)", async () => {
   const { res } = await json("/api/estimates", { method: "POST", body: JSON.stringify({ name: "x", confirmed: false }) });
   if (res.status !== 400) throw new Error(`expected 400, got ${res.status}`);
@@ -157,10 +214,12 @@ await check("POST /api/estimates (登録)", async () => {
       preferredDates: ["10月20日 午前"],
       confirmed: true,
       sessionId: "smoke-chat",
+      autofill: { filled: ["name", "address", "phone", "dates", "summary"], edited: ["address"] },
     }),
   });
   if (!res.ok || !body.ok) throw new Error(`status ${res.status} ${JSON.stringify(body)}`);
-  return `${body.estimate.id} → ${body.sink}`;
+  if (body.estimate.autofill?.edited?.join(",") !== "address") throw new Error(`autofill: ${JSON.stringify(body.estimate.autofill)}`);
+  return `${body.estimate.id} → ${body.sink}（会話から自動入力 ${body.estimate.autofill.filled.length} 項目）`;
 });
 await check("電話受付フロー（agent start → 受付完了）", async () => {
   const start = await json("/api/agent/start", { method: "POST", body: JSON.stringify({ channel: "phone" }) });

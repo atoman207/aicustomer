@@ -22,7 +22,31 @@ function overlapRatio(q: Set<string>, t: Set<string>): number {
   return n / q.size;
 }
 
+/** お客様の言い方 → スプレッドシート（顧客対応マニュアル）の書き方 */
+const SYNONYMS: [RegExp, string][] = [
+  [/工事/g, "施工"],
+  [/お休み|休み/g, "休業日"],
+  [/何日|日数|どのくらいかか|どれくらいかか/g, "工期"],
+  [/土曜|日曜|週末/g, "土日"],
+  [/来てもらえ|来てくれ|訪問して|対応エリア|対応地域|対応範囲/g, "営業範囲"],
+  [/お店に行|お店へ行|店に行|店舗に行|お店で/g, "来店"],
+  [/サンプル/g, "見本"],
+  [/お?支払い方法|お?支払い|払い方/g, "支払方法"],
+  [/何年(?:くらい|ぐらい|ほど)?(?:もち|持ち|もつ|持つ|使え)|寿命/g, "耐用年数"],
+];
+
+function withSynonyms(query: string): string {
+  return SYNONYMS.reduce((s, [re, to]) => s.replace(re, to), query);
+}
+
+/** キーワードの近さ（お客様の言い方とシートの書き方が違う場合も、言い換えた方の近さで判定） */
 export function keywordScore(query: string, e: KnowledgeEntry): number {
+  const alt = withSynonyms(query);
+  const base = keywordScoreOf(query, e);
+  return alt === query ? base : Math.max(base, keywordScoreOf(alt, e));
+}
+
+function keywordScoreOf(query: string, e: KnowledgeEntry): number {
   const q = normalizeJa(query);
   if (!q) return 0;
   const qb = bigrams(q);

@@ -18,6 +18,8 @@ export interface ManualRules {
   tableKeywords: Record<string, string[]>;
   /** 料金表の回答に添える案内（一畳屋からの補足。when は質問に含まれる語の正規表現。省略時は常に添える） */
   tableGuides?: (TableGuide & { table: string })[];
+  /** 料金表の下にある文章の見出し（正規表現。「畳について」など）。料金表ではなく文章として扱う */
+  textSectionTitle?: string[];
 }
 
 export interface TableGuide {
@@ -27,11 +29,12 @@ export interface TableGuide {
 
 export const DEFAULT_MANUAL_RULES: ManualRules = {
   internalSectionStart: ["思案中", "【社内】", "社内用", "社内メモ"],
-  excludeLine: ["要らないかもしれません", "載せときました", "^↑$", "原価", "売値", "仕入"],
-  removeText: ["【個人[^】]*】", "（スエヨシ）", "\\(スエヨシ\\)", "（安企画）", "\\(安企画\\)"],
+  excludeLine: ["要らないかもしれません", "載せときました", "^↑$", "原価", "売値", "仕入", "(もって|持って)これないか"],
+  removeText: ["【個人[^】]*】", "（スエヨシ）", "\\(スエヨシ\\)", "（安企画）", "\\(安企画\\)", "（これからは[^）]*）"],
   columnAlias: {},
   tableKeywords: {},
   tableGuides: [],
+  textSectionTitle: ["について$"],
 };
 
 export interface PriceRow {
@@ -90,6 +93,7 @@ interface CompiledRules {
   alias: Record<string, Record<string, string>>;
   keywords: Record<string, string[]>;
   guides: (TableGuide & { table: string })[];
+  textSection: RegExp[];
 }
 
 function compileRules(r: ManualRules): CompiledRules {
@@ -100,6 +104,7 @@ function compileRules(r: ManualRules): CompiledRules {
     alias: r.columnAlias ?? {},
     keywords: r.tableKeywords ?? {},
     guides: r.tableGuides ?? [],
+    textSection: compile(r.textSectionTitle ?? []),
   };
 }
 
@@ -532,6 +537,30 @@ function keywordsFor(t: PriceTable, rules: CompiledRules): string[] {
   return [...set];
 }
 
+/** 文章のまとまり（「畳について」など）→「・」の項目ごとのナレッジ（続きの行「→…」「※…」は同じ項目） */
+function sectionEntries(t: PriceTable, n: number, rules: CompiledRules): KnowledgeEntry[] {
+  const groups: string[][] = [];
+  for (const line of t.notes) {
+    if (line.startsWith("・") || groups.length === 0) groups.push([line]);
+    else groups[groups.length - 1].push(line);
+  }
+  const keywords = keywordsFor(t, rules);
+  // 見出しは最初の区切り（空白・。・、）まで（「畳表の耐用年数目安 極み：30年 …」→「畳表の耐用年数目安」）
+  const head = (line: string) => {
+    const h = bulletHead(line);
+    const cut = h.search(/[\s。、]/);
+    return cut >= 4 ? h.slice(0, cut) : h;
+  };
+  return groups.map((g, i) => ({
+    id: `m-s${n}-${i + 1}`,
+    category: "顧客対応マニュアル",
+    title: `${t.title}｜${head(g[0])}`,
+    content: g.join("\n"),
+    keywords,
+    note: `シートの「${t.title}」`,
+  }));
+}
+
 /**
  * シートの全セル（行×列、空行も位置を保ったもの）を解析する。
  * 文章部分は「最初に 3 つ以上のセルが並ぶ行」の手前まで。
@@ -547,7 +576,10 @@ export function parseManualGrid(rows: string[][], rulesIn: ManualRules = DEFAULT
   if (tableStart < rows.length) {
     for (const [c0, c1] of bandsOf(rows, tableStart)) tables.push(...parseBand(rows, tableStart, c0, c1, rules, excluded));
   }
-  const kept = tables.filter((t) => t.rows.length > 0 || t.notes.length > 0);
+  // 料金表の下の文章（「畳について」など、値の行がなく文章だけのまとまり）は文章として扱う
+  const isTextSection = (t: PriceTable) => t.rows.length === 0 && t.notes.length > 0 && rules.textSection.some((re) => re.test(t.title));
+  tables.filter(isTextSection).forEach((t, i) => textEntries.push(...sectionEntries(t, i + 1, rules)));
+  const kept = tables.filter((t) => !isTextSection(t) && (t.rows.length > 0 || t.notes.length > 0));
   kept.forEach((t, i) => {
     t.id = `m-p${String(i + 1).padStart(2, "0")}`;
     t.keywords = keywordsFor(t, rules);
@@ -636,7 +668,16 @@ export interface ManualData {
 }
 
 /** シートの全セル → マニュアル（Q&A 形式ならそのまま、自由形式なら文章と料金表に分けて解析） */
-export function gridToManual(rows: string[][], rules: ManualRules = DEFAULT_MANUAL_RULES): ManualData {
+/** Googleスプレッドシートの表示形式（通貨「¥27,500」・「27,500円」）の金額だけのセルを数字にそろえる */
+function plainAmount(cell: string): string {
+  const t = (cell ?? "").toString().trim();
+  if (/^[¥￥]\s*-?[\d,]+$/.test(t)) return t.replace(/[¥￥\s]/g, "");
+  if (/^-?[\d,]+\s*円$/.test(t)) return t.replace(/[円\s]/g, "");
+  return cell ?? "";
+}
+
+export function gridToManual(grid: string[][], rules: ManualRules = DEFAULT_MANUAL_RULES): ManualData {
+  const rows = grid.map((r) => (r ?? []).map(plainAmount));
   if (qaHeader(rows)) return { entries: rowsToEntries(rows), tables: [], excluded: [] };
   const parsed = parseManualGrid(rows, rules);
   const entries = [...parsed.textEntries, ...parsed.tableEntries].map((e) => ({ ...e, origin: "manual" as const }));

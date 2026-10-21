@@ -1,5 +1,7 @@
 import { describeBusinessHours, japanNow, resolvePhoneRouting } from "@/lib/hours";
 import { error, json, readJson, requireAdmin } from "@/lib/http";
+import { invalidateKnowledgeCache } from "@/lib/knowledge";
+import { parseSheetLink } from "@/lib/sheet-link";
 import { getSettings, saveSettings } from "@/lib/store";
 import type { AppSettings, PhoneMode, PhoneSettings } from "@/lib/types";
 
@@ -38,6 +40,12 @@ export async function PUT(req: Request) {
   if (typeof body.companyName === "string") patch.companyName = body.companyName.trim().slice(0, 80);
   if (typeof body.companyPhone === "string") patch.companyPhone = body.companyPhone.trim().slice(0, 30);
   if (typeof body.lineAddFriendUrl === "string") patch.lineAddFriendUrl = body.lineAddFriendUrl.trim().slice(0, 300);
+  if (typeof body.knowledgeSheetUrl === "string") {
+    const url = body.knowledgeSheetUrl.trim().slice(0, 500);
+    const link = parseSheetLink(url);
+    if (link?.kind === "invalid") return error(link.reason);
+    patch.knowledgeSheetUrl = url;
+  }
   if (typeof body.greeting === "string" && body.greeting.trim()) patch.greeting = body.greeting.trim().slice(0, 600);
   if (body.phone && typeof body.phone === "object") {
     const p = body.phone as Partial<PhoneSettings>;
@@ -52,5 +60,7 @@ export async function PUT(req: Request) {
     patch.phone = phone as PhoneSettings;
   }
   await saveSettings(patch);
+  // スプレッドシートの URL を変えたら、次の回答からそのシートを読む
+  if (patch.knowledgeSheetUrl !== undefined) invalidateKnowledgeCache();
   return json(await describe());
 }

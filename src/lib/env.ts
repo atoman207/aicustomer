@@ -49,19 +49,7 @@ export const env = {
     return str("PUBLIC_BASE_URL").replace(/\/$/, "");
   },
 
-  // Supabase（ナレッジ・アップロードしたファイル・会話履歴・受付・設定の保存先）
-  get supabaseUrl() {
-    return str("SUPABASE_URL", str("NEXT_PUBLIC_SUPABASE_URL")).replace(/\/$/, "");
-  },
-  /** サーバー専用の secret キー（旧 service_role キーも可）。ブラウザには渡さない */
-  get supabaseSecretKey() {
-    return str("SUPABASE_SECRET_KEY", str("SUPABASE_SERVICE_ROLE_KEY"));
-  },
-  get hasSupabase() {
-    return /^https:\/\//.test(this.supabaseUrl) && this.supabaseSecretKey.length > 20;
-  },
-
-  // ナレッジ
+  // ナレッジ（AI の回答の情報源：Googleスプレッドシート）
   get gasWebhookUrl() {
     return str("GAS_WEBHOOK_URL");
   },
@@ -75,8 +63,14 @@ export const env = {
   get hasServiceAccount() {
     return this.googleServiceAccountEmail !== "" && this.googlePrivateKey.includes("PRIVATE KEY");
   },
+  /** スプレッドシートの ID（URL を貼ってもよい） */
   get knowledgeSheetId() {
-    return str("KNOWLEDGE_SHEET_ID");
+    const v = str("KNOWLEDGE_SHEET_ID");
+    return v.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/)?.[1] ?? v;
+  },
+  /** 回答に使うタブの gid（URL の #gid=…）。未設定ならタブ名（KNOWLEDGE_SHEET_NAME）→ 先頭のタブ */
+  get knowledgeSheetGid() {
+    return str("KNOWLEDGE_SHEET_GID", str("KNOWLEDGE_SHEET_ID").match(/gid=(\d+)/)?.[1] ?? "");
   },
   get knowledgeSheetName() {
     return str("KNOWLEDGE_SHEET_NAME", "ＡＩ相談ソース");
@@ -89,9 +83,10 @@ export const env = {
     return Number.isFinite(n) && n >= 5 ? n : 60;
   },
 
-  // 受付記録
+  // 受付記録（未設定なら回答用と同じスプレッドシートの「受付一覧」タブ）
   get receptionSheetId() {
-    return str("RECEPTION_SHEET_ID");
+    const v = str("RECEPTION_SHEET_ID", this.hasServiceAccount ? this.knowledgeSheetId : "");
+    return v.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/)?.[1] ?? v;
   },
   get receptionSheetName() {
     return str("RECEPTION_SHEET_NAME", "受付一覧");

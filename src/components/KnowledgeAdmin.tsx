@@ -1,12 +1,13 @@
 "use client";
 
-// 管理画面「AIの学習状況」：AI の回答情報源（マニュアル・会社情報・ホームページ・追加分）の件数、回答テスト、
+// 管理画面「AIの学習状況・情報源」：AI の回答情報源（Googleスプレッドシート・ホームページ）と接続先の設定、回答テスト、
 // AI の利用状況（OpenAI を使わずに答えた割合・トークン数）、学習済みの回答、答えられなかった質問
-// （ナレッジの一覧・編集は「登録済みナレッジ」、追加は「情報を追加」）
-import { BookOpenCheck, Database, Globe, Loader2, Pencil, RefreshCw, Search, Sparkles, Trash2, Zap } from "lucide-react";
+// （情報を変えるときはスプレッドシートを直す。管理画面からの追加・アップロードはなし）
+import { BookOpenCheck, Database, Globe, Link2, Loader2, RefreshCw, Save, Search, Sparkles, Trash2, Zap } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "./ui";
 import type { KnowledgeEntry, KnowledgeOrigin, KnowledgeSource, KnowledgeStats } from "@/lib/types";
+import { parseSheetLink, sheetLinkLabel } from "@/lib/sheet-link";
 import { formatJst, truncate } from "@/lib/utils";
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -30,6 +31,7 @@ interface KnowledgeResp {
   websiteFetchedAt?: string;
   websiteOrigin: "bundled" | "relearned";
   remoteConfigured: boolean;
+  sheet?: { configured: boolean; connected: boolean; via: "gas" | "csv" | "env" | null; url: string };
 }
 
 interface Usage {
@@ -60,11 +62,8 @@ interface Unanswered {
 }
 
 const ORIGIN: Record<KnowledgeOrigin, { label: string; tone: "green" | "blue" | "amber" | "neutral" }> = {
-  manual: { label: "マニュアル", tone: "green" },
-  company: { label: "会社情報", tone: "blue" },
+  manual: { label: "スプレッドシート", tone: "green" },
   website: { label: "ホームページ", tone: "neutral" },
-  admin: { label: "管理画面で追加", tone: "amber" },
-  upload: { label: "アップロード", tone: "amber" },
 };
 
 const MODE_LABEL: Record<string, { label: string; tone: "green" | "blue" | "amber" | "neutral" | "red" }> = {
@@ -110,6 +109,31 @@ export default function KnowledgeAdmin() {
     void loadAll();
   }, [loadAll]);
 
+  /** 回答に使う Googleスプレッドシートの URL を保存して、すぐに読み込み直す */
+  async function saveSheet(url: string): Promise<boolean> {
+    setBusy("sheet");
+    setError("");
+    setInfo("");
+    try {
+      await api("/api/settings", { method: "PUT", body: JSON.stringify({ knowledgeSheetUrl: url }) });
+      const k = await api<KnowledgeResp>("/api/knowledge/refresh", { method: "POST" });
+      setData(k);
+      setInfo(
+        !url
+          ? "スプレッドシートの URL を消しました（環境変数の設定、または保存版で回答します）"
+          : k.sheet?.connected
+            ? "スプレッドシートを読み込みました。次の回答からこのシートの内容で答えます"
+            : "URL を保存しましたが、シートを読み取れませんでした（下の注意をご確認ください）",
+      );
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function relearnSite(reset = false) {
     setBusy(reset ? "reset" : "site");
     setError("");
@@ -140,7 +164,15 @@ export default function KnowledgeAdmin() {
 
   return (
     <div className="space-y-4">
-      <SourcesCard data={data} loading={loading} busy={busy} onRefresh={() => loadAll(true)} onRelearn={() => relearnSite(false)} onReset={() => relearnSite(true)} />
+      <SourcesCard
+        data={data}
+        loading={loading}
+        busy={busy}
+        onRefresh={() => loadAll(true)}
+        onRelearn={() => relearnSite(false)}
+        onReset={() => relearnSite(true)}
+        onSaveSheet={saveSheet}
+      />
       {error ? <p className="rounded-xl border border-shu-200 bg-shu-50 px-4 py-2 text-sm text-shu-700">{error}</p> : null}
       {info ? <p className="rounded-xl border border-tatami-200 bg-tatami-50 px-4 py-2 text-sm text-tatami-800">{info}</p> : null}
 
@@ -222,6 +254,7 @@ function SourcesCard({
   onRefresh,
   onRelearn,
   onReset,
+  onSaveSheet,
 }: {
   data: KnowledgeResp | null;
   loading: boolean;
@@ -229,47 +262,35 @@ function SourcesCard({
   onRefresh: () => void;
   onRelearn: () => void;
   onReset: () => void;
+  onSaveSheet: (url: string) => Promise<boolean>;
 }) {
   const s = data?.stats;
-  const rows: { icon: typeof Database; title: string; detail: string; extra?: React.ReactNode }[] = data
-    ? [
-        {
-          icon: Database,
-          title: `① 顧客対応マニュアル（最優先）`,
-          detail: `${data.sourceLabel}${data.sheetName ? `／シート「${data.sheetName}」` : ""}：文章 ${s?.manualText ?? 0} 件・料金表 ${s?.manualTables ?? 0} 表（社内向けの ${s?.excluded ?? 0} 行は除外）`,
-          extra: data.tables.length ? (
-            <span className="block text-[11px] text-sumi-400">料金表：{data.tables.map((t) => `${t.title}（${t.rows}行）`).join("・")}</span>
-          ) : null,
-        },
-        {
-          icon: BookOpenCheck,
-          title: "② 会社情報（登録済み）",
-          detail: `${s?.company ?? 0} 件${s?.companyStale ? `（マニュアル・ホームページと内容が合わないため ${s.companyStale} 件を停止中）` : ""}`,
-          extra: data.stale.length ? (
-            <span className="block text-[11px] text-amber-700">要確認：{data.stale.map((x) => `${x.title}（見つからない語：${x.missing.join("、")}）`).join(" ／ ")}</span>
-          ) : null,
-        },
-        {
-          icon: Globe,
-          title: "③ ホームページ（ichijoya.co.jp）",
-          detail: `${s?.website ?? 0} 件／${data.websiteFetchedAt ? `${formatJst(data.websiteFetchedAt)} に学習` : "—"}（${data.websiteOrigin === "relearned" ? "管理画面で再学習" : "同梱版"}）`,
-        },
-        { icon: Pencil, title: "④ 管理画面で追加・アップロード", detail: `入力 ${s?.admin ?? 0} 件・ファイルから ${s?.upload ?? 0} 件` },
-      ]
-    : [];
+  const sheet = data?.sheet;
+  const [url, setUrl] = useState("");
+  const [touched, setTouched] = useState(false);
+  useEffect(() => {
+    if (!touched) setUrl(sheet?.url ?? "");
+  }, [sheet?.url, touched]);
+  const link = parseSheetLink(url);
+  const status = !sheet?.configured
+    ? { tone: "neutral" as const, label: "未接続（保存版で回答中）" }
+    : sheet.connected
+      ? { tone: "green" as const, label: "接続中" }
+      : { tone: "amber" as const, label: "読み取れません（保存版で回答中）" };
   return (
-    <div className="card p-5">
+    <div className="card p-5" data-sources>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-serif text-base font-bold text-sumi-800">AIの回答情報源</p>
-          <p className="mt-1 text-xs text-sumi-500">
-            AI はこの 4 つだけを根拠に回答します（食い違いはマニュアルが優先）。料金・会社情報・よくある質問は、ここから AI（OpenAI）を使わずにそのまま答えます。
+        <div className="min-w-0">
+          <p className="font-serif text-base font-bold text-sumi-800">AIの回答情報源：Googleスプレッドシートとホームページ</p>
+          <p className="mt-1 text-xs leading-relaxed text-sumi-500">
+            AI はこの 2 つの内容だけを根拠に回答します（食い違いはスプレッドシートが優先・料金はスプレッドシートの料金表）。
+            内容を変えるときはスプレッドシートを直してください（約 1 分で反映。「スプレッドシートを再読み込み」ですぐに反映）。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button type="button" className="btn-secondary px-3 py-1.5 text-xs" onClick={onRefresh} disabled={loading}>
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            マニュアルを再読み込み
+            スプレッドシートを再読み込み
           </button>
           <button type="button" className="btn-secondary px-3 py-1.5 text-xs" onClick={onRelearn} disabled={!!busy}>
             {busy === "site" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Globe className="h-3.5 w-3.5" />}
@@ -282,27 +303,80 @@ function SourcesCard({
           ) : null}
         </div>
       </div>
-      {data?.warning ? <p className="mt-2 text-xs text-amber-700">{data.warning}</p> : null}
-      <ul className="mt-4 grid gap-2 md:grid-cols-2">
-        {rows.map((r) => (
-          <li key={r.title} className="flex gap-3 rounded-xl border border-washi-300 bg-white px-3 py-2.5 text-sm">
-            <r.icon className="mt-0.5 h-4 w-4 shrink-0 text-ai-600" />
-            <span className="min-w-0">
-              <span className="block font-semibold text-sumi-800">{r.title}</span>
-              <span className="block text-xs text-sumi-600">{r.detail}</span>
-              {r.extra}
-            </span>
-          </li>
-        ))}
-      </ul>
+
       {data ? (
-        <p className="mt-3 text-[11px] text-sumi-400">
-          最終読込 {formatJst(data.fetchedAt, true)}
-          {!data.remoteConfigured
-            ? "　※ マニュアルは同梱の database/manual.json を使用中です（Excel を更新したら npm run knowledge:build で作り直して再デプロイ）。GAS_WEBHOOK_URL などでスプレッドシートを接続すると、シートの更新が約1分で反映されます。"
-            : ""}
-        </p>
+        <div className="mt-4 space-y-2">
+          {/* ① Googleスプレッドシート */}
+          <div className="rounded-xl border border-washi-300 bg-white px-3 py-3 text-sm" data-sheet-status={sheet?.connected ? "connected" : sheet?.configured ? "error" : "none"}>
+            <div className="flex flex-wrap items-center gap-2">
+              <Database className="h-4 w-4 shrink-0 text-ai-600" />
+              <span className="font-semibold text-sumi-800">① Googleスプレッドシート（顧客対応マニュアル）</span>
+              <Badge tone={status.tone}>{status.label}</Badge>
+            </div>
+            <p className="mt-1 text-xs text-sumi-600">
+              {data.sourceLabel}
+              {data.sheetName ? `／シート「${data.sheetName}」` : ""}：文章 {s?.manualText ?? 0} 件・料金表 {s?.manualTables ?? 0} 表（社内向けの {s?.excluded ?? 0} 行は除外）
+            </p>
+            {data.tables.length ? <p className="mt-0.5 text-[11px] text-sumi-400">料金表：{data.tables.map((t) => `${t.title}（${t.rows}行）`).join("・")}</p> : null}
+            {data.warning ? <p className="mt-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs leading-relaxed text-amber-800">{data.warning}</p> : null}
+            <form
+              className="mt-3 space-y-1.5"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (link?.kind === "invalid") return;
+                if (await onSaveSheet(url.trim())) setTouched(false);
+              }}
+            >
+              <label className="flex items-center gap-1.5 text-xs font-semibold text-sumi-700" htmlFor="sheet-url">
+                <Link2 className="h-3.5 w-3.5" />
+                回答に使うスプレッドシートの URL
+              </label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  id="sheet-url"
+                  className="input min-w-0 flex-1 font-mono text-xs"
+                  placeholder="https://script.google.com/macros/s/…/exec または https://docs.google.com/spreadsheets/d/…/edit#gid=…"
+                  value={url}
+                  onChange={(e) => {
+                    setUrl(e.target.value);
+                    setTouched(true);
+                  }}
+                />
+                <button type="submit" className="btn-primary shrink-0 px-4 py-2 text-xs" disabled={busy === "sheet" || link?.kind === "invalid" || url.trim() === (sheet?.url ?? "")}>
+                  {busy === "sheet" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                  保存して読み込む
+                </button>
+              </div>
+              {link?.kind === "invalid" ? (
+                <p className="text-xs text-shu-600">{link.reason}</p>
+              ) : url.trim() ? (
+                <p className="text-[11px] text-sumi-500">接続方法：{sheetLinkLabel(link)}</p>
+              ) : null}
+              <p className="text-[11px] leading-relaxed text-sumi-400">
+                {sheet?.via === "env" && !sheet.url
+                  ? "現在はサービスアカウント（環境変数）でスプレッドシートを非公開のまま読み取っています。別のシート（タブ）を使うときだけ、ここに URL を貼ってください。"
+                  : "スプレッドシートの URL（回答に使うタブを開いた #gid=… 付き）を貼ると、サービスアカウントで非公開のまま読み取ります（シートの「共有」にサービスアカウントを追加してください）。Apps Script・「ウェブに公開」の URL も使えます。"}
+              </p>
+            </form>
+          </div>
+          {/* ② ホームページ */}
+          <div className="flex gap-3 rounded-xl border border-washi-300 bg-white px-3 py-2.5 text-sm">
+            <Globe className="mt-0.5 h-4 w-4 shrink-0 text-ai-600" />
+            <span className="min-w-0">
+              <span className="block font-semibold text-sumi-800">② ホームページ（ichijoya.co.jp）</span>
+              <span className="block text-xs text-sumi-600">
+                {s?.website ?? 0} 件／{data.websiteFetchedAt ? `${formatJst(data.websiteFetchedAt)} に学習` : "—"}（{data.websiteOrigin === "relearned" ? "管理画面で再学習" : "同梱版"}）
+              </span>
+              {data.stale.length ? (
+                <span className="mt-0.5 block text-[11px] text-amber-700">
+                  料金がスプレッドシートと違うため使っていないページ：{data.stale.map((x) => `${x.title}（${x.missing.join("、")}）`).join(" ／ ")}
+                </span>
+              ) : null}
+            </span>
+          </div>
+        </div>
       ) : null}
+      {data ? <p className="mt-3 text-[11px] text-sumi-400">最終読込 {formatJst(data.fetchedAt, true)}</p> : null}
     </div>
   );
 }

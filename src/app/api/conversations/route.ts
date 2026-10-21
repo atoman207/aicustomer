@@ -32,6 +32,8 @@ export async function POST(req: Request) {
   if (body?.meta && typeof body.meta === "object") {
     for (const [k, v] of Object.entries(body.meta).slice(0, 10)) meta[String(k).slice(0, 40)] = String(v).slice(0, 200);
   }
+  // 文字の相談から声の相談へ（またはその逆）続けた会話は、使った窓口をすべて記録
+  meta.channels = [...new Set([...(meta.channels ?? existing?.channel ?? "").split(","), channel].filter(Boolean))].join(",");
   await upsertConversation({
     id,
     channel,

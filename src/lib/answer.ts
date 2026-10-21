@@ -1,17 +1,17 @@
 // 回答エンジン：OpenAI を使うのは「学習済みのナレッジだけでは答えきれない質問」に限る
 //   1. あいさつ・お礼                → 定型文
-//   2. 料金の質問                    → 料金表から直接（price.ts）
+//   2. 料金の質問                    → 料金表から直接（price.ts）。数量があれば合計の目安を計算（quote.ts）
 //   3. 「○○町は来てもらえる？」      → 営業範囲から直接（area.ts）
-//   4. 会社情報・よくある質問に当てはまる → 登録済みの回答をそのまま
-//   5. 以前に AI が作った回答（学習済み）で、根拠のナレッジが変わっていない → その回答
-//   6. 関係するナレッジが見つからない  → 「担当者より折り返し」の定型文（管理画面の「答えられなかった質問」に記録）
-//   7. それ以外                       → 関係するナレッジ数件だけを渡して OpenAI が回答（回答は学習して次回から再利用）
+//   4. 以前に AI が作った回答（学習済み）で、根拠のナレッジが変わっていない → その回答
+//   5. 関係するナレッジが見つからない  → 「担当者より折り返し」の定型文（管理画面の「答えられなかった質問」に記録）
+//   6. それ以外                       → スプレッドシート・ホームページの関係する部分だけを渡して OpenAI が回答（回答は学習して次回から再利用）
 import { answerArea } from "./area";
 import { env } from "./env";
 import { entryHash, getKnowledge } from "./knowledge";
 import { findLearned, logUnanswered, questionKey, saveLearned } from "./learned";
-import { answerPrice, normPrice, sliceTableForQuestion, voiceClean, type AnswerStyle } from "./price";
-import { hybridSearch, keywordScore, keywordSearch } from "./retrieval";
+import { OTHER_INTENT, PRICE_INTENT, answerPrice, normPrice, sliceTableForQuestion, voiceClean, type AnswerStyle } from "./price";
+import { answerQuote } from "./quote";
+import { hybridSearch, keywordSearch } from "./retrieval";
 import { recordAnswer, type AnswerOriginKind } from "./usage";
 import type { Channel, ChatMessage, KnowledgeEntry, KnowledgeSnapshot, SearchHit } from "./types";
 import { truncate } from "./utils";
@@ -27,7 +27,7 @@ export interface AnswerSource {
 export interface AnswerPlan {
   /** 回答の出どころ（openai 以外は OpenAI を使っていない） */
   mode: AnswerOriginKind;
-  kind: "price" | "area" | "faq" | "learned" | "smalltalk" | "notfound" | "search" | "llm";
+  kind: "price" | "area" | "learned" | "smalltalk" | "notfound" | "search" | "llm";
   /** mode が openai 以外のときの回答文 */
   reply: string;
   query: string;
@@ -55,91 +55,61 @@ const SMALLTALK: { re: RegExp; reply: string }[] = [
 ];
 
 const ORIGIN_LABEL: Record<string, string> = {
-  manual: "顧客対応マニュアル",
-  company: "会社情報",
+  manual: "顧客対応マニュアル（Googleスプレッドシート）",
   website: "ホームページ",
-  admin: "管理画面で追加",
-  upload: "一畳屋の資料（管理画面で登録）",
 };
 
 function toSource(h: SearchHit): AnswerSource {
   return { id: h.entry.id, title: h.entry.title, category: h.entry.category, origin: h.entry.origin, score: Math.round(h.score * 100) / 100 };
 }
 
-/** 「じゃあ両面は？」のような続きの質問は、直前の質問とあわせて検索する */
-function expandQuery(question: string, history: ChatMessage[]): { query: string; standalone: boolean } {
-  const prev = [...history].reverse().filter((m) => m.role === "user").map((m) => m.content.trim()).find((c) => c && c !== question.trim());
-  if (!prev) return { query: question, standalone: true };
-  const q = question.trim();
+/** 話題の語（「8畳」の畳は数量なので話題にしない） */
+const TOPIC = /((?<![\d０-９一二三四五六七八九十半])畳|たたみ|襖|ふすま|障子|網戸|アミ戸|ヘリ|縁|クロス|カーテン|ブラインド|店|営業|エリア|見積|工期|日数|土日|祝日|ショールーム|イベント|リフォーム)/;
+
+function isFollowUp(text: string): boolean {
+  const q = text.trim();
   const short = q.replace(/[\s?？。！!]/g, "").length <= 12;
-  const anaphor = /^(じゃあ|では|それ|その|あと|ちなみに|なら|だと|ほか|他に|それぞれ|両方|どちら)/.test(q);
-  const hasTopic = /(畳|たたみ|襖|ふすま|障子|網戸|アミ戸|ヘリ|縁|クロス|カーテン|ブラインド|店|営業|エリア|見積|工期|日数|土日|祝日|ショールーム|イベント|リフォーム)/.test(q);
-  return (short || anaphor) && !hasTopic ? { query: `${prev} ${q}`, standalone: false } : { query: question, standalone: true };
+  const anaphor = /^(じゃあ|では|それ|その|あと|ちなみに|なら|だと|ほか|他に|それぞれ|両方|どちら|やっぱり|やはり)/.test(q);
+  return (short || anaphor) && !TOPIC.test(q);
+}
+
+/**
+ * 「じゃあ両面は？」「何日かかる？」「8畳だと？」のような続きの質問は、前の質問とあわせて検索する。
+ * 話題（畳の表替え など）は前の質問から、聞きたいこと（料金・工期 など）は一番新しい質問から取る
+ * （「6畳の表替えはいくら？」→「何日かかる？」→「8畳だと？」は、表替えの工期の質問）。
+ */
+function expandQuery(question: string, history: ChatMessage[]): { query: string; standalone: boolean } {
+  const q = question.trim();
+  const users = history.filter((m) => m.role === "user").map((m) => m.content.trim()).filter((c) => c && c !== q);
+  if (!users.length || !isFollowUp(q)) return { query: question, standalone: true };
+  const parts: string[] = [];
+  for (const prev of [...users].reverse()) {
+    parts.unshift(prev);
+    if (!isFollowUp(prev) || parts.length >= 3) break;
+  }
+  const chain = [...parts, q];
+  const intentOf = (s: string) => {
+    const n = normPrice(s);
+    if (OTHER_INTENT.test(n) && !PRICE_INTENT.test(n)) return "other";
+    return PRICE_INTENT.test(n) ? "price" : null;
+  };
+  const latest = [...chain].reverse().map(intentOf).find(Boolean);
+  const older = parts.map((p) => {
+    if (latest === "other") return p.replace(new RegExp(PRICE_INTENT.source, "g"), "");
+    if (latest === "price") return p.replace(new RegExp(OTHER_INTENT.source, "g"), "");
+    return p;
+  });
+  return { query: [...older, q].join(" "), standalone: false };
 }
 
 /** 質問から言い回し（ありますか・できますか・してもらえますか・教えてください など）を除いた語 */
 function contentQuery(q: string): string {
-  const s = questionKey(q)
+  let s = questionKey(q)
     .replace(/(はあり|がありま|ありま|あり|でき|できま|してもらえ|してもらえま|もらえ|いただけ|頂け|お願いでき|でしょう|教えてくだ|教えて|知りた|について|とは|って|って何|ってなに)$/g, "")
     .replace(/(は|が|を|も|の|に|で)$/g, "");
+  // 「支払方法は何が」「色はどんな」などの聞き方の語を除く（キーワードの照合が言い回しに引っぱられないように）
+  for (let i = 0; i < 3; i++) s = s.replace(/(?:は|には|では|って)(?:何|なに|どう|どんな|どれ|どこ|いくつ)(?:が|か|を)?$/, "");
   return s.length >= 2 ? s : questionKey(q) || q;
-}
-
-function bigrams(s: string): Set<string> {
-  const out = new Set<string>();
-  for (let i = 0; i + 2 <= s.length; i++) out.add(s.slice(i, i + 2));
-  if (s.length === 1) out.add(s);
-  return out;
-}
-
-/** 2 つの質問の近さ（文字の 2 文字組の重なり。0〜1） */
-function similarity(a: string, b: string): number {
-  const A = bigrams(a);
-  const B = bigrams(b);
-  if (A.size === 0 || B.size === 0) return 0;
-  let n = 0;
-  A.forEach((x) => {
-    if (B.has(x)) n++;
-  });
-  return (2 * n) / (A.size + B.size);
-}
-
-/**
- * 会社情報・管理画面で追加したナレッジのうち、質問にはっきり当てはまるもの。
- * 「お客様の聞き方の例（questions）」との近さを主に、キーワードの一致も合わせて判定する。
- */
-/** 商品の種類（「ヘリ無し畳」「ヘリ付き」は畳として数える） */
-const PRODUCT_FAMILIES = ["畳", "襖", "障子", "網戸", "ヘリ"];
-function productFamilies(text: string): string[] {
-  const n = normPrice(text).replace(/ヘリ(無し|有り)/g, "");
-  return PRODUCT_FAMILIES.filter((f) => n.includes(f));
-}
-
-function matchFaq(query: string, entries: KnowledgeEntry[]): SearchHit | null {
-  const qk = questionKey(query);
-  if (!qk) return null;
-  // 質問と違う商品の項目には答えない（「障子紙の違い」に襖紙の項目、「網戸」に障子の項目、など）
-  const asked = productFamilies(query);
-  const candidates = entries.filter((e) => {
-    if (e.origin !== "company" && e.origin !== "admin" && e.origin !== "upload") return false;
-    if (!asked.length) return true;
-    const own = productFamilies(`${e.title} ${(e.questions ?? []).join(" ")}`);
-    return own.length === 0 || own.some((f) => asked.includes(f));
-  });
-  const scored = candidates
-    .map((entry) => {
-      const ex = Math.max(0, ...(entry.questions ?? []).map((x) => similarity(qk, questionKey(x))));
-      const kw = keywordScore(query, entry);
-      return { entry, ex, kw, score: Math.max(ex, kw * 0.9) };
-    })
-    .sort((a, b) => b.score - a.score);
-  const [a, b] = scored;
-  if (!a) return null;
-  const margin = a.score - (b?.score ?? 0);
-  if (a.ex >= 0.62 && margin >= 0.04) return { entry: a.entry, score: a.score };
-  if (a.ex >= 0.5 && a.kw >= 0.3 && margin >= 0.06) return { entry: a.entry, score: a.score };
-  if (a.kw >= 0.5 && margin >= 0.06) return { entry: a.entry, score: a.score };
-  return null;
 }
 
 function manualText(snapshot: KnowledgeSnapshot): string {
@@ -204,8 +174,14 @@ export async function planAnswer(
   const talk = SMALLTALK.find((s) => s.re.test(plain));
   if (talk) return finish({ ...base, mode: "smalltalk", kind: "smalltalk", reply: talk.reply });
 
-  // 2. 料金表
-  const price = answerPrice(q, snapshot.tables, style) ?? (standalone ? null : answerPrice(query, snapshot.tables, style));
+  // 2. 料金表（数量があれば合計の目安を計算。「やっぱり8畳で」などの訂正もそれまでの発言から反映）
+  // 続きの質問は、前の質問とあわせた query でも料金表を探す（ただし今の質問が工期などなら料金表では答えない）
+  const nq = normPrice(q);
+  const otherNow = OTHER_INTENT.test(nq) && !PRICE_INTENT.test(nq);
+  const price =
+    answerQuote(q, history, snapshot.tables, style) ??
+    answerPrice(q, snapshot.tables, style) ??
+    (standalone || otherNow ? null : answerPrice(query, snapshot.tables, style));
   if (price) {
     const sources = price.tableIds
       .map((id) => snapshot.entries.find((e) => e.id === id))
@@ -221,14 +197,7 @@ export async function planAnswer(
     return finish({ ...base, mode: "local", kind: "area", reply: area.reply, sources: src ? [{ id: src.id, title: src.title, category: src.category, origin: src.origin, score: 1 }] : [] });
   }
 
-  // 4. 会社情報・よくある質問
-  const faq = matchFaq(query, snapshot.entries);
-  if (faq) {
-    const reply = style === "voice" ? voiceClean(faq.entry.content) : faq.entry.content;
-    return finish({ ...base, mode: "local", kind: "faq", reply, sources: [toSource(faq)], hits: [faq] });
-  }
-
-  // 5. 学習済みの回答（同じ質問に以前 AI が答えたもの）
+  // 4. 学習済みの回答（同じ質問に以前 AI が答えたもの）
   if (standalone && key) {
     const valid = new Set(snapshot.entries.map(entryHash));
     const learned = await findLearned(key, style, valid);
@@ -243,11 +212,17 @@ export async function planAnswer(
     }
   }
 
-  // 6. 関係するナレッジの検索（OpenAI があれば意味の近さも使う）
+  // 5. 関係するナレッジの検索（OpenAI があれば意味の近さも使う）
   // キーワードの照合は「ありますか」「できますか」などの言い回しを除いた語で行う（どの項目にも当たる語で誤って一致しないように）
-  const kq = contentQuery(query);
-  const search = llm ? await hybridSearch(query, snapshot.entries, 5, kq) : { hits: keywordSearch(kq, snapshot.entries, 5, 0.2), mode: "keyword" as const };
-  const hits = search.hits;
+  // 料金の質問でなければ料金表は探さない（料金表は「表替え」などの語が多く、工期などの質問で文章より上に来てしまうため）
+  const pool = PRICE_INTENT.test(normPrice(q)) ? snapshot.entries : snapshot.entries.filter((e) => !snapshot.tables.some((t) => t.id === e.id));
+  const find = async (text: string) => (llm ? (await hybridSearch(text, pool, 5, contentQuery(text))).hits : keywordSearch(contentQuery(text), pool, 5, 0.2));
+  let hits = await find(query);
+  // 続きの質問（「8畳だと？」）で見つからなければ、話題を持つ前の質問だけで探し直す
+  if (!hits.length && !standalone && query.endsWith(q)) {
+    const before = query.slice(0, query.length - q.length).trim();
+    if (before) hits = await find(before);
+  }
   const sources = hits.map(toSource);
   if (hits.length === 0) {
     return finish({ ...base, mode: "notfound", kind: "notfound", reply: style === "voice" ? NOT_FOUND_VOICE : NOT_FOUND_REPLY });
@@ -255,7 +230,7 @@ export async function planAnswer(
   if (!llm) {
     return finish({ ...base, mode: env.hasOpenAI ? "local" : "demo", kind: "search", reply: demoReply(hits, snapshot, query, style), sources, hits });
   }
-  // 7. OpenAI（参考情報は関係するものだけ）
+  // 6. OpenAI（参考情報は関係するものだけ）
   return { ...base, mode: "openai", kind: "llm", reply: "", sources, hits, context: buildContext(hits, snapshot, query) };
 }
 

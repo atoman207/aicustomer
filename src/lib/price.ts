@@ -1,7 +1,7 @@
 // 料金の質問に、顧客対応マニュアルの料金表から直接答える（OpenAI を使わない）
 //   ・どの表か（畳・襖・障子・網戸 など）、どの品名か（古都・朱雀 など）、どの列か（表替え・両面・大 など）を判定
 //   ・表の行にない内容（処分費・ダニ対策など）は、その表の注記から答える
-//   ・概算の合計は出さず、単価と関連する注記・諸経費を添える（正式なお見積りは現地確認後）
+//   ・単価と関連する注記・諸経費を添える（数量があるときの合計の目安は quote.ts。正式なお見積りは現地確認後）
 import { formatValue, type PriceRow, type PriceTable } from "./manual";
 
 export type AnswerStyle = "text" | "voice";
@@ -12,17 +12,19 @@ export interface PriceAnswer {
   rows: number;
 }
 
-const PRICE_INTENT = /(いくら|幾ら|料金|価格|値段|費用|単価|相場|金額|円|安い|安く|高い|コスト|予算|お手頃|手頃|費(は|って|を|が|$|\?|？))/;
-const OTHER_INTENT =
+export const PRICE_INTENT = /(いくら|幾ら|料金|価格|値段|費用|単価|相場|金額|円|安い|安く|高い|コスト|予算|お手頃|手頃|費(は|って|を|が|$|\?|？))/;
+export const OTHER_INTENT =
   /(違い|特徴|とは|どんな|おすすめ|オススメ|何日|日数|工期|いつ|期間|仕上が|納期|強度|破れ|選び方|メリット|デメリット|できますか|対応|何年|年数|耐用|寿命|長持ち|もちます|持ちます|もつ|持つ|タイミング|替え時|時期|目安|人気|選ばれ|種類|効果|効き目|安全|ブヨブヨ|江戸間|京間|サンプル|見本)/;
 /** 「値段の違いは？」「大きさで料金は変わる？」は、料金表ではなく理由の説明（会社情報）で答える */
-const WHY_PRICE = /((値段|金額|価格|料金)(の|は|が)?(違い|違う|違います|差|変わ)|価格差|何が違|なぜ(高い|安い)|(高い|安い)(もの|物|の)?と(安い|高い))/;
+export const WHY_PRICE = /((値段|金額|価格|料金)(の|は|が)?(違い|違う|違います|差|変わ)|価格差|何が違|なぜ(高い|安い)|(高い|安い)(もの|物|の)?と(安い|高い))/;
 /** 「処分費は含まれますか」のような、料金に含まれるかどうかの確認（会社情報で答える） */
-const INCLUSION = /(含まれ|込み(です|でしょう|になり)|入って(い)?ますか|別途(かかり|必要))/;
+export const INCLUSION = /(含まれ|込み(です|でしょう|になり)|入って(い)?ますか|別途(かかり|必要))/;
 /** 新しく作る（新調）の質問。新調の料金がない表（障子など）では答えない */
 const NEW_MAKE = /(新調|作り替え|作りかえ|新しく作)/;
 const CHEAP = /(一番安い|いちばん安い|最安|安い|お手頃|手頃|安く|格安)/;
 const PREMIUM = /(一番高い|いちばん高い|最高級|高級|一番良い|いちばん良い|グレードの高い)/;
+/** 数量から合計の目安を計算できる表（quote.ts） */
+const QUOTABLE = /^畳\(ヘリ付き\)$|^ヘリ無し半畳|^ヘリ有り\s*1畳物|置き畳|^襖張替え|^襖新調|^障子張替え|^網戸/;
 const QUANTITY = /([0-9０-９]+|[一二三四五六七八九十]+)\s*(畳|帖|枚|本|部屋|間|か所|箇所)/;
 /** 商品の種類（「襖と障子の料金」のように 2 種類を聞かれたときの判定） */
 const FAMILIES = ["畳", "襖", "障子", "網戸", "ヘリ", "クロス", "カーテンレール"];
@@ -53,7 +55,7 @@ const GENERIC_TOKENS = new Set(
   ["その他", "国産", "中国産", "グリーン", "イエロー", "カラー", "無地", "以下", "普通目", "セット", "4枚柄", "柄入り", "樹脂", "和紙", "中国四川", "86cm以下", "86以下", "等プリント紙", "既製品"].map(normPrice),
 );
 
-function labelTokens(label: string): string[] {
+export function labelTokens(label: string): string[] {
   return label
     .split(/[／/・\s（）()【】「」〃,、.[\]]+/)
     .map((t) => normPrice(t))
@@ -61,12 +63,12 @@ function labelTokens(label: string): string[] {
 }
 
 /** 質問文の中の語（カタカナ・漢字・英数字のまとまり） */
-function questionWords(nq: string, min = 3): string[] {
+export function questionWords(nq: string, min = 3): string[] {
   const re = min <= 2 ? /[ァ-ヶー]{2,}|[一-鿿々]{2,}|[a-z0-9]{2,}/g : /[ァ-ヶー]{3,}|[一-鿿々]{2,}|[a-z0-9]{2,}/g;
   return nq.match(re) ?? [];
 }
 
-function rowMatches(row: PriceRow, nq: string, words: string[]): boolean {
+export function rowMatches(row: PriceRow, nq: string, words: string[]): boolean {
   return labelTokens(row.label).some((tok) => nq.includes(tok) || words.some((w) => w.length >= 3 && tok.startsWith(w)));
 }
 
@@ -447,7 +449,8 @@ export function answerPrice(question: string, tables: PriceTable[], style: Answe
   } else {
     if (tatamiOmote && info.heriRange) footer.push(`※表替えはヘリ代が別途かかります（ヘリ：${info.heriRange}）。`);
     if (info.expenses) footer.push(`※別途、諸経費${info.expenses}が工事全体に対してかかります。`);
-    if (QUANTITY.test(question)) footer.push("※数量を掛けた合計金額は、担当者が現地を見てからのお見積りでご案内します（概算は基本的に行っていません）。");
+    if (QUANTITY.test(question)) footer.push("※正式な合計金額は、担当者が現地を見てからのお見積りでご案内します。");
+    else if (picks.some((s) => QUOTABLE.test(s.t.title.normalize("NFKC")))) footer.push("※畳数・枚数を教えていただければ、料金表から合計の目安を計算します。");
     footer.push(`正式なお見積りは、担当者が現地を見てから無料で提出します。${info.revised ? `（${info.revised}改定の料金表より）` : ""}`);
   }
   const reply = [...blocks, ...footer].join(style === "voice" ? "" : "\n");

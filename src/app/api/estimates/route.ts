@@ -18,7 +18,12 @@ interface Body {
   preferredDates?: string[];
   sessionId?: string;
   confirmed?: boolean;
+  /** 確認画面：AI が会話から入力した項目・お客様が修正した項目 */
+  autofill?: { filled?: unknown; edited?: unknown };
 }
+
+const AUTOFILL_KEYS = ["name", "address", "phone", "dates", "summary"];
+const keys = (v: unknown) => (Array.isArray(v) ? [...new Set(v.map(String).filter((k) => AUTOFILL_KEYS.includes(k)))] : []);
 
 export async function GET() {
   const denied = await requireAdmin();
@@ -43,6 +48,7 @@ export async function POST(req: Request) {
     preferredDates: Array.isArray(body.preferredDates) ? body.preferredDates.map((d) => String(d ?? "")) : [],
     sessionId: body.sessionId ? String(body.sessionId).slice(0, 80) : undefined,
     confirmedByCustomer: true,
+    autofill: body.autofill ? { filled: keys(body.autofill.filled), edited: keys(body.autofill.edited) } : undefined,
   };
   const errors = validateEstimateInput(input);
   if (errors.length > 0) return error(errors.join("、"), 400, { errors });

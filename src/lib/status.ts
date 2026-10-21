@@ -4,12 +4,9 @@ import { receptionSink, receptionSinkLabel } from "./estimates";
 import { getKnowledge } from "./knowledge";
 import { verifyOpenAI } from "./openai";
 import { storageInfo } from "./store";
-import { supabaseProjectRef, supabaseState } from "./supabase";
 import type { IntegrationStatus } from "./types";
 
 export async function getIntegrationStatus(baseUrl: string, check = false): Promise<IntegrationStatus> {
-  // 先に Supabase の状態を確かめる（保存先・受付の記録先の表示に使う）
-  const sb = await supabaseState(check);
   const [knowledge, openaiCheck] = await Promise.all([
     getKnowledge(),
     check ? verifyOpenAI() : Promise.resolve<{ ok?: boolean; detail?: string }>({}),
@@ -32,7 +29,7 @@ export async function getIntegrationStatus(baseUrl: string, check = false): Prom
       warning: knowledge.warning,
     },
     reception: { sink, label: receptionSinkLabel(sink) },
-    supabase: { configured: sb.configured, ready: sb.ready, setupRequired: sb.setupRequired, error: sb.error, projectRef: supabaseProjectRef() },
+    sheet: { configured: env.hasServiceAccount && env.knowledgeSheetId !== "", serviceAccount: env.googleServiceAccountEmail, sheetId: env.knowledgeSheetId },
     twilio: {
       configured: env.hasTwilio,
       number: env.twilioPhoneNumber,

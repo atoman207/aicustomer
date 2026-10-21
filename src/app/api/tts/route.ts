@@ -1,4 +1,5 @@
 import { env } from "@/lib/env";
+import { logError } from "@/lib/errorlog";
 import { error, rateLimited, readJson } from "@/lib/http";
 import { synthesizeSpeech } from "@/lib/openai";
 
@@ -24,6 +25,7 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store", "X-Mode": "openai" },
     });
   } catch (e) {
+    await logError("openai", "声の相談の読み上げ（TTS）", e);
     return new Response(null, {
       status: 204,
       headers: { "X-Mode": "demo", "X-Error": encodeURIComponent((e as Error).message.slice(0, 200)) },

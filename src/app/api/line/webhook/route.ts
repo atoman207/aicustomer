@@ -1,6 +1,7 @@
 import { createSession, greetingFor, runTurn } from "@/lib/agent";
 import { BRAND } from "@/lib/brand";
 import { env } from "@/lib/env";
+import { logError } from "@/lib/errorlog";
 import { findReceptionId, linkEstimateToLine } from "@/lib/estimates";
 import { json } from "@/lib/http";
 import { lineReply, textMessage, verifyLineSignature, type LineEvent } from "@/lib/line";
@@ -72,9 +73,7 @@ export async function POST(req: Request) {
   const events = Array.isArray(body.events) ? body.events : [];
   await Promise.all(
     events.map((ev) =>
-      handleEvent(ev).catch((e) => {
-        console.error("[line webhook]", (e as Error).message);
-      }),
+      handleEvent(ev).catch((e) => logError("line", "LINE のメッセージ処理", e)),
     ),
   );
   return json({ ok: true });

@@ -1,41 +1,35 @@
 // ナレッジ（AIの回答情報源）の読み込み・統合・キャッシュ
-//   Supabase を設定した場合は knowledge テーブルが正（同梱の database/*.json は内容が変わったときに自動で取り込む）。
-//   未設定・接続できない場合は同梱の JSON（ビルドに同梱）で動作する
-//   1. 顧客対応マニュアル … database/manual.json（Excel から npm run knowledge:build で変換）または管理画面でアップロードした Excel
-//                          Googleスプレッドシートを接続した場合はその指定1シート
-//   2. 会社情報 … database/company.json（マニュアル・ホームページと照合し、内容が変わった項目は使わない）
-//   3. ホームページ … database/website.json（管理画面から再学習した場合はその内容）
-//   4. 管理画面で追加したナレッジ・アップロードしたファイルから作ったナレッジ
-// 回答の優先順は「管理画面 → アップロード → マニュアル → 会社情報 → ホームページ」。食い違いがあればマニュアルが正です。
+//   回答の根拠は「Googleスプレッドシート（顧客対応マニュアルのタブ）」と「一畳屋のホームページ（ichijoya.co.jp）」だけ
+//   1. Googleスプレッドシート … サービスアカウント（GOOGLE_SERVICE_ACCOUNT_EMAIL・GOOGLE_PRIVATE_KEY・KNOWLEDGE_SHEET_ID・KNOWLEDGE_SHEET_GID）
+//                             または管理画面で入力した URL・GAS_WEBHOOK_URL・KNOWLEDGE_SHEET_CSV_URL
+//                             読めないときは同じシートの保存版（database/manual.json＝npm run knowledge:build でシートから作成）
+//   2. ホームページ … database/website.json（管理画面から再学習した場合はその内容）。料金がシートと違う項目は使わない
+// 食い違いがあればスプレッドシートが正です。
 import crypto from "crypto";
-import companyJson from "../../database/company.json";
 import manualJson from "../../database/manual.json";
 import rulesJson from "../../database/manual-rules.json";
 import websiteJson from "../../database/website.json";
 import { env } from "./env";
-import { gasRequest, sheetsGetValues } from "./google";
+import { logError } from "./errorlog";
+import { gasRequest, sheetsReadTab } from "./google";
 import { DEFAULT_MANUAL_RULES, gridToManual, type ManualRules, type PriceTable } from "./manual";
-import { ensureBundledSynced, knowledgeVersion, listKnowledgeRows, rowToEntry, type KnowledgeRow } from "./knowledge-db";
-import { getAdminKnowledge, getSiteKnowledge } from "./store";
-import { markSupabaseError, supabaseReady } from "./supabase";
+import { labelTokens, normPrice } from "./price";
+import { parseSheetLink, type SheetLink } from "./sheet-link";
+import { getSettings, getSiteKnowledge } from "./store";
 import type { KnowledgeEntry, KnowledgeSnapshot, KnowledgeSource } from "./types";
 
 interface Cache {
   snapshot: KnowledgeSnapshot;
   expires: number;
-  /** Supabase の版（管理画面で変更があると変わる） */
-  version?: string;
-  checkedAt: number;
 }
 const g = globalThis as unknown as { __knowledgeCache?: Cache | null };
 
 export const SOURCE_LABEL: Record<KnowledgeSource, string> = {
-  sheets_api: "顧客対応マニュアル（Googleスプレッドシート・Sheets API）",
-  gas: "顧客対応マニュアル（Googleスプレッドシート・GAS連携）",
-  csv: "顧客対応マニュアル（Googleスプレッドシート・公開CSV）",
-  json: "顧客対応マニュアル（database/manual.json・Excel から変換）",
-  supabase: "顧客対応マニュアル（Supabase に保存・Excel から取り込み）",
-  local: "会社情報・ホームページのみ（マニュアル未読込）",
+  sheets_api: "Googleスプレッドシート（Sheets API で読み取り中）",
+  gas: "Googleスプレッドシート（Apps Script で読み取り中）",
+  csv: "Googleスプレッドシート（共有リンク／公開CSV で読み取り中）",
+  json: "Googleスプレッドシートの保存版（database/manual.json）",
+  local: "ホームページのみ（スプレッドシート未読込）",
 };
 
 export const MANUAL_RULES: ManualRules = { ...DEFAULT_MANUAL_RULES, ...(rulesJson as Partial<ManualRules>) };
@@ -100,21 +94,72 @@ export function manualFromGrid(rows: string[][], source: KnowledgeSource, sheetN
   return { ...m, excludedCount: m.excluded.length, source, sheetName };
 }
 
-export function remoteKnowledgeConfigured(): boolean {
-  return (
-    (env.hasServiceAccount && env.knowledgeSheetId !== "") || env.gasWebhookUrl !== "" || env.knowledgeCsvUrl !== ""
-  );
+/** スプレッドシートの接続先（管理画面で入力した URL が優先。なければ環境変数） */
+function sheetLinks(settingsUrl: string): { link: SheetLink | null; envConfigured: boolean } {
+  return {
+    link: parseSheetLink(settingsUrl),
+    envConfigured: (env.hasServiceAccount && env.knowledgeSheetId !== "") || env.gasWebhookUrl !== "" || env.knowledgeCsvUrl !== "",
+  };
 }
 
-async function loadRemote(errors: string[]): Promise<ManualResult | null> {
+export function remoteKnowledgeConfigured(settingsUrl = ""): boolean {
+  const { link, envConfigured } = sheetLinks(settingsUrl);
+  return envConfigured || (link !== null && link.kind !== "invalid");
+}
+
+/** CSV の取得（共有されていないシートは Google のログイン画面＝HTML が返る） */
+async function fetchCsvGrid(url: string): Promise<string[][]> {
+  const res = await fetch(url, { cache: "no-store", redirect: "follow", signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}${res.status === 401 || res.status === 403 || res.status === 404 ? "（共有設定を確認してください）" : ""}`);
+  const text = await res.text();
+  if (/text\/html/.test(res.headers.get("content-type") ?? "") || /^\s*<(!doctype|html)/i.test(text)) {
+    throw new Error("シートを読み取れませんでした。共有設定を「リンクを知っている全員（閲覧者）」にするか、「ウェブに公開」してください（おすすめは Apps Script）");
+  }
+  return parseCsv(text, true);
+}
+
+async function loadRemote(errors: string[], settingsUrl: string): Promise<ManualResult | null> {
+  const { link } = sheetLinks(settingsUrl);
+  // 管理画面で入力した URL
+  if (link?.kind === "invalid") errors.push(`スプレッドシートの URL：${link.reason}`);
+  if (link?.kind === "gas") {
+    try {
+      const json = await gasRequest<{ ok?: boolean; grid?: string[][]; rows?: string[][]; error?: string; sheet?: string }>({ action: "knowledge", sheet: env.knowledgeSheetName }, "GET", link.url);
+      if (json.error) throw new Error(json.error);
+      const m = manualFromGrid(json.grid ?? json.rows ?? [], "gas", json.sheet ?? env.knowledgeSheetName);
+      if (m.entries.length > 0) return m;
+      errors.push("Apps Script: 対象シートにデータがありません");
+    } catch (e) {
+      errors.push(`Apps Script: ${(e as Error).message}`);
+    }
+  }
+  if (link?.kind === "csv" && link.sheetId && env.hasServiceAccount) {
+    try {
+      const tab = await sheetsReadTab(link.sheetId, { gid: link.gid, name: env.knowledgeSheetName });
+      const m = manualFromGrid(tab.rows, "sheets_api", tab.title);
+      if (m.entries.length > 0) return m;
+      errors.push(`スプレッドシート：シート「${tab.title}」に内容がありません`);
+    } catch (e) {
+      errors.push((e as Error).message);
+    }
+  } else if (link?.kind === "csv") {
+    try {
+      const m = manualFromGrid(await fetchCsvGrid(link.url), "csv", env.knowledgeSheetName);
+      if (m.entries.length > 0) return m;
+      errors.push("スプレッドシート: データがありません");
+    } catch (e) {
+      errors.push(`スプレッドシート: ${(e as Error).message}`);
+    }
+  }
+  // 環境変数での接続
   if (env.hasServiceAccount && env.knowledgeSheetId) {
     try {
-      const rows = await sheetsGetValues(env.knowledgeSheetId, `${env.knowledgeSheetName}!A1:BZ2000`);
-      const m = manualFromGrid(rows, "sheets_api", env.knowledgeSheetName);
+      const tab = await sheetsReadTab(env.knowledgeSheetId, { gid: env.knowledgeSheetGid, name: env.knowledgeSheetName });
+      const m = manualFromGrid(tab.rows, "sheets_api", tab.title);
       if (m.entries.length > 0) return m;
-      errors.push("Sheets API: 対象シートにデータがありません");
+      errors.push(`スプレッドシート：シート「${tab.title}」に内容がありません`);
     } catch (e) {
-      errors.push(`Sheets API: ${(e as Error).message}`);
+      errors.push((e as Error).message);
     }
   }
   if (env.gasWebhookUrl) {
@@ -134,9 +179,10 @@ async function loadRemote(errors: string[]): Promise<ManualResult | null> {
   }
   if (env.knowledgeCsvUrl) {
     try {
-      const res = await fetch(env.knowledgeCsvUrl, { cache: "no-store", redirect: "follow", signal: AbortSignal.timeout(15_000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const m = manualFromGrid(parseCsv(await res.text(), true), "csv", env.knowledgeSheetName);
+      // 共有リンク（#gid=…）や「ウェブに公開」の URL もそのまま使える
+      const envLink = parseSheetLink(env.knowledgeCsvUrl);
+      if (envLink?.kind === "invalid") throw new Error(envLink.reason);
+      const m = manualFromGrid(await fetchCsvGrid(envLink?.url ?? env.knowledgeCsvUrl), "csv", env.knowledgeSheetName);
       if (m.entries.length > 0) return m;
       errors.push("CSV: データがありません");
     } catch (e) {
@@ -155,7 +201,7 @@ interface ManualFile {
   tables: PriceTable[];
 }
 
-/** 同梱のマニュアル（database/manual.json）。Excel を更新したら npm run knowledge:build で作り直す */
+/** 同じシートの保存版（database/manual.json）。シートを大きく変えたら npm run knowledge:build で作り直す */
 function bundledManual(): ManualResult {
   const m = manualJson as ManualFile;
   return {
@@ -168,30 +214,71 @@ function bundledManual(): ManualResult {
   };
 }
 
-/** 照合用の正規化（全角半角・空白・桁区切り・波線・中黒の違いを無視） */
-export function normalizeForMatch(s: string): string {
-  return s
-    .normalize("NFKC")
-    .replace(/[\s,，、・]/g, "")
-    .replace(/[〜～]/g, "~")
-    .toLowerCase();
+function amountsOf(s: string | undefined, out = new Set<number>()): Set<number> {
+  for (const m of (s ?? "").normalize("NFKC").matchAll(/\d{1,3}(?:,\d{3})+|\d{3,7}/g)) out.add(Number(m[0].replace(/,/g, "")));
+  return out;
 }
 
-interface CompanyFile {
-  entries: (KnowledgeEntry & { anchors?: string[] })[];
+interface PriceIndex {
+  /** 料金表に出てくるすべての金額 */
+  all: Set<number>;
+  /** 注記・表題の金額（諸経費・加算など、どの品名にも共通） */
+  fees: Set<number>;
+  /** 品名ごとの金額（品名の語 → 金額） */
+  rows: { tokens: string[]; amounts: Set<number> }[];
 }
 
-function checkCompany(manualText: string, siteText: string, list: KnowledgeEntry[]) {
+/** 料金表（最新の顧客対応マニュアル）の金額の索引 */
+function priceIndex(tables: PriceTable[]): PriceIndex {
+  const all = new Set<number>();
+  const fees = new Set<number>();
+  const rows: PriceIndex["rows"] = [];
+  for (const t of tables) {
+    for (const s of [t.title, t.caption, ...t.notes]) amountsOf(s, fees);
+    for (const r of t.rows) {
+      const amounts = new Set<number>();
+      [r.label, ...r.values, ...r.extra].forEach((s) => amountsOf(s, amounts));
+      // 店名と同じ品名（「一畳屋」）は、会社案内の文章にも出てくるので品名の照合に使わない
+      const tokens = labelTokens(r.label).filter((tok) => tok !== "一畳屋");
+      rows.push({ tokens, amounts });
+    }
+  }
+  fees.forEach((v) => all.add(v));
+  rows.forEach((r) => r.amounts.forEach((v) => all.add(v)));
+  return { all, fees, rows };
+}
+
+/** 文章中の金額（「27,500」「3300円」。寸法・枚数・「2,000万円」などは除く） */
+function amountsIn(text: string): number[] {
+  const out: number[] = [];
+  const s = text.normalize("NFKC");
+  for (const m of s.matchAll(/(\d{1,3}(?:,\d{3})+|\d{3,7})(?=\s*円)|(\d{1,3}(?:,\d{3})+)(?!\s*(?:cm|mm|m\b|年|枚|畳|帖|件|名|人|%|x|×|万|億|千|\d))/g)) {
+    const at = m.index ?? 0;
+    const after = s.slice(at + m[0].length, at + m[0].length + 8);
+    const before = s.slice(Math.max(0, at - 6), at);
+    // 値引き・特典・条件の金額（「500円引き」「1万円以上のご注文で」）は料金ではない
+    if (/^\s*円?\s*(?:引|off|OFF|オフ|割|値引|お得|プレゼント|分の|以上|以下|未満|まで|キャッシュバック|ポイント|相当)/.test(after) || /(?:最大|合計|総額|ご注文|お買い上げ|ご購入|ご成約)\s*$/.test(before)) continue;
+    const v = Number((m[1] ?? m[2]).replace(/,/g, ""));
+    if (v >= 500) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * 料金は最新の料金表（スプレッドシート）だけを正とする：ホームページのうち、
+ * 料金表と違う金額（古い料金など）を書いた項目は使わない（管理画面に「要確認」として表示）。
+ * 見出しに品名がある項目（「畳替え｜おすすめ｜古都」）は、その品名の行の金額と照合する
+ */
+function checkPrices(list: KnowledgeEntry[], index: PriceIndex) {
   const ok: KnowledgeEntry[] = [];
   const stale: { id: string; title: string; missing: string[] }[] = [];
   for (const e of list) {
-    const missing = (e.anchors ?? []).filter((a) => {
-      const site = a.startsWith("site:");
-      const needle = normalizeForMatch(site ? a.slice(5) : a);
-      return needle && !(site ? siteText : manualText).includes(needle);
-    });
-    if (missing.length) stale.push({ id: e.id, title: e.title, missing });
-    else ok.push({ ...e, origin: "company" });
+    const title = normPrice(e.title);
+    const named = index.rows.filter((r) => r.tokens.some((tok) => title.includes(tok)));
+    const allowed = named.length ? new Set([...index.fees, ...named.flatMap((r) => [...r.amounts])]) : index.all;
+    const unknown = [...new Set(amountsIn(`${e.title}\n${e.content}`).filter((v) => !allowed.has(v)))];
+    if (index.all.size && unknown.length) stale.push({ id: e.id, title: e.title, missing: unknown.map((v) => `料金表と違う金額 ${v.toLocaleString("ja-JP")}円`) });
+    else ok.push(e);
   }
   return { ok, stale };
 }
@@ -208,93 +295,30 @@ export function entryHash(e: KnowledgeEntry): string {
   return crypto.createHash("sha1").update(`${e.id}|${e.content}`).digest("hex").slice(0, 12);
 }
 
-/** Supabase に保存したマニュアル（文章・料金表） */
-function manualFromRows(rows: KnowledgeRow[]): ManualResult {
-  const bundled = rows.every((r) => !r.source_id);
-  return {
-    entries: rows.map(rowToEntry),
-    tables: rows.filter((r) => r.price_table).map((r) => ({ ...(r.price_table as PriceTable), id: r.id })),
-    excluded: [],
-    excludedCount: bundled ? (manualJson as ManualFile).excludedCount : 0,
-    source: "supabase",
-    sheetName: (manualJson as ManualFile).sheet,
-  };
-}
-
-/** Supabase 利用時、管理画面での変更（版）を確認する間隔 */
-const VERSION_CHECK_MS = 5000;
-
 export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
   const now = Date.now();
   const cached = g.__knowledgeCache;
-  if (!force && cached && cached.expires > now) {
-    if (cached.version === undefined || now - cached.checkedAt < VERSION_CHECK_MS) return cached.snapshot;
-    try {
-      const v = await knowledgeVersion();
-      cached.checkedAt = now;
-      if (v === cached.version) return cached.snapshot;
-    } catch {
-      return cached.snapshot;
-    }
-  }
+  if (!force && cached && cached.expires > now) return cached.snapshot;
 
   const errors: string[] = [];
-  // 1. Supabase（使える場合はここが正。同梱の JSON は内容が変わったときに自動で取り込む）
-  let rows: KnowledgeRow[] | null = null;
-  let version: string | undefined;
-  if (await supabaseReady()) {
-    try {
-      await ensureBundledSynced();
-      [rows, version] = await Promise.all([listKnowledgeRows(), knowledgeVersion()]);
-    } catch (e) {
-      markSupabaseError(e);
-      errors.push(`Supabase: ${(e as Error).message}`);
-      rows = null;
-    }
-  }
-  const byOrigin = (o: KnowledgeRow["origin"]) => (rows ?? []).filter((r) => r.origin === o);
+  // 1. Googleスプレッドシート（読めなければ同じシートの保存版 database/manual.json）
+  const sheetUrl = (await getSettings().catch(() => null))?.knowledgeSheetUrl ?? "";
+  const sheetConfigured = remoteKnowledgeConfigured(sheetUrl);
+  const remote = sheetConfigured ? await loadRemote(errors, sheetUrl) : null;
+  const manual = remote ?? bundledManual();
 
-  // 2. 顧客対応マニュアル（スプレッドシート接続時はシート → Supabase → 同梱の JSON）
-  const remote = remoteKnowledgeConfigured() ? await loadRemote(errors) : null;
-  const dbManual = byOrigin("manual");
-  const manual = remote ?? (dbManual.length ? manualFromRows(dbManual) : bundledManual());
+  // 2. ホームページ（管理画面で再学習した内容、なければ同梱の database/website.json）
+  const siteStored = await getSiteKnowledge();
+  const relearned = Boolean(siteStored && siteStored.entries.length > 0);
+  const siteAll = (relearned ? siteStored!.entries : (websiteJson as { entries: KnowledgeEntry[] }).entries).map((e) => ({ ...e, origin: "website" as const }));
+  const websiteFetchedAt = relearned ? siteStored!.fetchedAt : (websiteJson as { fetchedAt?: string }).fetchedAt;
 
-  // 3. ホームページ・会社情報・管理画面で追加・アップロード
-  let siteEntries: KnowledgeEntry[];
-  let websiteFetchedAt: string | undefined;
-  let relearned: boolean;
-  let companyList: KnowledgeEntry[];
-  let adminEntries: KnowledgeEntry[];
-  let uploadRows: KnowledgeRow[] = [];
-  if (rows) {
-    const site = byOrigin("website");
-    relearned = site.some((r) => r.edited);
-    siteEntries = (site.length ? site.map(rowToEntry) : (websiteJson as { entries: KnowledgeEntry[] }).entries).map((e) => ({ ...e, origin: "website" as const }));
-    websiteFetchedAt = relearned ? site.map((r) => r.updated_at ?? "").sort().pop() : (websiteJson as { fetchedAt?: string }).fetchedAt;
-    const company = byOrigin("company");
-    companyList = company.length ? company.map(rowToEntry) : (companyJson as CompanyFile).entries;
-    adminEntries = byOrigin("admin").map(rowToEntry);
-    uploadRows = byOrigin("upload");
-  } else {
-    const [admin, siteStored] = await Promise.all([getAdminKnowledge(), getSiteKnowledge()]);
-    relearned = Boolean(siteStored && siteStored.entries.length > 0);
-    siteEntries = (relearned ? siteStored!.entries : (websiteJson as { entries: KnowledgeEntry[] }).entries).map((e) => ({ ...e, origin: "website" as const }));
-    websiteFetchedAt = relearned ? siteStored!.fetchedAt : (websiteJson as { fetchedAt?: string }).fetchedAt;
-    companyList = (companyJson as CompanyFile).entries;
-    adminEntries = admin;
-  }
-
-  const manualEntries = manual.entries;
-  const manualText = normalizeForMatch(manualEntries.map((e) => `${e.title}\n${e.content}`).join("\n"));
-  const siteText = normalizeForMatch(siteEntries.map((e) => `${e.title}\n${e.content}`).join("\n"));
-  const company = checkCompany(manualText, siteText, companyList);
-  const admin = adminEntries.map((e) => ({ ...e, origin: "admin" as const }));
-  const upload = uploadRows.map((r) => ({ ...rowToEntry(r), origin: "upload" as const }));
-
-  const entries = [...admin, ...upload, ...manualEntries, ...company.ok, ...siteEntries];
-  // アップロードした Excel の料金表も料金の回答に使う
-  const tables = [...manual.tables, ...uploadRows.filter((r) => r.price_table).map((r) => ({ ...(r.price_table as PriceTable), id: r.id }))];
+  // 料金はスプレッドシートの料金表が正：違う金額を書いたホームページの項目は使わない
+  const site = checkPrices(siteAll, priceIndex(manual.tables));
+  const entries = [...manual.entries, ...site.ok];
+  const tables = manual.tables;
   const source: KnowledgeSource = manual.source;
+  const settingsLink = parseSheetLink(sheetUrl);
   const snapshot: KnowledgeSnapshot = {
     entries,
     tables,
@@ -305,27 +329,28 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
     warning: errors.length
       ? remote
         ? errors.join(" / ")
-        : rows
-          ? `シートを読めなかったため Supabase のマニュアルを使用中: ${errors.join(" / ")}`
-          : `同梱のマニュアル（database/manual.json）を使用中: ${errors.join(" / ")}`
+        : `スプレッドシートを読めなかったため、保存版（database/manual.json）で回答しています：${errors.join(" / ")}`
       : undefined,
     version: hashEntries(entries, tables),
     stats: {
-      manualText: manualEntries.filter((e) => !manual.tables.some((t) => t.id === e.id)).length,
+      manualText: manual.entries.filter((e) => !manual.tables.some((t) => t.id === e.id)).length,
       manualTables: manual.tables.length,
-      company: company.ok.length,
-      companyStale: company.stale.length,
-      website: siteEntries.length,
-      admin: admin.length,
-      upload: upload.length,
+      website: site.ok.length,
       excluded: manual.excludedCount,
     },
-    stale: company.stale,
+    stale: site.stale,
     excludedLines: manual.excluded,
     websiteFetchedAt,
     websiteOrigin: relearned ? "relearned" : "bundled",
+    sheet: {
+      configured: sheetConfigured,
+      connected: Boolean(remote),
+      via: settingsLink && settingsLink.kind !== "invalid" ? settingsLink.kind : sheetConfigured ? "env" : null,
+      url: sheetUrl,
+    },
   };
-  g.__knowledgeCache = { snapshot, expires: now + env.knowledgeCacheSeconds * 1000, version, checkedAt: now };
+  g.__knowledgeCache = { snapshot, expires: now + env.knowledgeCacheSeconds * 1000 };
+  if (errors.length) void logError("sheet", "スプレッドシートの読み込み", errors.join(" / "));
   return snapshot;
 }
 
@@ -350,6 +375,7 @@ export function describeKnowledge(s: KnowledgeSnapshot) {
     excludedLines: s.excludedLines,
     websiteFetchedAt: s.websiteFetchedAt,
     websiteOrigin: s.websiteOrigin,
-    remoteConfigured: remoteKnowledgeConfigured(),
+    remoteConfigured: s.sheet?.configured ?? false,
+    sheet: s.sheet,
   };
 }

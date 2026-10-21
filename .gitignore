@@ -10,3 +10,9 @@ npm-install.log
 next-env.d.ts
 data/runtime/
 *.log
+
+# Google のサービスアカウントの鍵（.env に入れて使う。リポジトリには入れない）
+/database/*.json.key
+/database/ichijoya-*.json
+*service-account*.json
+*-credentials.json

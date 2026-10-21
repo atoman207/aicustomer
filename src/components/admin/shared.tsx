@@ -4,25 +4,16 @@
 import { X } from "lucide-react";
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
-import type { KnowledgeEntry, KnowledgeOrigin, KnowledgeSourceRecord } from "@/lib/types";
+import type { KnowledgeEntry, KnowledgeOrigin } from "@/lib/types";
 
 export interface AdminEntry extends KnowledgeEntry {
   edited?: boolean;
+  /** スプレッドシートから読み込んだ項目（編集はスプレッドシートで） */
+  readonly?: boolean;
   hasTable?: boolean;
   updatedAt?: string;
 }
 
-export interface SetupInfo {
-  supabase: { configured: boolean; ready: boolean; setupRequired?: boolean; error?: string };
-  projectRef: string;
-  sqlEditorUrl: string;
-  tableEditorUrl: string;
-  sql: string;
-  sync?: { synced: boolean; upserted: number; removed: number };
-  entries?: number;
-}
-
-export type Source = KnowledgeSourceRecord;
 
 export class ApiError extends Error {
   status: number;
@@ -43,11 +34,8 @@ export async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const ORIGIN_LABEL: Record<KnowledgeOrigin, string> = {
-  manual: "顧客対応マニュアル",
-  company: "会社情報",
+  manual: "スプレッドシート（顧客対応マニュアル）",
   website: "ホームページ",
-  admin: "入力した情報",
-  upload: "ファイルから",
 };
 
 export function Chip({ children, tone = "gray" }: { children: React.ReactNode; tone?: "gray" | "green" | "amber" | "red" | "blue" }) {
@@ -104,12 +92,6 @@ export function formatDate(iso?: string | null): string {
   return new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(d);
 }
 
-export function formatSize(bytes?: number | null): string {
-  if (!bytes) return "";
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
-}
 
 export function ErrorNote({ message }: { message: string }) {
   if (!message) return null;

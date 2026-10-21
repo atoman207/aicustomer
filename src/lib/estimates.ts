@@ -1,8 +1,9 @@
 // 見積依頼（受付情報）の作成とスプレッドシートへの記録
 import { env } from "./env";
+import { logError } from "./errorlog";
 import { gasRequest, sheetsAppendRow } from "./google";
+import { autofillLabel } from "./intake";
 import { addEstimate, listEstimates, updateEstimate } from "./store";
-import { supabaseStateCached } from "./supabase";
 import { CHANNEL_LABEL, type Channel, type EstimateRequest } from "./types";
 import { formatJst, isLikelyPhone, newId, normalizePhone, nowJstIso } from "./utils";
 
@@ -15,6 +16,7 @@ export interface EstimateInput {
   preferredDates: string[];
   sessionId?: string;
   confirmedByCustomer?: boolean;
+  autofill?: EstimateRequest["autofill"];
 }
 
 export const RECEPTION_HEADER = [
@@ -30,6 +32,7 @@ export const RECEPTION_HEADER = [
   "受付番号",
   "確認状況",
   "ステータス",
+  "会話からの自動入力",
 ];
 
 export function validateEstimateInput(input: Partial<EstimateInput>): string[] {
@@ -44,12 +47,12 @@ export function validateEstimateInput(input: Partial<EstimateInput>): string[] {
   return errors;
 }
 
-export type ReceptionSink = "gas" | "sheets_api" | "supabase" | "local";
+export type ReceptionSink = "gas" | "sheets_api" | "local";
 
+/** 受付の記録先（サービスアカウントがあれば回答用と同じスプレッドシートの「受付一覧」タブ） */
 export function receptionSink(): ReceptionSink {
-  if (env.gasWebhookUrl) return "gas";
   if (env.hasServiceAccount && env.receptionSheetId) return "sheets_api";
-  if (supabaseStateCached()?.ready) return "supabase";
+  if (env.gasWebhookUrl) return "gas";
   return "local";
 }
 
@@ -59,8 +62,6 @@ export function receptionSinkLabel(sink: ReceptionSink): string {
       return `Googleスプレッドシート「${env.receptionSheetName}」（GAS連携）`;
     case "sheets_api":
       return `Googleスプレッドシート「${env.receptionSheetName}」（Sheets API）`;
-    case "supabase":
-      return "Supabase（データベースの estimates テーブル。スプレッドシートは未接続）";
     default:
       return "ローカル保存のみ（スプレッドシート未接続）";
   }
@@ -80,6 +81,7 @@ export function estimateToRow(e: EstimateRequest): string[] {
     e.id,
     e.confirmedByCustomer ? "お客様確認済み" : "未確認",
     "新規",
+    autofillLabel(e),
   ];
 }
 
@@ -118,12 +120,13 @@ export async function createEstimate(input: EstimateInput): Promise<EstimateRequ
     status: "new",
     confirmedByCustomer: input.confirmedByCustomer ?? true,
     sessionId: input.sessionId,
-    syncedTo: [supabaseStateCached()?.ready ? "supabase" : "local"],
+    syncedTo: ["local"],
+    ...(input.autofill ? { autofill: input.autofill } : {}),
   };
   await addEstimate(record);
 
   const sink = receptionSink();
-  if (sink === "local" || sink === "supabase") return record;
+  if (sink === "local") return record;
   try {
     if (sink === "gas") {
       await gasRequest({
@@ -135,11 +138,13 @@ export async function createEstimate(input: EstimateInput): Promise<EstimateRequ
       });
       record.syncedTo.push("gas");
     } else {
-      await sheetsAppendRow(env.receptionSheetId, env.receptionSheetName, estimateToRow(record));
+      // 「受付一覧」タブがなければ作って見出しを書く（編集者として共有されている必要があります）
+      await sheetsAppendRow(env.receptionSheetId, env.receptionSheetName, estimateToRow(record), RECEPTION_HEADER);
       record.syncedTo.push("sheets_api");
     }
   } catch (e) {
     record.syncError = (e as Error).message;
+    await logError("sheet", `見積受付のスプレッドシート連携（${record.id}）`, e);
   }
   await updateEstimate(record.id, { syncedTo: record.syncedTo, syncError: record.syncError });
   return record;

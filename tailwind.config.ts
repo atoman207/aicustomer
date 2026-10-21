@@ -47,6 +47,8 @@ const config: Config = {
         pulseRing: { "0%": { transform: "scale(0.9)", opacity: "0.8" }, "100%": { transform: "scale(1.6)", opacity: "0" } },
         fadeUp: { "0%": { opacity: "0", transform: "translateY(8px)" }, "100%": { opacity: "1", transform: "translateY(0)" } },
         blink: { "0%, 80%, 100%": { opacity: "0.2" }, "40%": { opacity: "1" } },
+        // 声の相談：話している間の音のバー
+        voiceBar: { "0%, 100%": { transform: "scaleY(0.3)" }, "50%": { transform: "scaleY(1)" } },
       },
       animation: {
         shake1: "shake1 2s steps(2) infinite",
@@ -54,6 +56,7 @@ const config: Config = {
         pulseRing: "pulseRing 1.6s ease-out infinite",
         fadeUp: "fadeUp 0.35s ease-out both",
         blink: "blink 1.2s infinite",
+        voiceBar: "voiceBar 0.9s ease-in-out infinite",
       },
       transitionTimingFunction: {
         drawer: "cubic-bezier(.22,.82,.24,.96)",

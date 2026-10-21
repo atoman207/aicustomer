@@ -3,15 +3,19 @@
 //   ・見積受付の聞き取り・復唱は OpenAI（構造化出力）で行い、そのときはナレッジを渡さない（トークン節約）
 import { learnAnswer, planAnswer } from "./answer";
 import { env } from "./env";
+import { logError } from "./errorlog";
 import { createEstimate } from "./estimates";
 import { BYE, INTENT_ESTIMATE, fallbackTurn } from "./fallback";
 import { japanNow } from "./hours";
+import { normalizeDraft } from "./intake";
 import { getKnowledge } from "./knowledge";
 import { chatCompletionJson } from "./openai";
 import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt } from "./prompts";
 import { getSession, getSettings, saveSession, upsertConversation } from "./store";
 import type { AgentSession, AgentStage, AgentTurnResult, Channel, IntakeDraft, SearchHit } from "./types";
 import { domesticPhone, fillTemplate, readDigits, truncate, uid } from "./utils";
+
+const CHANNEL_WHERE: Record<string, string> = { phone: "AI電話", line: "LINE", web_voice: "声の相談", web_text: "文字の相談" };
 
 interface ModelTurn {
   reply: string;
@@ -50,6 +54,11 @@ export async function greetingFor(channel: Channel): Promise<string> {
     return `畳の${company}の公式LINEにご登録ありがとうございます。\n畳・襖・障子・網戸から住まいのリフォームまで、ご相談や無料お見積りのご依頼を承ります。ご用件をメッセージでお送りください。\nホームページのAI相談でお見積りを受付済みの方は、受付番号（EST-から始まる番号）をお送りいただくと、ご依頼とこのLINEをおつなぎします。`;
   return `こんにちは。畳の${company}のAI相談員です。畳・襖・障子・網戸から住まいのリフォームまで、お気軽にご質問ください。無料お見積りのご依頼も承ります。`;
 }
+
+/** HP の声の相談：伺った内容は画面の確認画面に表示し、お客様が確認して送信する */
+const FORM_READY_REPLY =
+  "ありがとうございます。お伺いした内容を、画面の確認画面に表示しました。内容をご確認のうえ、修正があれば直して、送信ボタンを押してください。訪問の日程は、担当者よりお電話でご相談のうえ確定いたします。";
+const FORM_REMIND_REPLY = "画面の確認画面で「この内容で送信する」を押していただくと、受付が完了します。修正したい項目は、画面の「修正」から直せます。";
 
 function draftComplete(d: IntakeDraft): boolean {
   return Boolean(d.name && d.address && d.phone && d.dates.length > 0);
@@ -167,6 +176,7 @@ export async function runTurn(
         if (result.stage === "consult") await learnAnswer(plan, result.reply);
       } catch (e) {
         session.meta = { ...(session.meta ?? {}), lastError: truncate((e as Error).message, 200) };
+        await logError(session.channel === "phone" ? "phone" : "openai", `${CHANNEL_WHERE[session.channel] ?? session.channel}（相談への回答）`, e);
         result = await fallback();
       }
     }
@@ -176,13 +186,29 @@ export async function runTurn(
       result = await openaiTurn(session, settings.companyName, "", []);
     } catch (e) {
       session.meta = { ...(session.meta ?? {}), lastError: truncate((e as Error).message, 200) };
+      await logError(session.channel === "phone" ? "phone" : "openai", `${CHANNEL_WHERE[session.channel] ?? session.channel}（見積受付の聞き取り）`, e);
       result = await fallback();
     }
   } else {
     result = await fallback();
   }
 
-  if (result.stage === "completed" && !session.estimateId) {
+  // HP（声の相談）：そろったら確認画面を表示する。受付の記録はお客様が画面で送信したとき（/api/estimates）
+  const viaForm = session.channel === "web_voice" || session.channel === "web_text";
+  if (viaForm) result.draft = normalizeDraft(result.draft);
+  if (viaForm && (result.stage === "confirming" || result.stage === "completed")) {
+    if (draftComplete(result.draft)) {
+      result.reply = session.stage === "confirming" ? FORM_REMIND_REPLY : FORM_READY_REPLY;
+      result.stage = "confirming";
+      result.formReady = true;
+      result.done = false;
+    } else {
+      result.stage = "collecting";
+      result.reply = missingPrompt(result.draft);
+    }
+  }
+
+  if (!viaForm && result.stage === "completed" && !session.estimateId) {
     if (draftComplete(result.draft)) {
       const estimate = await createEstimate({
         channel: session.channel,

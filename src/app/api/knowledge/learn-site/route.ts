@@ -1,9 +1,7 @@
 import { error, json, requireAdmin } from "@/lib/http";
 import { describeKnowledge, getKnowledge, invalidateKnowledgeCache } from "@/lib/knowledge";
 import { learnWebsite } from "@/lib/site-learn";
-import { replaceWebsite } from "@/lib/knowledge-db";
 import { saveSiteKnowledge } from "@/lib/store";
-import { supabaseReady } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,8 +12,7 @@ export async function POST(req: Request) {
   const denied = await requireAdmin();
   if (denied) return denied;
   if (new URL(req.url).searchParams.get("reset") === "1") {
-    if (await supabaseReady()) await replaceWebsite(null);
-    else await saveSiteKnowledge(null);
+    await saveSiteKnowledge(null);
     invalidateKnowledgeCache();
     return json({ ...describeKnowledge(await getKnowledge(true)), pages: [] });
   }
@@ -23,8 +20,7 @@ export async function POST(req: Request) {
   if (result.entries.length === 0) {
     return error(`ホームページを読み込めませんでした（${result.pages.map((p) => `${p.path}: ${p.error ?? "0件"}`).join(" / ")}）`, 502);
   }
-  if (await supabaseReady()) await replaceWebsite(result.entries);
-  else await saveSiteKnowledge({ fetchedAt: result.fetchedAt, entries: result.entries, pages: result.pages });
+  await saveSiteKnowledge({ fetchedAt: result.fetchedAt, entries: result.entries, pages: result.pages });
   invalidateKnowledgeCache();
   return json({ ...describeKnowledge(await getKnowledge(true)), pages: result.pages });
 }

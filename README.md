@@ -2,7 +2,7 @@
 
 熊本県の畳店「一畳屋」（株式会社一畳屋・https://ichijoya.co.jp/ ）向けの、AI による問い合わせ・見積受付システムです。
 画面は一畳屋サイトと同じヘッダー・ナビ・フッター・ロゴ・画像・配色・フォント・アニメーションで構成し、サイトの一部として違和感なく使えるようにしています（§9）。
-**テキスト相談・音声相談・AI電話受付の3つの機能**を、**一畳屋の顧客対応マニュアル（Excel／Googleスプレッドシートの指定 1 シート）**・登録済みの会社情報・ホームページから学習した内容の**共通ナレッジ**で動かし、
+**テキスト相談・音声相談・AI電話受付の3つの機能**を、**一畳屋の Googleスプレッドシート（顧客対応マニュアルの指定 1 シート）とホームページの内容だけ**を根拠にした**共通ナレッジ**で動かし、
 見積依頼は**お客様の確認を経て**スプレッドシートに一元記録します。
 料金・会社情報・よくある質問は**学習済みのナレッジから OpenAI を使わずに即答**し、OpenAI はそれだけでは答えきれない質問にだけ、関係する部分だけを渡して使います（§3.5）。
 
@@ -47,7 +47,7 @@ npm run smoke
 
 ## 1.5 Vercel へのデプロイ
 
-GitHub リポジトリを Vercel にインポートするだけでビルド・デプロイできます（追加設定なしで `next build` が通ります）。AI の回答情報源（`database/*.json`）はビルドに同梱されるため、ナレッジのための設定は不要です。
+GitHub リポジトリを Vercel にインポートするだけでビルド・デプロイできます（追加設定なしで `next build` が通ります）。AI の回答情報源は Googleスプレッドシート（サービスアカウントで読み取り）とホームページです。シートを読めないときに使う保存版（`database/manual.json`）とホームページの内容（`database/website.json`）はビルドに同梱されます。
 
 **設定する環境変数**（Settings › Environment Variables。変更後は Redeploy で反映。`.env.example` と同じ内容です）。
 
@@ -55,7 +55,8 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | --- | --- |
 | `OPENAI_API_KEY` | AI 応答・音声・要約・ファイルの解析（未設定時はデモモード） |
 | `OPENAI_CHAT_MODEL` など 6 つ | 使用するモデル（`.env.example` の値のままで可） |
-| `SUPABASE_URL` / `SUPABASE_SECRET_KEY` | ナレッジ・アップロードしたファイル・会話履歴・受付・設定の保存先（§2.5）。secret キーはサーバー専用 |
+| `GOOGLE_SERVICE_ACCOUNT_EMAIL` / `GOOGLE_PRIVATE_KEY` | Googleスプレッドシートを読み書きするサービスアカウント（鍵の JSON の `client_email`・`private_key`。鍵のファイルはリポジトリに置かない） |
+| `KNOWLEDGE_SHEET_ID` / `KNOWLEDGE_SHEET_GID` | 回答に使うスプレッドシートの ID と、タブの gid（URL の `#gid=` の数字）。受付も同じスプレッドシートの「受付一覧」タブに記録（なければ自動で作成） |
 | `ADMIN_PASSWORD` | **公開 URL では必須。** 管理画面（受付一覧＝お客様情報、AI／人間切替）を保護 |
 
 本番運用（VPS・独自ドメインへの移行時など）で必要に応じて追加するもの：
@@ -63,15 +64,14 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | 設定 | 目的 |
 | --- | --- |
 | `PUBLIC_BASE_URL` | 独自ドメインの公開 URL（例：`https://ai.example.jp`）。Twilio/LINE の署名検証と OGP に使用（Vercel では自動判定） |
-| Storage › **Upstash Redis** | Supabase を使わない場合の永続化。追加すると `UPSTASH_REDIS_REST_URL/TOKEN` が自動設定されます |
-| `GAS_WEBHOOK_URL` | 受付のスプレッドシート記録（とスプレッドシートからのナレッジ読み取り。§3） |
+| Storage › **Upstash Redis** | 会話履歴・設定・エラー履歴の永続化（Vercel 用）。追加すると `UPSTASH_REDIS_REST_URL/TOKEN` が自動設定されます |
 | `TWILIO_*` / `STAFF_FORWARD_NUMBER` | 0120 番号の AI 電話受付（§5） |
 
-**サーバーレスでの保存について**：Vercel ではファイル書き込みが一時的（インスタンスごとの `/tmp`）です。Supabase を設定すれば受付・会話・設定はすべてデータベースに保存されます。Supabase・Redis が未設定でも次の工夫で動作しますが、受付一覧・会話履歴・管理画面の設定変更は再デプロイやスリープで消えます。
+**サーバーレスでの保存について**：Vercel ではファイル書き込みが一時的（インスタンスごとの `/tmp`）です。**受付はスプレッドシートの「受付一覧」タブに必ず記録**されます。会話履歴・管理画面の設定変更・エラー履歴は、Redis が未設定だと再デプロイやスリープで消えます（VPS ではサーバーの `data/runtime` に保存されます）。
 
 - ブラウザの電話シミュレーター／音声相談（デモモード）は会話セッションをクライアントと往復させるため、インスタンスが変わっても途切れません
 - Twilio の電話受付は通話ごとの Cookie に会話状態を圧縮して持たせるため、Redis なしでも 1 通話内の状態が保たれます
-- LINE と管理画面の設定・受付一覧の永続化には Upstash Redis（無料枠あり）の接続を推奨します。受付そのものは `GAS_WEBHOOK_URL` を設定すればスプレッドシートに必ず記録されます
+- LINE と管理画面の設定・会話履歴の永続化には Upstash Redis（無料枠あり）の接続を推奨します
 
 管理画面の「接続状況」タブに、現在の保存先（Redis／ファイル／一時保存）が表示されます。
 
@@ -84,15 +84,14 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | 変数 | 必須 | 説明 |
 | --- | --- | --- |
 | `OPENAI_API_KEY` | **必須** | 未設定時はデモモード |
-| `SUPABASE_URL` / `SUPABASE_SECRET_KEY` | **推奨** | Supabase のプロジェクト URL と secret キー（旧 `SUPABASE_SERVICE_ROLE_KEY` も可）。§2.5 |
+| `GOOGLE_SERVICE_ACCOUNT_EMAIL` / `GOOGLE_PRIVATE_KEY` / `KNOWLEDGE_SHEET_ID` / `KNOWLEDGE_SHEET_GID` | **必須** | 回答の情報源の Googleスプレッドシート（サービスアカウントを編集者として共有）。受付も同じスプレッドシートの「受付一覧」タブに記録 |
 | `ADMIN_PASSWORD` | **公開 URL では必須** | 管理画面の保護（未設定時は誰でも閲覧可） |
 | `OPENAI_CHAT_MODEL` | | 既定 `gpt-4.1-mini`（テキスト相談・電話・LINE・要約） |
 | `OPENAI_REALTIME_MODEL` / `OPENAI_REALTIME_VOICE` | | 既定 `gpt-realtime` / `marin`（音声相談） |
 | `OPENAI_TTS_MODEL` / `OPENAI_TTS_VOICE` | | 既定 `gpt-4o-mini-tts` / `coral`（電話シミュレーターの読み上げ） |
 | `OPENAI_EMBEDDING_MODEL` | | 既定 `text-embedding-3-small`（ナレッジ検索） |
-| `GAS_WEBHOOK_URL` | ナレッジ連携 A | `gas/Code.gs` をデプロイした URL（読み書き両対応・推奨） |
-| `GOOGLE_SERVICE_ACCOUNT_EMAIL` / `GOOGLE_PRIVATE_KEY` / `KNOWLEDGE_SHEET_ID` | ナレッジ連携 B | Sheets API を直接利用 |
-| `KNOWLEDGE_SHEET_CSV_URL` | ナレッジ連携 C | 「ウェブに公開」した CSV の URL（読み取り専用） |
+| `GAS_WEBHOOK_URL` | ナレッジ連携 A | `gas/Code.gs` をデプロイした URL（読み書き両対応・推奨。シートを公開せずに読める） |
+| `KNOWLEDGE_SHEET_CSV_URL` | ナレッジ連携 C | シートの共有リンク（回答に使うタブを開いた URL＝`#gid=…` 付き）または「ウェブに公開」の URL（読み取り専用。タブの内容が外部から見られる状態になる） |
 | `KNOWLEDGE_SHEET_NAME` | | 既定 `ＡＩ相談ソース`（スプレッドシート接続時に回答根拠にする **1 シート**の名前） |
 | `KNOWLEDGE_CACHE_SECONDS` | | 既定 60（シート更新の反映間隔） |
 | `RECEPTION_SHEET_ID` / `RECEPTION_SHEET_NAME` | | 受付記録先（既定シート名 `受付一覧`） |
@@ -106,57 +105,30 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | `OPENAI_BASE_URL` | | 互換 API／プロキシ／モック用（既定 `https://api.openai.com/v1`） |
 | `COMPANY_NAME` / `COMPANY_PHONE` | | 会社名・0120 番号（既定 一畳屋・0120-158-108。管理画面でも変更可） |
 
-顧客対応マニュアルは **A（GAS）→ B（Sheets API）→ C（CSV）→ 同梱の JSON（`database/manual.json`）** の優先順で自動選択されます（未接続なら JSON）。
-
----
-
-## 2.5 Supabase（データベース）
-
-`SUPABASE_URL` と `SUPABASE_SECRET_KEY` を設定すると、次のものがすべて Supabase に保存されます。未設定・接続できない場合は従来どおりファイル／メモリと同梱の JSON で動作します。
-
-| テーブル | 内容 |
-| --- | --- |
-| `knowledge` | AI の回答情報源（顧客対応マニュアル・会社情報・ホームページ・管理画面で入力・アップロードしたファイルから作った情報）。AI はここだけを根拠に回答 |
-| `knowledge_sources` | 管理画面で追加した文章・アップロードしたファイルの履歴（ファイルの原本は Storage の非公開バケット `knowledge-files`） |
-| `conversations` | 文字・声・電話・LINE のすべての会話履歴（質問と AI の回答） |
-| `estimates` | 見積の受付 |
-| `app_kv` | 設定・電話の会話状態・学習済みの回答・答えられなかった質問・利用状況 |
-
-**セットアップ（最初に 1 回）**：
-
-1. `.env`（Vercel では Environment Variables）に `SUPABASE_URL`・`SUPABASE_SECRET_KEY`（Project Settings › API Keys の secret キー）を設定
-2. 管理画面の「セットアップ」で SQL をコピーし、Supabase の SQL Editor で実行（`supabase/schema.sql` と同じ内容。何度実行しても安全）
-3. 「接続を確認」を押すと、同梱の `database/*.json`（マニュアル・会社情報・ホームページ）が自動でデータベースに取り込まれます
-
-- テーブルは RLS（行レベルセキュリティ）を有効にし、ポリシーを作っていません。公開キー（publishable）では読み書きできず、サーバーの secret キーだけが使えます（ブラウザから Supabase には直接つながりません）。
-- 同梱の JSON を更新してデプロイすると、変わった内容が自動で取り込まれます（管理画面で編集した項目・アップロードした顧客対応マニュアルは上書きしません）。
-- 管理画面での追加・編集は数秒以内に全サーバーの AI の回答に反映されます。
+顧客対応マニュアル（Googleスプレッドシート）は **管理画面の「AIの学習状況・情報源」で入力した URL → サービスアカウント（`KNOWLEDGE_SHEET_ID`）→ GAS → CSV → 同じシートの保存版（`database/manual.json`）** の順で読み込みます。管理画面にスプレッドシートの URL（`#gid=…` 付き）を貼ると、サービスアカウントで非公開のまま別のタブに切り替えられます（読めないときは保存版で回答し、理由を管理画面と「エラー履歴」に表示）。
 
 ---
 
 ## 3. AI の回答情報源（`database/`）
 
-AI は次の情報だけを根拠に回答し、記載のない質問は推測せず「担当者より折り返し」を案内します（詳しくは [database/README.md](database/README.md)）。**情報源はすべて JSON ファイル**で、ビルドに同梱されます（Vercel・VPS のどちらでもファイルの読み込み設定は不要）。
+AI は **Googleスプレッドシートとホームページの内容だけ**を根拠に回答し、記載のない質問は推測せず「担当者より折り返し」を案内します（詳しくは [database/README.md](database/README.md)）。管理画面から情報を追加・アップロードする機能はありません。内容を変えるときはスプレッドシートを直してください。
 
 | 優先 | 情報源 | 内容 |
 | --- | --- | --- |
-| 1 | **顧客対応マニュアル**（`database/manual.json`＝`顧客対応マニュアル.xlsx` から変換。スプレッドシート接続時はその指定 1 シート） | 会社情報・営業時間・営業範囲・よくある問い合わせの文章と、料金表（畳・ヘリ・襖・障子・網戸・ヘリ無し半畳・置き畳・ヘリ有り1畳物・雑工事・カーテンレール） |
-| 2 | **会社情報**（`database/company.json`） | 一畳屋からご提供いただいた内容を回答文に整えたもの。マニュアルと照合し、内容が変わった項目は自動で停止 |
-| 3 | **ホームページ**（`database/website.json`） | ichijoya.co.jp から学習（会社概要・店舗とスタッフ・畳表や襖紙の特徴など）。`npm run learn:site` または管理画面で再学習 |
-| — | 管理画面で追加したナレッジ | 上記に無い内容の補足（最優先で参照） |
+| 1 | **Googleスプレッドシート**（顧客対応マニュアルのタブ。読めないときは同じシートの保存版 `database/manual.json`） | 会社情報・営業時間・営業範囲・よくある問い合わせの文章と、料金表（畳・ヘリ・襖・障子・網戸・ヘリ無し半畳・置き畳・ヘリ有り1畳物・雑工事・カーテンレール） |
+| 2 | **ホームページ**（`database/website.json`） | ichijoya.co.jp から学習（会社概要・店舗とスタッフ・畳表や襖紙の特徴など）。`npm run learn:site` または管理画面で再学習。料金がスプレッドシートと違う項目は自動で使わない |
 
-**マニュアル（Excel）を更新したとき**：
+**スプレッドシートを更新したとき**：約 1 分（`KNOWLEDGE_CACHE_SECONDS`）で 3 窓口すべての回答に反映されます（管理画面の「スプレッドシートを再読み込み」で即時）。保存版（シートを読めないときに使う内容）も新しくするには：
 
 ```bash
-npm run knowledge:build   # database/顧客対応マニュアル.xlsx → database/manual.json（変更がなければそのまま）
-git add database && git commit -m "マニュアル更新" && git push   # Vercel が再デプロイして AI の回答に反映
+npm run knowledge:build   # Googleスプレッドシート → database/manual.json（変更がなければそのまま）
+git add database && git commit -m "保存版の更新" && git push
 ```
 
 - **自由形式のシートをそのまま変換します**。上部の文章は見出しごとに、下部の料金表は列の並ぶ表ごとに分けて解析し（`src/lib/manual.ts`）、料金表は「品名：列名 金額」の形で構造化して JSON に保存します。「カテゴリ／項目／内容／キーワード」の表形式のシートにも対応しています。
 - **社内向けの書き込みは回答に使いません**（「思案中」のメモ、原価・売値の計算式、仕入先名など）。規則は `database/manual-rules.json`。除外した行は JSON に入れず件数だけを残し、変換時に一覧を表示します。
-- 食い違いがある場合はマニュアルが正です（例：ホームページの「受付 8:00-18:00」「襖 2日仕上げ」より、マニュアルの「8:00〜17:00」「2泊3日」を優先）。
-- スプレッドシートを接続した場合は、シートの更新が `KNOWLEDGE_CACHE_SECONDS`（既定 60 秒）以内に 3 窓口すべてへ反映されます（管理画面の「マニュアルを再読み込み」で即時）。
-- 見積りの方針（担当者が現地を見てから提出・概算は基本なし）に合わせ、料金は単価を「目安」として伝え、数量を掛けた合計の概算は出しません。
+- 食い違いがある場合はスプレッドシートが正です（例：ホームページの「受付 8:00-18:00」「襖 2日仕上げ」より、シートの「8:00〜17:00」「2泊3日」を優先）。
+- 畳数・枚数を伺えば、料金表の単価と注記（半畳の掛け率・ヘリ代・諸経費など）から合計の目安を計算します（`src/lib/quote.ts`）。ヘリのグレードの指定がなければ、ヘリ代は料金表のグレードの幅で案内します。正式なお見積りは担当者が現地を見てから提出します。
 - トップページの「営業のご案内・よくあるご質問・選ばれる理由・会社メッセージ・店舗」は `src/lib/company.ts` の固定表示です。営業時間などを変えたときはマニュアルとあわせて更新してください。
 
 ### GAS（Google Apps Script）のセットアップ（推奨・最も簡単）
@@ -164,7 +136,7 @@ git add database && git commit -m "マニュアル更新" && git push   # Vercel
 1. 「社内総合マニュアル」を開き、**拡張機能 › Apps Script** に `gas/Code.gs` を貼り付け
 2. `KNOWLEDGE_SHEET_DEFAULT`（回答用シート名。既定「ＡＩ相談ソース」）/ `RECEPTION_SHEET_DEFAULT`（受付一覧）を確認
 3. **デプロイ › 新しいデプロイ › ウェブアプリ**（実行ユーザー: 自分、アクセス: 全員）
-4. 発行 URL を `.env` の `GAS_WEBHOOK_URL` に設定して再起動
+4. 発行 URL（…/exec）を管理画面の「AIの学習状況・情報源」に貼って「保存して読み込む」（ナレッジの読み取りだけ。再デプロイ不要）。受付一覧への書き込みも使う場合は `.env`（Vercel の Environment Variables）の `GAS_WEBHOOK_URL` に設定して再デプロイ
 
 これだけで、ナレッジの読み取りと受付情報の書き込み（受付一覧シートへ自動追記・見出し自動作成）が有効になります。自由形式のマニュアルを読むため、GAS は空行も含めた全セル（`grid`）を返します（以前の `gas/Code.gs` をお使いの場合は貼り替えてください）。
 
@@ -192,11 +164,14 @@ git add database && git commit -m "マニュアル更新" && git push   # Vercel
 ## 4. 見積受付の流れ（3 窓口共通）
 
 1. 相談対応（ナレッジに基づく回答）
-2. 見積希望 → 氏名・住所・電話番号・見積希望日（第1〜第3）・相談内容（AI 要約）を取得
-3. **登録前に内容を提示し、お客様が確認・修正**
-   - テキスト／音声：確認フォーム（入力 → 確認 → 完了）。`confirmed=true` でないと API が受け付けません
+2. 見積希望 → **AI が会話の中で**お名前・ご住所・お電話番号・訪問のご希望日時（第1〜第3希望）を伺い、ご相談内容を AI が要約
+   - 文字の相談：「見積をお願いします」（または料金の回答の下の「このままチャットで見積を依頼する」）で、お名前・ご住所・お電話番号をまとめて伺い、続いてご希望日時を伺います。伺う文は決まった文で、日程を約束しません（`src/lib/intake.ts`・`intake-ai.ts`）。途中のご質問には答えてから続きを伺い、「やっぱりやめます」で中止、そろったあとの「電話番号は〜に変更」も反映します
+   - 声の相談：AI が同じ項目を伺い、そろったら復唱せずに確認画面を表示します（Realtime の `propose_estimate_request`／簡易音声モードはエージェント）
+   - 会話より前に出た内容（文字の相談で伺ったお名前など）は聞き直しません。伺った内容は会話と一緒にこの端末に保存され、文字 ⇄ 声を切り替えても引き継がれます
+3. **「見積依頼」ボタンで、伺った内容とご相談内容の要約が入った確認画面**（文字・声で共通の `EstimateForm`）
+   - 開くときに会話全体から読み取り直し（`/api/estimates/draft`。OpenAI があれば訂正や「来週の火曜」も反映、なければ規則で）、伺えなかった項目だけ入力欄で表示。入っている項目も「修正」から直せます。お客様は内容を確認して送信するだけ（`confirmed=true` でないと API が受け付けません）
    - 電話／LINE：AI が全項目を復唱し「この内容でお間違いないでしょうか」→「はい」で確定
-4. スプレッドシート（受付一覧）へ記録：受付日時・受付経路・氏名・住所・電話番号・確認済み相談内容・第1〜第3希望・受付番号
+4. スプレッドシート（受付一覧）へ記録：受付日時・受付経路・氏名・住所・電話番号・確認済み相談内容・第1〜第3希望・受付番号・確認状況・ステータス・**会話からの自動入力**（AI が会話から入れた項目と、お客様が修正した項目。例「お名前・ご住所・お電話番号・ご希望日時・ご相談内容（お客様が修正：ご住所）」）
 5. 担当者が折り返してお見積り訪問の日程を確定（AI は日程を確定しません）。お見積りは担当者が現地を見てから提出します
 6. （任意）LINE への引き継ぎ：受付完了画面に「LINEでもご連絡を受け取れます」を表示。お客様が公式LINEを友だち追加して受付番号を送ると、その受付に LINE が紐づき、管理画面に「LINE連携済み」と表示されます（日程確定後のやり取りを LINE でも行えるように）
 
@@ -241,17 +216,16 @@ AI 電話受付では、折り返し先の電話番号を伺う際に「いま�
 
 ## 7. 管理画面（`/admin`）
 
-ChatGPT のようなシンプルな画面です（左にメニューと「追加した情報」の履歴、上にヘッダー、中央に内容）。お客様向けサイトのヘッダーは表示しません。`/admin?view=receptions` のように各画面を直接開けます。
+ChatGPT のようなシンプルな画面です（左にメニュー、上にヘッダー、中央に内容）。お客様向けサイトのヘッダーは表示しません。`/admin?view=receptions` のように各画面を直接開けます。管理画面から情報を追加・アップロードする機能はありません（AI の情報源は Googleスプレッドシートとホームページだけ）。
 
-- **情報を追加**：会社の情報を入力欄に書くか、ファイル（Excel・CSV・Word・PowerPoint・PDF・画像・テキスト、4MB まで）を添付し、プルダウンで分類（会社情報・料金・商品・よくある質問 など）を選んで送信すると、AI が内容を解析して話題ごとのナレッジに整理し、データベースに保存します。資料に書かれた事実だけを使い、原価などの社内向けの情報は登録しません。「料金表・顧客対応マニュアル」を選んで Excel を送ると、顧客対応マニュアル（文章・料金表）を差し替えます（その追加を削除すると元に戻ります）。PDF・画像の読み取りには OpenAI キーが必要です
-- **登録済みナレッジ**：AI が使う情報の一覧（情報源・分類・キーワードで絞り込み）。編集・使う／使わないの切り替え・削除。同梱データの取り込み直し
-- **追加した情報**（サイドバーの履歴）：追加ごとに、作ったナレッジ・元のファイルを確認・編集・削除
+- **AIの学習状況・情報源**（最初に開く画面）：回答に使う Googleスプレッドシートの URL の設定と接続状況（接続中／読み取れない理由）、スプレッドシートの再読み込み、ホームページの再学習、料金がシートと違うため使っていないホームページの項目、回答テスト、AI の利用状況（AI なしで答えた割合・トークン数）、学習済みの回答、答えられなかった質問
+- **登録済みナレッジ**：AI が使う情報の一覧（情報源・分類・キーワードで絞り込み）。読み取り専用（内容はスプレッドシートで直す。ホームページは再学習）
 - **AIに質問（テスト）**：お客様と同じ AI に質問して、登録した情報で答えるか確認（どの情報を根拠にしたか・AI を使ったかを表示。会話は「テスト」として会話履歴に保存）
 - **受付一覧**：3 窓口＋LINE の受付を検索・絞り込み・ステータス変更・CSV 出力（受付後に LINE とつながった受付は「LINE連携済み」）
 - **会話履歴**：全窓口の会話ログを閲覧
-- **AIの学習状況**：情報源ごとの件数、ホームページの再学習、回答テスト、AI の利用状況（AI なしで答えた割合・トークン数）、学習済みの回答、答えられなかった質問
+- **エラー履歴**：AI の回答・声の相談の接続・LINE・スプレッドシート（読み取り・受付の記録）のエラーを 1 か所で確認
 - **電話・営業時間**：AI／人間の切替、営業日・時間、休業日、転送先、会社名、第一声、電話受付のテスト画面（`/phone`）へのリンク
-- **接続状況**・**セットアップ**：Supabase・OpenAI・記録先・Twilio・LINE の設定状況、Webhook URL のコピー、Supabase のテーブルを作る SQL
+- **接続状況**：スプレッドシート・OpenAI・受付の記録先・保存先・Twilio・LINE の設定状況、Webhook URL のコピー
 
 ---
 
@@ -264,33 +238,33 @@ src/app                 ページと API Route（App Router）
   api/agent/*           電話シミュレーター／音声フォールバック用エージェント
   api/twilio/*          Twilio Webhook（voice / gather / status）
   api/line/webhook      LINE Webhook
-  api/estimates         見積受付（confirmed=true 必須）
+  api/estimates         見積受付（confirmed=true 必須）／draft：確認画面を開くときに会話から内容を読み取る
   api/knowledge/*       ナレッジ取得・再読込・検索（音声相談のツール）・回答テスト・学習済みの回答・ホームページ再学習
   api/usage             AI の利用状況（日別）
-  api/admin/sources     情報の追加（文章・ファイルの解析と保存）・追加した情報の一覧／詳細／削除
-  api/admin/knowledge   登録済みナレッジの一覧・編集・削除
-  api/admin/setup       Supabase の接続確認・テーブルを作る SQL・同梱データの取り込み
+  api/admin/knowledge   登録済みナレッジの一覧（読み取り専用）
+  api/admin/errors, errors  エラー履歴（管理画面）／お客様の画面からのエラー報告
   api/settings, status, conversations, summarize, tts, admin/login
 src/lib
-  knowledge.ts          情報源の統合（Supabase または同梱の JSON、スプレッドシート連携）・キャッシュ
-  knowledge-db.ts       Supabase のナレッジ（同梱 JSON の自動取り込み・追加・編集・マニュアルの差し替え）
-  ingest.ts             追加した文章・ファイルの解析（Excel / CSV / Word / PowerPoint / PDF / 画像 / テキスト → ナレッジ）
-  supabase.ts / supabase-schema.ts  Supabase（PostgREST・Storage）の接続／テーブル定義
-  xlsx.ts / manual.ts   Excel の読み取り／自由形式のマニュアル（文章・料金表）の解析（JSON への変換とシート接続時に使用）
+  knowledge.ts          情報源の統合（Googleスプレッドシート＋ホームページ。読めないときは保存版）・料金の照合・キャッシュ
+  sheet-link.ts         管理画面で入力したスプレッドシートの URL の読み替え
+  xlsx.ts / manual.ts   Excel の読み取り／自由形式のマニュアル（文章・料金表）の解析（シートの読み取りと保存版の作成に使用）
   site-learn.ts         ホームページの学習（scripts/learn-website.mjs からも実行）
   answer.ts             回答エンジン（OpenAI を使うのは必要なときだけ）
   price.ts / area.ts    料金表・営業範囲からの直接回答
+  quote.ts              数量つきの料金の質問に、料金表と注記から合計の目安を計算（会話の途中の訂正も反映）
   learned.ts / usage.ts 学習済みの回答・答えられなかった質問／AI の利用状況
   retrieval.ts          ハイブリッド検索（埋め込み＋日本語バイグラム）
   prompts.ts            ナレッジ限定の回答ルール（全窓口共通・短い指示）
   agent.ts / fallback.ts 相談＋見積受付エージェント（OpenAI 構造化出力／ルールベース）
-  estimates.ts          受付レコード作成とシート追記
-  store.ts              データの保存（Supabase → Redis → data/runtime のファイル → メモリの順に自動選択）
+  intake.ts / intake-ai.ts 見積依頼の聞き取り（会話からお名前・ご住所・お電話番号・ご希望日時を読み取る規則／OpenAI での読み取りと文字の相談の 1 ターン）
+  estimates.ts          受付レコード作成とスプレッドシート（受付一覧タブ）への記録
+  store.ts              データの保存（Redis → data/runtime のファイル → メモリの順に自動選択）
+  errorlog.ts           エラー履歴（OpenAI・音声・LINE・スプレッドシート）
   brand.ts              一畳屋の名称・フリーダイヤル・受付時間・画像パス
   company.ts            トップに表示する会社情報（営業案内・FAQ・選ばれる理由・理念・店舗）
   openai.ts, google.ts, twiml.ts, line.ts, hours.ts
 src/components
-  admin/                管理画面（AdminApp：ヘッダー・サイドバー／情報を追加・登録済みナレッジ・AIに質問・セットアップ）
+  admin/                管理画面（AdminApp：ヘッダー・サイドバー／登録済みナレッジ・AIに質問・エラー履歴）
   SiteHeader / SiteNav  サイトと同じヘッダー（「AIに相談」ボタン）・AI 相談のメニュー（トップ・文字・声＋電話ボタン）・SP ドロワー
   PhoneButton           電話ボタン（フリーダイヤル・営業時間・「営業時間外・土日はAIが受付」）
   StickyActions         SP：画面下の「AIに相談」「電話する」固定ボタン（トップ）
@@ -298,10 +272,8 @@ src/components
   KeyVisual             トップのキービジュアル（3枚のクロスフェード）
   CompanyInfo           トップの会社情報セクション（写真は一畳屋サイトのもの）
   PageHero / Reveal     下層ページのタイトル帯／スクロール表示アニメーション
-database/               AI の回答情報源（manual.json・company.json・website.json）と変換元の Excel・変換規則（manual-rules.json）
-scripts/                build-knowledge.mjs（Excel → manual.json）・learn-website.mjs（ホームページ → website.json）・db-schema.mjs（→ supabase/schema.sql）・smoke.mjs（疎通テスト）
-supabase/schema.sql     Supabase のテーブル定義（SQL Editor で 1 回実行）
-data/seed               サンプル受付
+database/               スプレッドシートの保存版（manual.json）・ホームページ（website.json）・読み取り規則（manual-rules.json）
+scripts/                build-knowledge.mjs（スプレッドシート → manual.json）・learn-website.mjs（ホームページ → website.json）・smoke.mjs（疎通テスト）・ts-resolve.mjs
 gas/Code.gs             スプレッドシート連携用 Apps Script
 public/ichijoya         一畳屋サイトのロゴ・画像・テクスチャ・アイコン
 ```

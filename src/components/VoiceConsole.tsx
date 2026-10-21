@@ -1,9 +1,17 @@
 "use client";
 
-import { ClipboardCheck, Keyboard, Loader2, Mic, MicOff, PhoneOff, Send, Sparkles } from "lucide-react";
+// 声で AI 相談（お客様向け）。OpenAI Realtime（WebRTC）で電話のように話せる。使えない環境ではブラウザの音声認識・読み上げで動作
+//   ・会話はこの端末と会話ログ（管理画面）に毎回保存。接続が切れたら自動で 1 回つなぎ直し、それでもだめなら「続きから話す」で再開
+//   ・文字の相談と同じ会話として保存するので、「文字で続ける」で /chat に切り替えても続きから（逆も同じ）
+//   ・見積のご希望には、AI がお名前・ご住所・お電話番号・ご希望日時を伺い、そろったら確認画面を表示する（お客様は確認して送信するだけ）
+//     「見積依頼」ボタンを押したときも、会話の内容（文字の相談で伺った内容を含む）とご相談内容の要約が入った確認画面になる
+import { CheckCircle2, ClipboardCheck, Keyboard, Loader2, MessageSquareText, MessagesSquare, Mic, MicOff, PhoneOff, RotateCcw, Send, ShieldCheck } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import EstimateForm, { type EstimateInitial } from "./EstimateForm";
-import { Badge, DemoNotice, Modal, ModeBadge } from "./ui";
+import AiAvatar from "./chat/AiAvatar";
+import RichText from "./chat/RichText";
+import EstimateForm, { type EstimateFormEdits } from "./EstimateForm";
+import { Modal } from "./ui";
 import {
   createRecognizer,
   isFatalRecognitionError,
@@ -14,7 +22,9 @@ import {
   warmUpVoices,
   type Recognizer,
 } from "@/lib/speech-client";
-import type { ChatMessage, EstimateRequest } from "@/lib/types";
+import { clearConversation, loadConversation, saveConversation, transcriptForAi, type StoredMessage } from "@/lib/conversation-store";
+import { FIELD_LABEL, emptyDraft, keepTouched, mergeDraft, missingFields, normalizeDraft, type IntakeState } from "@/lib/intake";
+import type { ChatMessage, EstimateRequest, IntakeDraft } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
 type Status = "idle" | "connecting" | "live" | "ended";
@@ -25,6 +35,18 @@ interface Line {
   role: "user" | "assistant";
   text: string;
   final: boolean;
+  /** 文字の相談で話した内容（文字 → 声に切り替えたとき） */
+  channel?: "text" | "voice";
+  at?: number;
+}
+
+/** 保存・AI に渡す発言（話し終わったものだけ） */
+function doneLines(lines: Line[]): Line[] {
+  return lines.filter((l) => l.final && l.text.trim() && l.text !== "…");
+}
+
+function toStored(lines: Line[]): StoredMessage[] {
+  return doneLines(lines).map((l) => ({ id: l.id, role: l.role, content: l.text, at: l.at, channel: l.channel ?? "voice" }));
 }
 
 interface SessionInfo {
@@ -45,6 +67,31 @@ interface RtEvent {
   arguments?: string;
   response?: { status?: string; output?: { type: string; call_id?: string; name?: string; arguments?: string }[] };
   error?: { message?: string; code?: string };
+}
+
+/** 英語の技術的なエラー文はお客様向けの言葉に置き換える */
+function friendlyError(message?: string): string {
+  const m = (message ?? "").trim();
+  if (m && /[ぁ-んァ-ン一-龯]/.test(m)) return m;
+  return "音声の接続で問題が発生しました。もう一度「音声相談を開始」を押すか、下の入力欄から文字でお話しください。";
+}
+
+/** 音声の接続の問題を管理画面の「エラー履歴」に記録する（失敗しても何もしない） */
+function reportError(where: string, message: string) {
+  void fetch("/api/errors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "realtime", where, message }) }).catch(() => undefined);
+}
+
+const emptyIntake = (): IntakeState => ({ active: false, draft: emptyDraft() });
+
+/** 伺い済みの内容（つなぎ直したときに AI へ渡し、聞き直さないようにする） */
+function knownInfo(d: IntakeDraft): string {
+  const parts = [
+    d.name ? `${FIELD_LABEL.name}：${d.name}` : "",
+    d.address ? `${FIELD_LABEL.address}：${d.address}` : "",
+    d.phone ? `${FIELD_LABEL.phone}：${d.phone}` : "",
+    d.dates.length ? `${FIELD_LABEL.dates}：${d.dates.join("、")}` : "",
+  ].filter(Boolean);
+  return parts.length ? `\n見積依頼のために伺い済みの内容（聞き直さない）：${parts.join("／")}` : "";
 }
 
 interface ToolArgs {
@@ -69,11 +116,17 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   const [error, setError] = useState("");
   const [typed, setTyped] = useState("");
   const [estimateOpen, setEstimateOpen] = useState(false);
-  const [estimateInitial, setEstimateInitial] = useState<EstimateInitial>({});
-  const [summaryLoading, setSummaryLoading] = useState(false);
+  // 見積依頼で伺った内容の下書き（文字の相談と共有し、この端末に会話と一緒に保存）
+  const [intake, setIntake] = useState<IntakeState>(emptyIntake);
+  const [draftLoading, setDraftLoading] = useState(false);
+  const intakeRef = useRef(intake);
+  intakeRef.current = intake;
   const [lastEstimate, setLastEstimate] = useState<EstimateRequest | null>(null);
   const [sources, setSources] = useState<string[]>([]);
   const [micOk, setMicOk] = useState(true);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(0);
+  const [reconnecting, setReconnecting] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
@@ -94,15 +147,81 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   const linesRef = useRef<Line[]>([]);
   const estimateIdRef = useRef<string | undefined>(undefined);
   const listRef = useRef<HTMLDivElement>(null);
+  const restoredRef = useRef(false);
+  const reconnectRef = useRef(0); // 自動のつなぎ直し（開始ごとに 1 回まで）
+  const userEndedRef = useRef(false);
+  const saveTimerRef = useRef<number | undefined>(undefined);
+  const dirtyRef = useRef(false);
+  const savedSigRef = useRef("");
 
   useEffect(() => {
     linesRef.current = lines;
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+    if (!restoredRef.current) return;
+    // この端末に保存（文字の相談と共通）＋会話ログにも保存（接続が切れても残る）
+    const stored = toStored(lines);
+    if (!stored.length) return;
+    // 話している途中（文字が少しずつ届く間）は保存しない。発言が確定したときだけ保存する
+    const sig = `${stored.length}|${stored[stored.length - 1].id}|${stored[stored.length - 1].content.length}`;
+    if (sig === savedSigRef.current) return;
+    savedSigRef.current = sig;
+    if (!sessionIdRef.current) sessionIdRef.current = `voice_${uid()}`;
+    saveConversation({ id: sessionIdRef.current, estimateId: estimateIdRef.current, intake: intakeRef.current, messages: stored });
+    if (stored.some((m) => m.channel === "voice")) {
+      dirtyRef.current = true;
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = window.setTimeout(() => void saveTranscript(), 1500);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lines]);
+
+  // 伺った内容が変わったら保存（文字の相談に切り替えても確認画面に入る）
+  useEffect(() => {
+    if (!restoredRef.current || !sessionIdRef.current) return;
+    const stored = toStored(linesRef.current);
+    if (stored.length) saveConversation({ id: sessionIdRef.current, estimateId: estimateIdRef.current, intake, messages: stored });
+  }, [intake]);
+
+  // 通話時間の表示
+  useEffect(() => {
+    if (status !== "live") {
+      if (status !== "ended") setStartedAt(null);
+      return;
+    }
+    const t0 = Date.now();
+    setStartedAt((prev) => prev ?? t0);
+    setNow(t0);
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [status]);
 
   useEffect(() => {
     warmUpVoices();
+    // 前回の会話（文字の相談を含む）があれば表示して、続きから話せるようにする
+    const saved = loadConversation();
+    if (saved) {
+      sessionIdRef.current = saved.id;
+      estimateIdRef.current = saved.estimateId;
+      const restored: Line[] = saved.messages.map((m) => ({ id: m.id, role: m.role, text: m.content, final: true, channel: m.channel ?? "text", at: m.at }));
+      linesRef.current = restored;
+      setLines(restored);
+      if (saved.intake) {
+        intakeRef.current = saved.intake;
+        setIntake(saved.intake);
+      }
+    }
+    restoredRef.current = true;
     return () => {
+      window.clearTimeout(saveTimerRef.current);
+      // 保存待ちの会話ログはページを離れるときに送る
+      if (dirtyRef.current && sessionIdRef.current) {
+        try {
+          const body = JSON.stringify({ id: sessionIdRef.current, channel: "web_voice", messages: transcriptMessages(), estimateId: estimateIdRef.current, meta: { mode: modeRef.current } });
+          navigator.sendBeacon?.("/api/conversations", new Blob([body], { type: "application/json" }));
+        } catch {
+          // noop
+        }
+      }
       void endSession(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -111,7 +230,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   const upsertLine = useCallback((id: string, role: Line["role"], text: string, final: boolean, append = false) => {
     setLines((prev) => {
       const idx = prev.findIndex((l) => l.id === id);
-      if (idx < 0) return [...prev, { id, role, text, final }];
+      if (idx < 0) return [...prev, { id, role, text, final, channel: "voice", at: Date.now() }];
       const copy = [...prev];
       copy[idx] = { ...copy[idx], text: append ? copy[idx].text + text : text, final };
       return copy;
@@ -123,9 +242,13 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     if (dc && dc.readyState === "open") dc.send(JSON.stringify(ev));
   };
 
+  const transcriptMessages = (): ChatMessage[] =>
+    doneLines(linesRef.current).map((l) => ({ role: l.role, content: l.text, at: l.at ? new Date(l.at).toISOString() : undefined }));
+
   const saveTranscript = async () => {
-    const msgs: ChatMessage[] = linesRef.current.filter((l) => l.text.trim()).map((l) => ({ role: l.role, content: l.text }));
+    const msgs = transcriptMessages();
     if (!sessionIdRef.current || msgs.length === 0) return;
+    dirtyRef.current = false;
     try {
       await fetch("/api/conversations", {
         method: "POST",
@@ -198,17 +321,19 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         output = JSON.stringify({ error: (e as Error).message });
       }
     } else if (name === "propose_estimate_request") {
-      setEstimateInitial({
-        name: args.name,
-        address: args.address,
-        phone: args.phone,
-        dates: args.preferred_dates ?? [],
-        summary: args.summary,
-      });
-      setEstimateOpen(true);
+      // AI が伺った内容を下書きに入れて確認画面を開く（足りない項目・ご相談内容の要約は会話全体から読み取って補う）
+      const heard = normalizeDraft({ name: args.name, address: args.address, phone: args.phone, dates: args.preferred_dates, summary: args.summary });
+      const cur = intakeRef.current;
+      const next: IntakeState = { ...cur, active: false, ready: true, draft: keepTouched(mergeDraft(cur.draft, heard), cur.draft, cur.touched) };
+      intakeRef.current = next;
+      setIntake(next);
+      void openEstimate();
+      const missing = missingFields(next.draft).map((f) => FIELD_LABEL[f]);
       output = JSON.stringify({
         ok: true,
-        message: "画面に確認フォームを表示しました。お客様に内容の確認・修正と送信ボタンの押下を短く案内してください。",
+        message: missing.length
+          ? `画面に確認画面を表示しました。${missing.join("・")}はまだ伺えていないので、お客様に伺うか、画面で入力していただくよう短く案内してください。`
+          : "画面に確認画面を表示しました。お客様に、内容を確認して（修正があれば直して）送信ボタンを押すよう短く案内してください。日程は確定ではなく、担当者よりお電話でご相談して決めることも伝えてください。",
       });
     } else {
       output = JSON.stringify({ error: `unknown tool: ${name}` });
@@ -256,7 +381,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         if (ev.item_id) {
           setLines((prev) => {
             const idx = prev.findIndex((l) => l.id === ev.item_id);
-            if (idx < 0) return [...prev, { id: ev.item_id!, role: "user", text: ev.delta ?? "", final: false }];
+            if (idx < 0) return [...prev, { id: ev.item_id!, role: "user", text: ev.delta ?? "", final: false, channel: "voice", at: Date.now() }];
             const copy = [...prev];
             const base = copy[idx].text === "…" ? "" : copy[idx].text;
             copy[idx] = { ...copy[idx], text: base + (ev.delta ?? "") };
@@ -303,7 +428,8 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         // 割り込み時などに出る無害なエラーはお客様に表示しない
         const code = ev.error?.code ?? "";
         if (code === "response_cancel_not_active" || code === "conversation_already_has_active_response") break;
-        setError(ev.error?.message ?? "Realtime API エラー");
+        reportError("声の相談（AIとの通信）", `${code ? `${code}: ` : ""}${ev.error?.message ?? ""}`);
+        setError(friendlyError(ev.error?.message));
         break;
       }
       default:
@@ -312,6 +438,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   }
 
   async function startRealtime(info: SessionInfo) {
+    const prior = toStored(linesRef.current);
     const pc = new RTCPeerConnection();
     pcRef.current = pc;
     pc.ontrack = (e) => {
@@ -338,6 +465,30 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
       liveRef.current = true;
       setStatus("live");
       setListening(true);
+      if (prior.length) {
+        // 接続が切れたあと・文字の相談からの続き：それまでの会話を渡して、聞き直さずに続ける
+        sendEvent({
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "system",
+            content: [
+              {
+                type: "input_text",
+                text: `これまでのお客様との相談内容です（最後のご質問まで回答済み）。この続きとして対応し、同じことを聞き直したり、前の回答を繰り返したりしないでください。\n${transcriptForAi(prior)}${knownInfo(intakeRef.current.draft)}`,
+              },
+            ],
+          },
+        });
+        sendEvent({
+          type: "response.create",
+          response: {
+            instructions:
+              "接続し直したところです。「お待たせしました。先ほどの続きからお伺いします。」と一言だけ伝えて、お客様のお話を待ってください。前の回答は繰り返さず、この発話ではツールも使わないでください。",
+          },
+        });
+        return;
+      }
       sendEvent({
         type: "response.create",
         response: {
@@ -345,12 +496,13 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         },
       });
     };
-    pc.onconnectionstatechange = () => {
-      if ((pc.connectionState === "failed" || pc.connectionState === "closed") && liveRef.current) {
-        setError("音声接続が切断されました。もう一度開始してください。");
-        void endSession();
-      }
+    const dropped = () => {
+      if (liveRef.current && !userEndedRef.current) void handleDrop();
     };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed" || pc.connectionState === "closed") dropped();
+    };
+    dc.onclose = dropped;
     const opened = new Promise<void>((resolve, reject) => {
       const t = window.setTimeout(() => reject(new Error("音声接続がタイムアウトしました")), 15000);
       dc.addEventListener(
@@ -376,6 +528,20 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     await pc.setRemoteDescription({ type: "answer", sdp: await res.text() });
     // データチャネルが開くまで待つ（開かなければデモモードに切り替える）
     await opened;
+  }
+
+  /** 通話中に接続が切れたとき：会話を保存して 1 回だけ自動でつなぎ直す（それまでの会話の続きから） */
+  async function handleDrop() {
+    reportError("声の相談（通話中に切断）", `接続が切れました（自動のつなぎ直し${reconnectRef.current < 1 ? "を実行" : "は済み・お客様の操作待ち"}）`);
+    await endSession(true);
+    if (reconnectRef.current < 1) {
+      reconnectRef.current += 1;
+      setReconnecting(true);
+      await start(true);
+      setReconnecting(false);
+      return;
+    }
+    setError("音声の接続が切れました。「続きから話す」を押すと、これまでの会話の続きからお話しできます。");
   }
 
   // ---------------- デモモード（Web Speech API） ----------------
@@ -448,12 +614,23 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         reply?: string;
         done?: boolean;
         estimate?: EstimateRequest | null;
+        draft?: IntakeDraft;
+        formReady?: boolean;
         sources?: { title: string }[];
         session?: unknown;
         error?: string;
       };
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
       if (j.session) agentSessionObjRef.current = j.session;
+      // 伺った内容を下書きに入れ、そろったら確認画面を表示する（受付はお客様が画面で送信したとき）
+      if (j.draft) {
+        const heard = normalizeDraft(j.draft);
+        const cur = intakeRef.current;
+        const next: IntakeState = { ...cur, ready: j.formReady === true || cur.ready, draft: keepTouched(mergeDraft(cur.draft, heard), cur.draft, cur.touched) };
+        intakeRef.current = next;
+        setIntake(next);
+      }
+      if (j.formReady) void openEstimate();
       setSources((j.sources ?? []).map((s) => s.title));
       if (j.estimate) {
         setLastEstimate(j.estimate);
@@ -466,7 +643,8 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         return;
       }
     } catch (e) {
-      await say(`申し訳ありません、通信に失敗しました（${(e as Error).message}）。もう一度お話しください。`);
+      void e;
+      await say("申し訳ありません、通信がうまくいきませんでした。もう一度お話しください。");
     } finally {
       busyRef.current = false;
     }
@@ -480,10 +658,17 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
   }
 
   async function startDemo() {
+    const prior = toStored(linesRef.current);
     const res = await fetch("/api/agent/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel: "web_voice" }),
+      // 続きから：同じ会話ログの ID と、それまでの会話を渡す（伺い済みの内容もあわせて）
+      body: JSON.stringify({
+        channel: "web_voice",
+        sessionId: sessionIdRef.current,
+        history: prior.map((m) => ({ role: m.role, content: m.content })),
+        draft: intakeRef.current.draft,
+      }),
     });
     const j = (await res.json()) as { ok: boolean; sessionId?: string; session?: unknown; greeting?: string; error?: string };
     if (!res.ok || !j.ok || !j.sessionId) throw new Error(j.error ?? "セッションを開始できませんでした");
@@ -497,16 +682,34 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
 
   // ---------------- 共通操作 ----------------
 
-  async function start() {
-    setError("");
+  /** 新しい相談にする（この端末に保存した会話も消す） */
+  function newConversation() {
+    if (doneLines(linesRef.current).length && !window.confirm("これまでの会話を消して、新しい相談を始めますか？")) return false;
+    clearConversation();
+    linesRef.current = [];
     setLines([]);
     setSources([]);
     setLastEstimate(null);
+    setIntake(emptyIntake());
+    intakeRef.current = emptyIntake();
     estimateIdRef.current = undefined;
+    sessionIdRef.current = "";
+    setStatus("idle");
+    setError("");
+    return true;
+  }
+
+  /** 開始（それまでの会話があれば続きから）。auto は接続が切れたあとの自動のつなぎ直し */
+  async function start(auto = false) {
+    setError("");
+    if (!auto) reconnectRef.current = 0;
+    userEndedRef.current = false;
+    setSources([]);
     handledCalls.current = new Set();
     responseActiveRef.current = false;
     recFatalRef.current = false;
-    sessionIdRef.current = `voice_${uid()}`;
+    if (!sessionIdRef.current) sessionIdRef.current = `voice_${uid()}`;
+    setStartedAt(null);
     setStatus("connecting");
     try {
       const res = await fetch("/api/realtime/session", { method: "POST" });
@@ -526,6 +729,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
             return;
           }
           setReason(`Realtime 接続に失敗したためデモモードに切り替えました：${msg}`);
+          reportError("声の相談の接続（簡易音声モードに切り替え）", msg);
           await endSession(false);
         }
       }
@@ -533,7 +737,7 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
       setMode("demo");
       await startDemo();
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError((e as Error).message));
       setStatus("idle");
       liveRef.current = false;
     }
@@ -565,29 +769,50 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     }
   }
 
+  /**
+   * 確認画面を開く。伺った内容はすぐに表示し、足りない項目・ご相談内容（要約）は会話全体から読み取って入れる
+   * （AI がすべて伺い、要約のあとに会話が増えていなければ読み取り直さない）
+   */
   async function openEstimate() {
     setEstimateOpen(true);
-    if (!estimateInitial.summary) {
-      setSummaryLoading(true);
-      try {
-        const res = await fetch("/api/summarize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: linesRef.current.map((l) => ({ role: l.role, content: l.text })) }),
-        });
-        const j = (await res.json()) as { ok: boolean; summary?: string };
-        if (j.ok) setEstimateInitial((prev) => ({ ...prev, summary: j.summary ?? "" }));
-      } catch {
-        // noop
-      } finally {
-        setSummaryLoading(false);
+    const history = transcriptMessages().map((m) => ({ role: m.role, content: m.content }));
+    const cur = intakeRef.current;
+    if (!history.some((m) => m.role === "user")) return;
+    const fresh = Boolean(cur.draft.summary) && (cur.summaryAt ?? -1) >= history.length - 1;
+    if (missingFields(cur.draft).length === 0 && fresh) return;
+    setDraftLoading(true);
+    try {
+      const res = await fetch("/api/estimates/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: history, draft: cur.draft, keepSummary: cur.touched?.includes("summary") }),
+      });
+      const j = (await res.json()) as { ok: boolean; draft?: IntakeDraft };
+      if (j.ok && j.draft) {
+        const read = j.draft;
+        setIntake((prev) => ({ ...prev, draft: keepTouched(read, prev.draft, prev.touched), summaryAt: history.length }));
       }
+    } catch {
+      // 読み取れなかった項目は、お客様に確認画面で入力していただく
+    } finally {
+      setDraftLoading(false);
     }
+  }
+
+  /** 確認画面での入力・修正（閉じて開き直しても残す） */
+  function onFormChange(edits: EstimateFormEdits) {
+    setIntake((prev) => ({ ...prev, draft: edits.draft, touched: edits.touched, aiFilled: edits.aiFilled, summaryEdited: edits.touched.includes("summary") }));
   }
 
   function onSubmitted(est: EstimateRequest) {
     setLastEstimate(est);
     estimateIdRef.current = est.id;
+    // 次のご依頼のために、お名前・ご連絡先だけ残す（ご希望日時・ご相談内容は新しく伺う）
+    const prev = intakeRef.current.draft;
+    const next: IntakeState = { active: false, draft: { name: prev.name, address: prev.address, phone: prev.phone, dates: [] } };
+    intakeRef.current = next;
+    setIntake(next);
+    if (sessionIdRef.current) saveConversation({ id: sessionIdRef.current, estimateId: est.id, intake: next, messages: toStored(linesRef.current) });
     if (modeRef.current === "openai") {
       if (liveRef.current) {
         sendUserText(
@@ -603,75 +828,168 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
     }
   }
 
+  const fallback = initialMode === "openai" && mode === "demo" && Boolean(reason);
+  const live = status === "live";
+  const hasHistory = doneLines(lines).length > 0;
+  const talking = live && (aiSpeaking || userSpeaking || Boolean(interim));
+
   const statusLabel = (() => {
-    if (status === "idle") return "開始ボタンを押して、マイクに向かってお話しください";
-    if (status === "connecting") return "接続中…（マイクの使用を許可してください）";
+    if (status === "connecting") return reconnecting ? "接続し直しています…" : "接続しています…";
+    if ((status === "idle" || status === "ended") && hasHistory) return status === "ended" ? "会話を終了しました。続きから話せます" : "前回の会話の続きからお話しできます";
+    if (status === "idle") return "「音声相談を開始」を押して、話しかけてください";
     if (status === "ended") return "会話を終了しました。もう一度開始できます";
-    if (aiSpeaking) return mode === "openai" ? "AIが話しています（話しかけると途中でも止まります）" : "AIが話しています（丸をクリックで停止）";
-    if (userSpeaking || interim) return "聞き取り中…";
-    if (listening || mode === "openai") return "どうぞお話しください";
-    return "処理中…";
+    if (aiSpeaking) return "AIがお話ししています";
+    if (userSpeaking || interim) return "聞き取っています…";
+    if (listening || mode === "openai") return "どうぞ、お話しください";
+    if (!micOk) return "下の入力欄から、文字で話しかけてください";
+    return "回答を準備しています…";
   })();
 
-  const orbClass =
-    aiSpeaking ? "bg-gradient-to-br from-ai-400 to-ai-700" : userSpeaking || interim ? "bg-gradient-to-br from-shu-300 to-shu-500" : "bg-gradient-to-br from-tatami-300 to-tatami-600";
+  const statusHint = (() => {
+    if (status === "connecting") return reconnecting ? "これまでの会話は残っています。少しお待ちください" : "マイクの使用を求められたら「許可」を押してください";
+    if (!live && hasHistory) return "これまでの会話は右側（スマホでは下）に残っています。文字で続けることもできます";
+    if (!live) return "通話料はかかりません。静かな場所でお使いください";
+    if (aiSpeaking) return mode === "openai" ? "途中で話しかけると、AIは話をやめて聞き取ります" : "丸をタップすると読み上げを止められます";
+    if (userSpeaking || interim) return "話し終わると、AIがお答えします";
+    return "例：「6畳の畳の表替えはいくら？」「見積をお願いしたい」";
+  })();
+
+  const orb = !live
+    ? status === "connecting"
+      ? "bg-ichi-green/60"
+      : "bg-sumi-300"
+    : aiSpeaking
+      ? "bg-gradient-to-br from-ichi-green to-ichi-theme"
+      : userSpeaking || interim
+        ? "bg-gradient-to-br from-[#f2b705] to-[#d98c00]"
+        : "bg-gradient-to-br from-[#6fb35a] to-ichi-green";
+
+  const clock = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+  const clockLabel = `${String(Math.floor(clock / 60)).padStart(2, "0")}:${String(clock % 60).padStart(2, "0")}`;
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1.05fr_1fr]">
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]" data-mode={mode} data-status={status}>
       <audio ref={audioRef} autoPlay playsInline className="hidden" />
-      <section className="card flex flex-col items-center p-6">
-        <div className="flex w-full items-center justify-between">
-          <ModeBadge mode={mode} />
-          <Badge tone={status === "live" ? "green" : "neutral"}>
-            {status === "live" ? "通話中" : status === "connecting" ? "接続中" : status === "ended" ? "終了" : "待機中"}
-          </Badge>
+      <section className="card flex flex-col items-center rounded-2xl px-5 pb-6 pt-5 sm:px-8" aria-label="声でAI相談">
+        <div className="flex w-full items-center justify-between gap-3">
+          <span className="flex items-center gap-2 text-sm font-bold text-ichi-theme">
+            <AiAvatar size="h-8 w-8" />
+            一畳屋 AI相談員
+          </span>
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
+              live ? "bg-ichi-green text-white" : status === "connecting" ? "bg-ichi-cream text-ichi-theme" : "bg-sumi-100 text-sumi-500"
+            }`}
+            aria-live="polite"
+          >
+            {live ? <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" /> : null}
+            {live ? `通話中 ${clockLabel}` : status === "connecting" ? "接続中" : status === "ended" ? "終了" : "待機中"}
+          </span>
         </div>
 
         <button
           type="button"
-          onClick={status === "live" ? interruptDemoSpeech : undefined}
-          className="relative mt-10 grid h-48 w-48 place-items-center rounded-full"
-          aria-label="音声状態"
+          onClick={live ? interruptDemoSpeech : undefined}
+          className={`relative mt-8 grid h-48 w-48 place-items-center rounded-full ${live && mode === "demo" ? "cursor-pointer" : "cursor-default"}`}
+          aria-label={statusLabel}
+          tabIndex={live && mode === "demo" ? 0 : -1}
         >
-          {status === "live" && (aiSpeaking || userSpeaking || interim) ? (
+          {talking ? (
             <>
-              <span className={`absolute inset-0 rounded-full opacity-40 animate-pulseRing ${orbClass}`} />
-              <span className={`absolute inset-0 rounded-full opacity-30 animate-pulseRing [animation-delay:0.5s] ${orbClass}`} />
+              <span className={`absolute inset-2 rounded-full opacity-40 animate-pulseRing ${orb}`} />
+              <span className={`absolute inset-2 rounded-full opacity-30 animate-pulseRing [animation-delay:0.55s] ${orb}`} />
             </>
+          ) : live ? (
+            <span className={`absolute inset-4 rounded-full opacity-20 animate-pulse ${orb}`} />
           ) : null}
-          <span className={`relative grid h-36 w-36 place-items-center rounded-full text-white shadow-soft transition ${status === "live" ? orbClass : "bg-sumi-300"}`}>
-            {status === "connecting" ? <Loader2 className="h-12 w-12 animate-spin" /> : muted ? <MicOff className="h-12 w-12" /> : <Mic className="h-12 w-12" />}
+          <span className={`relative grid h-36 w-36 place-items-center rounded-full text-white shadow-lift transition-colors duration-300 ${orb}`}>
+            {status === "connecting" ? (
+              <Loader2 className="h-12 w-12 animate-spin" />
+            ) : talking ? (
+              <span className="flex h-12 items-center gap-1.5" aria-hidden>
+                {[0, 0.15, 0.3, 0.45, 0.6].map((d) => (
+                  <span key={d} className="h-full w-1.5 origin-center animate-voiceBar rounded-full bg-white/95" style={{ animationDelay: `${d}s` }} />
+                ))}
+              </span>
+            ) : muted ? (
+              <MicOff className="h-12 w-12" />
+            ) : (
+              <Mic className="h-12 w-12" />
+            )}
           </span>
         </button>
-        <p className="mt-6 min-h-[1.5rem] text-center text-sm text-sumi-600">{statusLabel}</p>
-        {interim ? <p className="mt-1 text-center text-xs text-sumi-400">「{interim}」</p> : null}
 
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-          {status !== "live" && status !== "connecting" ? (
-            <button type="button" className="btn-primary" onClick={start}>
-              <Mic className="h-4 w-4" />
-              音声相談を開始
+        <p className="mt-5 min-h-[1.75rem] text-center text-base font-bold text-sumi-800">{statusLabel}</p>
+        <p className="mt-0.5 min-h-[1.25rem] text-center text-xs text-sumi-500">{statusHint}</p>
+        {interim ? <p className="mt-2 max-w-sm text-center text-sm text-sumi-500">「{interim}」</p> : null}
+
+        <div className="mt-6 flex w-full max-w-sm flex-col items-stretch gap-2.5">
+          {status === "idle" || status === "ended" ? (
+            <button type="button" className="btn-primary py-3.5 text-base" onClick={() => void start()}>
+              <Mic className="h-5 w-5" />
+              {hasHistory ? "続きから話す" : "音声相談を開始"}
+            </button>
+          ) : status === "connecting" ? (
+            <button type="button" className="btn-primary py-3.5 text-base" disabled>
+              <Loader2 className="h-5 w-5 animate-spin" />
+              {reconnecting ? "接続し直しています…" : "接続しています…"}
             </button>
           ) : (
-            <button type="button" className="btn-accent" onClick={() => endSession()}>
-              <PhoneOff className="h-4 w-4" />
-              終了する
-            </button>
+            <div className="flex gap-2.5">
+              {mode === "openai" ? (
+                <button type="button" className="btn-secondary flex-1 py-3" onClick={toggleMute} aria-pressed={muted}>
+                  {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                  {muted ? "ミュート解除" : "ミュート"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="btn-accent flex-1 py-3"
+                onClick={() => {
+                  userEndedRef.current = true;
+                  void endSession();
+                }}
+              >
+                <PhoneOff className="h-4 w-4" />
+                終了する
+              </button>
+            </div>
           )}
-          {status === "live" && mode === "openai" ? (
-            <button type="button" className="btn-secondary" onClick={toggleMute}>
-              {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              {muted ? "ミュート解除" : "ミュート"}
-            </button>
-          ) : null}
-          <button type="button" className="btn-line" onClick={openEstimate} disabled={status === "connecting"}>
+          <button
+            type="button"
+            className="inline-flex items-center justify-center gap-2 rounded-full border border-ichi-red px-5 py-2.5 text-sm font-bold text-ichi-red transition hover:bg-shu-50 disabled:opacity-50"
+            onClick={openEstimate}
+            disabled={status === "connecting"}
+          >
             <ClipboardCheck className="h-4 w-4" />
             見積依頼（内容確認）
           </button>
+          {hasHistory ? (
+            <div className="flex items-center justify-center gap-4 pt-0.5 text-xs font-bold">
+              <Link
+                href="/chat"
+                className="inline-flex items-center gap-1 text-ichi-green underline-offset-2 hover:underline"
+                onClick={() => {
+                  // 会話はこの端末に保存済み。通話中なら終了してから文字の相談へ
+                  userEndedRef.current = true;
+                  if (liveRef.current) void endSession();
+                }}
+              >
+                <MessageSquareText className="h-3.5 w-3.5" />
+                この続きを文字で相談する
+              </Link>
+              {!live && status !== "connecting" ? (
+                <button type="button" className="inline-flex items-center gap-1 text-sumi-500 underline-offset-2 hover:underline" onClick={newConversation}>
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  新しい相談にする
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <form
-          className="mt-6 flex w-full max-w-md items-center gap-2"
+          className="mt-5 flex w-full max-w-sm items-center gap-2 rounded-full border border-sumi-200 bg-white py-1 pl-4 pr-1 transition focus-within:border-ichi-green has-[:disabled]:bg-sumi-50"
           onSubmit={(e) => {
             e.preventDefault();
             submitTyped();
@@ -679,62 +997,122 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
         >
           <Keyboard className="h-4 w-4 shrink-0 text-sumi-400" />
           <input
-            className="input"
+            className="min-w-0 flex-1 bg-transparent py-1.5 text-[16px] text-sumi-800 outline-none placeholder:text-sumi-400 disabled:cursor-not-allowed sm:text-sm"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
-            placeholder={micOk ? "マイクが使えない時はこちらに入力" : "テキストで話しかける"}
-            disabled={status !== "live"}
+            placeholder={micOk ? "マイクが使えないときは、ここに文字で入力" : "テキストで話しかける"}
+            disabled={!live}
+            aria-label="文字で話しかける"
           />
-          <button type="submit" className="btn-secondary px-3" disabled={status !== "live" || !typed.trim()} aria-label="送信">
-            <Send className="h-4 w-4" />
+          <button type="submit" className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-ichi-green text-white disabled:bg-sumi-200" disabled={!live || !typed.trim()} aria-label="送信">
+            <Send className="h-3.5 w-3.5" />
           </button>
         </form>
 
-        {error ? <p className="mt-4 w-full rounded-xl border border-shu-200 bg-shu-50 px-3 py-2 text-xs text-shu-700">{error}</p> : null}
-        {mode === "demo" ? (
-          <div className="mt-4 w-full">
-            <DemoNotice compact reason={reason || "ブラウザの音声認識（Web Speech API）と音声合成でデモ動作中。APIキー設定後は OpenAI Realtime API（WebRTC）による低遅延・割り込み対応の会話になります。"} />
-          </div>
+        {error ? <p className="mt-4 w-full max-w-sm rounded-xl border border-shu-200 bg-shu-50 px-3 py-2 text-xs leading-relaxed text-shu-700">{error}</p> : null}
+        {fallback ? (
+          <p className="mt-3 w-full max-w-sm rounded-xl bg-ichi-cream px-3 py-2 text-xs leading-relaxed text-sumi-600" title={reason}>
+            音声の接続が不安定なため、簡易音声モードでお話ししています（聞き取りの精度が下がる場合があります）。
+          </p>
         ) : null}
         {lastEstimate ? (
-          <p className="mt-4 w-full rounded-xl bg-tatami-50 px-3 py-2 text-xs text-tatami-700">
-            見積依頼を受付しました：{lastEstimate.id}（担当者より折り返しご連絡します）
+          <p className="mt-4 flex w-full max-w-sm items-start gap-1.5 rounded-xl bg-ichi-cream px-3 py-2 text-xs text-ichi-theme">
+            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            お見積りのご依頼を受付しました（受付番号：{lastEstimate.id}）。担当者より折り返しご連絡します。
           </p>
+        ) : null}
+
+        {!live && status !== "connecting" && !hasHistory ? (
+          <ol className="mt-6 grid w-full gap-2 border-t border-sumi-100 pt-5 text-xs text-sumi-600 sm:grid-cols-3">
+            {[
+              { icon: Mic, t: "「音声相談を開始」を押す" },
+              { icon: ShieldCheck, t: "マイクの使用を「許可」する" },
+              { icon: MessagesSquare, t: "電話のように話しかける" },
+            ].map((s, i) => (
+              <li key={s.t} className="flex items-center gap-2.5 rounded-xl bg-[#fbfaf5] px-3 py-2.5 sm:flex-col sm:text-center">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-ichi-cream text-ichi-green">
+                  <s.icon className="h-4 w-4" />
+                </span>
+                <span>
+                  <span className="mr-1 font-bold text-ichi-green">{i + 1}.</span>
+                  {s.t}
+                </span>
+              </li>
+            ))}
+          </ol>
         ) : null}
       </section>
 
-      <section className="card flex h-[560px] flex-col overflow-hidden">
-        <header className="flex items-center justify-between border-b border-washi-200 bg-washi-100/70 px-4 py-3">
-          <p className="text-sm font-semibold text-sumi-800">会話の文字起こし</p>
-          <span className="text-[11px] text-sumi-400" title={mode === "openai" ? "Realtime API（WebRTC）" : "Web Speech API（デモ）"}>
-            {mode === "openai" ? "話した内容を文字でも確認できます" : "デモ（ブラウザの音声機能）"}
-          </span>
+      <section className="card flex h-[440px] flex-col overflow-hidden rounded-2xl lg:h-auto lg:min-h-[600px]" aria-label="会話の内容">
+        <header className="flex items-center justify-between gap-2 border-b border-black/[0.06] px-4 py-3">
+          <p className="text-sm font-bold text-sumi-800">会話の内容</p>
+          <span className="text-[11px] text-sumi-400">話した内容は文字でも表示されます</span>
         </header>
-        <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+        <div ref={listRef} role="log" aria-live="polite" className="flex-1 space-y-4 overflow-y-auto bg-[#fbfaf5] px-4 py-4">
           {lines.length === 0 ? (
-            <p className="text-sm text-sumi-400">
-              ここに会話が表示されます。例：「6畳の畳の表替えはいくらですか？」「網戸の張替えは即日できますか？」「見積をお願いしたい」
-            </p>
-          ) : null}
-          {lines.map((l) => (
-            <div key={l.id} className={`flex ${l.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                data-role={l.role}
-                className={`bubble max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
-                  l.role === "user" ? "rounded-tr-sm bg-ai-600 text-white" : "rounded-tl-sm border border-washi-200 bg-white text-sumi-800"
-                } ${l.final ? "" : "opacity-80"}`}
-              >
-                {l.text}
-              </div>
+            <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+              <span className="grid h-12 w-12 place-items-center rounded-full bg-ichi-cream text-ichi-green">
+                <MessagesSquare className="h-6 w-6" />
+              </span>
+              <p className="mt-3 text-sm font-bold text-sumi-700">ここに会話が表示されます</p>
+              <p className="mt-1 text-xs leading-relaxed text-sumi-500">
+                たとえば「6畳の畳の表替えはいくらですか？」
+                <br />
+                「網戸の張替えは何日かかりますか？」「見積をお願いしたい」
+              </p>
             </div>
-          ))}
+          ) : null}
+          {lines.map((l, i) => {
+            const textEnds = l.channel === "text" && lines[i + 1] && lines[i + 1].channel !== "text";
+            const divider = textEnds ? (
+              <p key={`${l.id}-handoff`} className="flex items-center gap-2 text-[11px] font-bold text-ichi-green" data-handoff>
+                <span className="h-px flex-1 bg-ichi-green/25" />
+                <Mic className="h-3.5 w-3.5" />
+                ここから声の相談
+                <span className="h-px flex-1 bg-ichi-green/25" />
+              </p>
+            ) : null;
+            const tag =
+              l.channel === "text" ? (
+                <span className="mt-1 inline-flex items-center gap-0.5 text-[10px] text-sumi-400" data-channel="text">
+                  <MessageSquareText className="h-3 w-3" />
+                  文字の相談
+                </span>
+              ) : null;
+            const bubble =
+              l.role === "user" ? (
+              <div key={l.id} className="flex flex-col items-end">
+                <div
+                  data-role="user"
+                  className={`bubble max-w-[85%] rounded-2xl rounded-tr-md bg-ichi-green px-4 py-2.5 text-[15px] leading-relaxed text-white shadow-sm ${l.final ? "" : "opacity-75"}`}
+                >
+                  {l.text}
+                </div>
+                {tag}
+              </div>
+            ) : (
+              <div key={l.id} className="flex gap-2.5">
+                <span className="mt-0.5">
+                  <AiAvatar size="h-8 w-8" />
+                </span>
+                <div
+                  data-role="assistant"
+                  className={`bubble min-w-0 max-w-[85%] rounded-2xl rounded-tl-md border border-black/[0.06] bg-white px-4 py-2.5 text-[15px] leading-relaxed text-sumi-800 shadow-sm ${l.final ? "" : "opacity-80"}`}
+                >
+                  <RichText text={l.text} />
+                  {tag}
+                </div>
+              </div>
+            );
+            return divider ? [bubble, divider] : bubble;
+          })}
         </div>
         {sources.length > 0 ? (
-          <div className="flex flex-wrap gap-1 border-t border-washi-200 px-4 py-2">
-            {sources.map((s) => (
-              <span key={s} className="chip">
-                <Sparkles className="h-3 w-3 text-ai-500" />
-                参照：{s}
+          <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-black/[0.06] px-4 py-2 text-[11px] text-sumi-400">
+            {sources.slice(0, 3).map((s) => (
+              <span key={s} className="inline-flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3 text-ichi-green" />
+                参考：{s.replace(/^.*｜/, "")}
               </span>
             ))}
           </div>
@@ -743,14 +1121,16 @@ export default function VoiceConsole({ initialMode, company, lineUrl }: { initia
 
       <Modal open={estimateOpen} onClose={() => setEstimateOpen(false)} title="見積依頼（内容の確認・送信）">
         <EstimateForm
-          key={`${estimateInitial.name ?? ""}|${estimateInitial.phone ?? ""}|${(estimateInitial.dates ?? []).join(",")}`}
           channel="web_voice"
           sessionId={sessionIdRef.current}
-          initial={estimateInitial}
-          summaryLoading={summaryLoading}
+          initial={intake.draft}
+          touched={intake.touched}
+          aiFilled={intake.aiFilled}
+          loading={draftLoading}
           lineUrl={lineUrl}
           onSubmitted={onSubmitted}
           onCancel={() => setEstimateOpen(false)}
+          onChange={onFormChange}
         />
       </Modal>
     </div>

@@ -24,6 +24,7 @@ import type {
   IntegrationStatus,
   PhoneMode,
 } from "@/lib/types";
+import { autofillLabel } from "@/lib/intake";
 import { CHANNEL_LABEL } from "@/lib/types";
 import { formatJst, truncate } from "@/lib/utils";
 
@@ -92,7 +93,7 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
   }
 
   function exportCsv() {
-    const header = ["受付日時", "受付経路", "氏名", "住所", "電話番号", "相談内容", "第1希望", "第2希望", "第3希望", "受付番号", "確認状況", "ステータス"];
+    const header = ["受付日時", "受付経路", "氏名", "住所", "電話番号", "相談内容", "第1希望", "第2希望", "第3希望", "受付番号", "確認状況", "ステータス", "会話からの自動入力"];
     const rows = filtered.map((e) => [
       formatJst(e.receivedAt),
       CHANNEL_LABEL[e.channel],
@@ -106,6 +107,7 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
       e.id,
       e.confirmedByCustomer ? "お客様確認済み" : "未確認",
       STATUS_LABEL[e.status],
+      autofillLabel(e),
     ]);
     const csv = [header, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
     const blob = new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" });
@@ -119,14 +121,14 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
   return (
     <div className="card overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-washi-200 bg-washi-100/70 px-4 py-3">
-        <div className="flex items-center gap-2">
-          <FileSpreadsheet className="h-4 w-4 text-tatami-600" />
-          <p className="text-sm font-semibold text-sumi-800">受付一覧</p>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+          <FileSpreadsheet className="h-4 w-4 shrink-0 text-tatami-600" />
+          <p className="shrink-0 text-sm font-semibold text-sumi-800">受付一覧</p>
           <span className="text-xs text-sumi-400">{filtered.length} 件 ／ 記録先：{sinkLabel || "—"}</span>
         </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <input className="input w-44" placeholder="氏名・電話・内容で検索" value={q} onChange={(e) => setQ(e.target.value)} />
-          <select className="input w-40" value={channel} onChange={(e) => setChannel(e.target.value)}>
+        <div className="flex w-full flex-wrap items-center gap-2 md:ml-auto md:w-auto">
+          <input className="input w-full md:w-44" placeholder="氏名・電話・内容で検索" value={q} onChange={(e) => setQ(e.target.value)} />
+          <select className="input min-w-[calc(50%-0.25rem)] flex-1 md:w-40 md:min-w-0 md:flex-none" value={channel} onChange={(e) => setChannel(e.target.value)}>
             <option value="">全経路</option>
             {Object.entries(CHANNEL_LABEL).map(([k, v]) => (
               <option key={k} value={k}>
@@ -134,7 +136,7 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
               </option>
             ))}
           </select>
-          <select className="input w-32" value={status} onChange={(e) => setStatus(e.target.value)}>
+          <select className="input min-w-[calc(50%-0.25rem)] flex-1 md:w-32 md:min-w-0 md:flex-none" value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">全ステータス</option>
             {Object.entries(STATUS_LABEL).map(([k, v]) => (
               <option key={k} value={k}>
@@ -159,7 +161,18 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
           スプレッドシート連携（GAS）を設定すると、受付は常にシートへ記録されます。
         </p>
       ) : null}
-      <div className="max-h-[70vh] overflow-auto">
+      <ul className="divide-y divide-washi-200 md:hidden" data-mobile-list="receptions">
+        {loading && items.length === 0 ? (
+          <li className="py-10">
+            <Spinner className="mx-auto h-5 w-5" />
+          </li>
+        ) : null}
+        {!loading && filtered.length === 0 ? <li className="py-10 text-center text-sm text-sumi-400">受付はまだありません</li> : null}
+        {filtered.map((e) => (
+          <ReceptionCard key={e.id} e={e} open={open === e.id} onToggle={() => setOpen(open === e.id ? null : e.id)} onStatus={(s) => changeStatus(e.id, s)} />
+        ))}
+      </ul>
+      <div className="hidden max-h-[70vh] overflow-auto md:block">
         <table className="table-base">
           <thead>
             <tr>
@@ -195,6 +208,74 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
         </table>
       </div>
     </div>
+  );
+}
+
+/** スマホ用：受付 1 件のカード（タップで詳細。電話番号はそのまま発信できる） */
+function ReceptionCard({ e, open, onToggle, onStatus }: { e: EstimateRequest; open: boolean; onToggle: () => void; onStatus: (s: EstimateStatus) => void }) {
+  return (
+    <li className="px-4 py-3" data-reception={e.id}>
+      <button type="button" className="w-full text-left" onClick={onToggle} aria-expanded={open}>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <Badge tone={e.channel === "phone" ? "blue" : e.channel === "line" ? "green" : "neutral"}>{CHANNEL_LABEL[e.channel]}</Badge>
+          <span className="text-xs text-sumi-500">{formatJst(e.receivedAt)}</span>
+          {e.syncError ? <span className="text-xs font-bold text-shu-600">同期エラー</span> : null}
+        </span>
+        <span className="mt-1.5 block text-[15px] font-semibold text-sumi-800">{e.name}</span>
+        <span className="mt-1 block text-sm leading-relaxed text-sumi-600">{open ? e.summary : truncate(e.summary, 80)}</span>
+      </button>
+      <div className="mt-2 space-y-1 text-xs text-sumi-600">
+        <a href={`tel:${e.phone.replace(/[^\d+]/g, "")}`} className="inline-flex items-center gap-1 font-mono font-bold text-ichi-red underline-offset-2 hover:underline">
+          {e.phone}
+        </a>
+        {e.preferredDates.length ? (
+          <p>
+            {e.preferredDates.map((d, i) => (
+              <span key={i} className="mr-3 inline-block">
+                第{i + 1}：{d}
+              </span>
+            ))}
+          </p>
+        ) : null}
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <select className="input min-w-0 flex-1 py-1.5 text-sm" value={e.status} onChange={(ev) => onStatus(ev.target.value as EstimateStatus)} aria-label={`${e.name} さんの対応状況`}>
+          {Object.entries(STATUS_LABEL).map(([k, v]) => (
+            <option key={k} value={k}>
+              {v}
+            </option>
+          ))}
+        </select>
+        <span className="flex shrink-0 items-center gap-1 text-xs text-sumi-500">
+          {e.confirmedByCustomer ? <CheckCircle2 className="h-3.5 w-3.5 text-tatami-500" /> : <XCircle className="h-3.5 w-3.5 text-amber-500" />}
+          {e.confirmedByCustomer ? "確認済み" : "未確認"}
+        </span>
+      </div>
+      {open ? (
+        <div className="mt-2 space-y-1 rounded-xl bg-washi-50 px-3 py-2 text-xs text-sumi-600">
+          <p>
+            <span className="text-sumi-400">受付番号：</span>
+            <span className="font-mono">{e.id}</span>
+          </p>
+          <p>
+            <span className="text-sumi-400">住所：</span>
+            {e.address}
+          </p>
+          <p>
+            <span className="text-sumi-400">記録：</span>
+            {e.syncedTo.join(" / ")}
+            {e.lineUserId ? "・LINE連携済み" : ""}
+          </p>
+          {autofillLabel(e) ? (
+            <p>
+              <span className="text-sumi-400">会話からの自動入力：</span>
+              {autofillLabel(e)}
+            </p>
+          ) : null}
+          {e.syncError ? <p className="text-shu-600">同期エラー：{e.syncError}</p> : null}
+        </div>
+      ) : null}
+    </li>
   );
 }
 
@@ -253,6 +334,12 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
                 <span className="text-sumi-400">セッション：</span>
                 {e.sessionId ?? "—"}
               </div>
+              {autofillLabel(e) ? (
+                <div className="sm:col-span-3">
+                  <span className="text-sumi-400">会話からの自動入力：</span>
+                  {autofillLabel(e)}
+                </div>
+              ) : null}
               {e.lineUserId ? (
                 <div className="sm:col-span-3">
                   <span className="text-sumi-400">LINE連携：</span>
@@ -305,7 +392,28 @@ export function ConversationsTab() {
         </button>
       </div>
       {error ? <p className="px-4 py-2 text-sm text-shu-600">{error}</p> : null}
-      <div className="max-h-[70vh] overflow-auto">
+      <ul className="divide-y divide-washi-200 md:hidden" data-mobile-list="conversations">
+        {!loading && items.length === 0 ? <li className="px-4 py-10 text-center text-sm text-sumi-400">会話履歴はまだありません</li> : null}
+        {items.map((c) => {
+          const firstUser = c.messages.find((m) => m.role === "user")?.content ?? "";
+          return (
+            <li key={c.id}>
+              <button type="button" className="w-full px-4 py-3 text-left hover:bg-washi-50" onClick={() => setView(c)}>
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <Badge tone={c.channel === "phone" ? "blue" : c.channel === "line" ? "green" : "neutral"}>{CHANNEL_LABEL[c.channel]}</Badge>
+                  {(c.meta?.channels ?? "").includes(",") ? <Badge tone="green">文字・声</Badge> : null}
+                  {c.meta?.test ? <Badge tone="amber">テスト</Badge> : null}
+                  <span className="text-xs text-sumi-500">{formatJst(c.updatedAt)}</span>
+                  <span className="ml-auto text-xs text-sumi-400">{c.messages.length} 件</span>
+                </span>
+                <span className="mt-1 block text-sm leading-relaxed text-sumi-700">{truncate(firstUser, 80) || "—"}</span>
+                {c.estimateId ? <span className="mt-1 block font-mono text-xs text-ichi-green">受付番号 {c.estimateId}</span> : null}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="hidden max-h-[70vh] overflow-auto md:block">
         <table className="table-base">
           <thead>
             <tr>
@@ -332,6 +440,7 @@ export function ConversationsTab() {
                   <td className="whitespace-nowrap">{formatJst(c.updatedAt)}</td>
                   <td className="whitespace-nowrap">
                     <Badge tone={c.channel === "phone" ? "blue" : c.channel === "line" ? "green" : "neutral"}>{CHANNEL_LABEL[c.channel]}</Badge>
+                    {(c.meta?.channels ?? "").includes(",") ? <Badge tone="green">文字・声</Badge> : null}
                     {c.meta?.test ? <Badge tone="amber">テスト</Badge> : null}
                   </td>
                   <td>{c.messages.length}</td>
@@ -613,15 +722,13 @@ export function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus 
         </button>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
-        <Card title="Supabase（ナレッジ・会話履歴・受付の保存先）" ok={status.supabase.ready}>
+        <Card title="Googleスプレッドシート（AI の回答の情報源・受付の記録先）" ok={status.sheet.configured}>
           <p>
-            {status.supabase.ready
-              ? `接続済み（プロジェクト ${status.supabase.projectRef}）`
-              : status.supabase.configured
-                ? status.supabase.error ?? "接続を確認中"
-                : "SUPABASE_URL・SUPABASE_SECRET_KEY が未設定です"}
+            {status.sheet.configured
+              ? `サービスアカウント ${status.sheet.serviceAccount} で接続（シート ID ${status.sheet.sheetId.slice(0, 10)}…）`
+              : "GOOGLE_SERVICE_ACCOUNT_EMAIL・GOOGLE_PRIVATE_KEY・KNOWLEDGE_SHEET_ID が未設定です"}
           </p>
-          {status.supabase.setupRequired ? <p className="text-xs text-amber-700">サイドバーの「セットアップ」から、テーブルを作る SQL を実行してください。</p> : null}
+          <p className="text-xs text-sumi-500">読み取りの状態は「AIの学習状況・情報源」で確認できます。シートの「共有」にサービスアカウントを（受付も記録するときは編集者として）追加してください。</p>
         </Card>
         <Card title="OpenAI API（AI応答・音声・要約）" ok={status.openai.configured}>
           <p>チャットモデル：{status.openai.model}</p>
@@ -638,12 +745,12 @@ export function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus 
         </Card>
         <Card title="受付情報の記録先" ok={status.reception.sink !== "local"}>
           <p>{status.reception.label}</p>
-          <p className="text-xs text-sumi-400">3窓口（テキスト・音声・電話）＋LINE の受付を1つのシートに一元管理します。</p>
+          <p className="text-xs text-sumi-400">3窓口（テキスト・音声・電話）＋LINE の受付を、回答用と同じスプレッドシートの「受付一覧」タブに一元管理します（なければ自動で作成）。</p>
         </Card>
         <Card title="アプリ内データの保存先（受付・会話・設定・セッション）" ok={status.storage.persistent}>
           <p>{status.storage.label}</p>
           {status.storage.detail ? <p className="text-xs text-amber-700">{status.storage.detail}</p> : null}
-          <p className="text-xs text-sumi-400">Supabase を設定すると、受付・会話・設定・電話の会話状態がデータベースに保存されます。</p>
+          <p className="text-xs text-sumi-400">Vercel では会話履歴・設定・エラー履歴は一時的な保存です（再起動で消えます）。受付はスプレッドシートに残ります。VPS ではサーバーのファイル（data/runtime）に保存されます。</p>
         </Card>
         <Card title="Twilio（AI電話受付）" ok={status.twilio.configured}>
           <p>Twilio 番号：{status.twilio.number || "未設定"}</p>

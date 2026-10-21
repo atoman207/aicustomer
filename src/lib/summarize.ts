@@ -1,5 +1,6 @@
 // 会話ログから「ご相談内容」を要約（OpenAI 未設定時はユーザー発話の抽出）
 import { env } from "./env";
+import { logError } from "./errorlog";
 import { chatCompletion } from "./openai";
 import { SUMMARY_SYSTEM_PROMPT } from "./prompts";
 import type { ChatMessage } from "./types";
@@ -30,7 +31,8 @@ export async function summarizeConversation(messages: ChatMessage[]): Promise<{ 
       purpose: "summarize",
     });
     return { summary: out.trim() || fallback, mode: "openai" };
-  } catch {
+  } catch (e) {
+    await logError("openai", "ご相談内容の要約", e);
     return { summary: fallback, mode: "demo" };
   }
 }

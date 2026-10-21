@@ -31,6 +31,7 @@ export async function POST(req: Request) {
     mode: result.mode,
     answeredBy: result.answeredBy ?? null,
     estimate: result.estimate ?? null,
+    formReady: result.formReady === true,
     estimateId: updated.estimateId ?? null,
     sources: (result.sources ?? []).map((h) => ({ id: h.entry.id, title: h.entry.title, score: Math.round(h.score * 100) / 100 })),
     session: updated,
