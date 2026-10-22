@@ -25,6 +25,13 @@ import { createVoiceGate, unlockAudioContext, type VoiceGate } from "@/lib/voice
 
 /** 割り込んだ直後に始まった発話は、割り込み（AI を止めて話した）として扱う */
 const BARGE_SPEECH_MS = 3000;
+/**
+ * AI の声が流れ終わったかの見張り（WebRTC の受信の統計の音量）。gpt-realtime-2.1 は「再生が終わった」の知らせを送らず、
+ * 受信した音声を音の処理に回せないブラウザもあるため、どちらでも AI の発話の終わりがわかるように
+ */
+const PLAYBACK_POLL_MS = 250;
+const PLAYBACK_LEVEL = 0.01;
+const PLAYBACK_TAIL_MS = 1500;
 
 export type VoiceStatus = "idle" | "connecting" | "live" | "ended";
 export type VoiceMode = "openai" | "demo";
@@ -133,6 +140,8 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
   const userEndedRef = useRef(false);
   // 割り込みの判定（AI の声が、相づち「はい」・咳・雑音・スピーカーの回り込みで途切れないように）
   const aiAudioRef = useRef(false);
+  const aiAudioSinceRef = useRef(0);
+  const playbackTimerRef = useRef<number | undefined>(undefined);
   const speechRef = useRef<{ duringAi: boolean; bargedIn: boolean } | null>(null);
   const ignoredItemsRef = useRef<Set<string>>(new Set());
   const pendingCreateRef = useRef(false);
@@ -166,8 +175,43 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
   }
 
   function stopGate() {
+    window.clearInterval(playbackTimerRef.current);
+    playbackTimerRef.current = undefined;
     gateRef.current?.close();
     gateRef.current = null;
+  }
+
+  /** AI の声が流れている・流れ終わった（OpenAI の知らせ・関所が聞いた音・受信の統計のどれからでも） */
+  function setAiAudio(on: boolean) {
+    if (aiAudioRef.current === on) return;
+    aiAudioRef.current = on;
+    if (on) aiAudioSinceRef.current = performance.now();
+    gateRef.current?.setAiPlaying(on);
+    setAiSpeaking(on);
+  }
+
+  /** 受信の統計で AI の声の音量を見張る（関所が受信した音声を聞けない環境・「再生が終わった」の知らせが来ない場合の補い） */
+  function watchPlayback(pc: RTCPeerConnection) {
+    window.clearInterval(playbackTimerRef.current);
+    let prev: { energy: number; duration: number } | null = null;
+    let lastHeard = -1e9;
+    playbackTimerRef.current = window.setInterval(() => {
+      if (pcRef.current !== pc) return;
+      pc.getStats()
+        .then((stats) => {
+          stats.forEach((r: { type?: string; kind?: string; totalAudioEnergy?: number; totalSamplesDuration?: number }) => {
+            if (r.type !== "inbound-rtp" || r.kind !== "audio" || typeof r.totalAudioEnergy !== "number" || typeof r.totalSamplesDuration !== "number") return;
+            const cur = { energy: r.totalAudioEnergy, duration: r.totalSamplesDuration };
+            if (prev && cur.duration > prev.duration && Math.sqrt((cur.energy - prev.energy) / (cur.duration - prev.duration)) > PLAYBACK_LEVEL) lastHeard = performance.now();
+            prev = cur;
+          });
+          const now = performance.now();
+          const audible = now - lastHeard < PLAYBACK_TAIL_MS;
+          if (audible && !aiAudioRef.current) setAiAudio(true);
+          else if (!audible && aiAudioRef.current && now - aiAudioSinceRef.current > PLAYBACK_TAIL_MS) setAiAudio(false);
+        })
+        .catch(() => undefined);
+    }, PLAYBACK_POLL_MS);
   }
 
   /** 声を終える（会話はそのまま。文字で続けられる） */
@@ -359,15 +403,12 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
         if (ev.item_id) h.upsert(ev.item_id, "assistant", ev.transcript ?? "", true);
         break;
       case "output_audio_buffer.started":
-        aiAudioRef.current = true;
-        gateRef.current?.setAiPlaying(true);
-        setAiSpeaking(true);
+        setAiAudio(true);
         break;
+      // 「再生が終わった」（stopped）は gpt-realtime-2.1 では届かない。終わりは関所が聞いた音・受信の統計でも判定する
       case "output_audio_buffer.stopped":
       case "output_audio_buffer.cleared":
-        aiAudioRef.current = false;
-        gateRef.current?.setAiPlaying(false);
-        setAiSpeaking(false);
+        setAiAudio(false);
         break;
       case "response.done":
         void handleResponseDone(ev);
@@ -400,11 +441,12 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     const ms = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     streamRef.current = ms;
     stopGate();
-    const gate = await createVoiceGate(audioCtxRef.current, ms, { onBargeIn: bargeIn });
+    const gate = await createVoiceGate(audioCtxRef.current, ms, { onBargeIn: bargeIn, onAiAudio: setAiAudio });
     gateRef.current = gate;
     if (mutedRef.current) gate.setMuted(true);
     if (remoteStreamRef.current) gate.watchRemote(remoteStreamRef.current);
     pc.addTrack(gate.track, ms);
+    watchPlayback(pc);
     const dc = pc.createDataChannel("oai-events");
     dcRef.current = dc;
     dc.onmessage = (e) => {

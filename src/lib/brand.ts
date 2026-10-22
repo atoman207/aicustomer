@@ -34,14 +34,10 @@ export const ASSETS = {
 } as const;
 
 /**
- * AI 相談のメニュー。相談の画面は 1 つ（トップページの「AIに相談する」。文字でも声でも）。
- * 「文字で相談」「声で相談」は、その画面で入力欄を開く・声で話し始めるだけ（入口を分けない）。電話はふつうの電話ボタン
+ * AI 相談のメニュー。相談の窓口は 1 つ（トップページの「AIに相談する」の画面。その中で文字でも声でも）なので、
+ * 見出しも「AI相談」だけ（一畳屋様のご要望 2026-10-23：「文字で相談」「声で相談」は不要）。電話はふつうの電話ボタン
  */
-export const AI_NAV = [
-  { href: "/", label: "AI相談トップ", short: "トップ", icon: "home", action: null },
-  { href: "/#ai-consult", label: "文字で相談", short: "文字", icon: "text", action: "text" },
-  { href: "/?voice=1#ai-consult", label: "声で相談", short: "声", icon: "voice", action: "voice" },
-] as const;
+export const AI_NAV = [{ href: "/#ai-consult", label: "AI相談", short: "AI相談", icon: "ai", action: "text" }] as const;
 
 /** キービジュアルの写真（WebP 1x/2x + PNG フォールバック） */
 export function photo(name: string) {

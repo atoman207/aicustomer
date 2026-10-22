@@ -297,11 +297,14 @@ function SourcesCard({
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             スプレッドシートを再読み込み
           </button>
-          <button type="button" className="btn-secondary px-3 py-1.5 text-xs" onClick={onRelearn} disabled={!!busy}>
-            {busy === "site" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Globe className="h-3.5 w-3.5" />}
-            ホームページから再学習
-          </button>
-          {data?.websiteOrigin === "relearned" ? (
+          {/* ホームページは回答に使わない（websiteUsed は常に false）。以前の版との互換のため、使う設定のときだけ表示 */}
+          {data?.websiteUsed ? (
+            <button type="button" className="btn-secondary px-3 py-1.5 text-xs" onClick={onRelearn} disabled={!!busy}>
+              {busy === "site" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Globe className="h-3.5 w-3.5" />}
+              ホームページから再学習
+            </button>
+          ) : null}
+          {data?.websiteUsed && data?.websiteOrigin === "relearned" ? (
             <button type="button" className="btn-ghost px-3 py-1.5 text-xs" onClick={onReset} disabled={!!busy}>
               同梱版に戻す
             </button>
@@ -371,7 +374,7 @@ function SourcesCard({
               <span className="block font-semibold text-sumi-800">② ホームページ（ichijoya.co.jp）</span>
               {data.websiteUsed === false ? (
                 <span className="block text-xs text-sumi-600">
-                  回答には使っていません（回答の根拠は指定のスプレッドシートだけ）。ホームページも使う場合は、環境変数 KNOWLEDGE_INCLUDE_WEBSITE=1 を設定して再デプロイします。
+                  回答には使いません（回答の根拠は指定のスプレッドシートだけ。一畳屋様のご要望）。
                 </span>
               ) : (
                 <span className="block text-xs text-sumi-600">

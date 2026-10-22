@@ -1320,5 +1320,7 @@ export function answerQuote(question: string, history: ChatMessage[], tables: Pr
   }
   if (!result.quote) return null;
   const built = build(ctx, state, question, style);
-  return built ? { reply: built.reply, tableIds: built.tableIds, rows: built.rows } : null;
+  const qtys = state.focus.map((g) => state.items.get(g)?.qty).filter((q): q is Qty => Boolean(q));
+  const single = qtys.length > 0 && qtys.every((q) => q.n === 1 && q.half === 0);
+  return built ? { reply: built.reply, tableIds: built.tableIds, rows: built.rows, single } : null;
 }

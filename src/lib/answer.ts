@@ -1,19 +1,19 @@
-// 回答エンジン：OpenAI を使うのは「学習済みのナレッジだけでは答えきれない質問」に限る
-//   1. あいさつ・お礼                → 定型文
-//   2. 料金の質問                    → 料金表から直接（price.ts）。数量があれば合計の目安を計算（quote.ts）
-//   3. 「○○町は来てもらえる？」      → 営業範囲から直接（area.ts）
-//   4. 以前に AI が作った回答（学習済み）で、根拠のナレッジが変わっていない → その回答
-//   5. それ以外 → OpenAI が回答（回答は学習して次回から再利用）。渡す参考情報は ANSWER_CONTEXT で選ぶ：
-//        full（既定）：スプレッドシートとホームページの全文（NotebookLM と同じく資料全体を読んで答える。検索で見落とさない）
-//        search      ：検索で見つかった関係する部分だけ（見つからなければ「担当者より折り返し」の定型文）
+// 回答エンジン（2026-10-23〜：NotebookLM と同じく、指定のスプレッドシートの全文を AI が読んで答える）
+//   1. あいさつ・お礼 → 定型文
+//   2. それ以外（料金・工期・営業範囲・店舗など、事実の質問はすべて）→ AI（OPENAI_ANSWER_MODEL）が資料の全文を読み、
+//      根拠の文を書き写してから答える。料金に数量があるとき（「8畳だと？」）は、料金表からシステムが計算した合計を
+//      「参考」として添える（品目・作業・数量が質問と合うときだけ AI が使う）
+//   料金表から直接の回答（price.ts）・営業範囲の判定（area.ts）・以前の回答の再利用は、品目の取り違え（「1枚」で襖の枠交換を
+//   答えるなど）が起きたため、AI を使えないとき（デモモード・ANSWER_CONTEXT=search）だけに使う。
+//   以前の回答の再利用は ANSWER_REUSE=1 のときだけ（既定は毎回、資料から答える）
 import { answerArea } from "./area";
 import { env } from "./env";
 import { logError } from "./errorlog";
 import { entryHash, getKnowledge } from "./knowledge";
 import { findLearned, logUnanswered, questionKey, saveLearned } from "./learned";
 import { canRetryWithChatModel, chatCompletion } from "./openai";
-import { OTHER_INTENT, PRICE_INTENT, answerPrice, normPrice, sliceTableForQuestion, voiceClean, type AnswerStyle } from "./price";
-import { buildChatSystemPrompt, splitEvidence, usesEvidence } from "./prompts";
+import { OTHER_INTENT, PRICE_INTENT, answerPrice, normPrice, sliceTableForQuestion, tableUnit, voiceClean, type AnswerStyle } from "./price";
+import { DOCUMENT_HEADING, buildChatSystemPrompt, splitEvidence, usesEvidence } from "./prompts";
 import { answerQuote } from "./quote";
 import { hybridSearch, keywordScore, keywordSearch } from "./retrieval";
 import { recordAnswer, type AnswerOriginKind } from "./usage";
@@ -123,6 +123,13 @@ function toSource(h: SearchHit): AnswerSource {
  * 資料の全文で答えるときは、料金はシステムが計算した目安のまま、ほかのことは AI が資料から答える
  */
 const WITH_PRICE_OTHER = /(何日|日数|工期|期間|仕上が|納期|終わ|いつ|何年|年数|耐用|寿命|長持ち|もちます|持ちます|おすすめ|オススメ|人気|違い|特徴|支払|土日)/;
+
+/**
+ * 数量のある料金の質問に添える、システムの計算の見出し。計算は品目・数量の読み取りを誤ることがあるので、
+ * AI が質問と照らし合わせて、合っているときだけ使う
+ */
+const QUOTE_REFERENCE_HEADING =
+  "## 参考：この質問の数量で、料金表からシステムが計算した合計の目安（品目・作業・数量・種類が質問と合っているときだけ使う。合っていれば金額・合計はヘリ代や諸経費を含む・含まないの区別も含めてこのとおりに伝え、計算し直さない。ここにある金額どうしを足して別の合計を作らない（例：ヘリ代別の合計とヘリ代を足さない）。合っていなければこの参考は使わず、料金表から答える）";
 
 /** 畳の大きさ（江戸間・京間など）で料金が変わるかの質問 */
 const SIZE_PRICE = /(江戸間|京間|本間|団地間|中京間|五八|六一).{0,20}(安|高|違|変わ|同じ)|(安|高|違|変わ|同じ).{0,12}(江戸間|京間|本間|団地間|中京間)/;
@@ -239,34 +246,31 @@ const FULL_CONTEXT_MAX_CHARS = 150_000;
 const docCache: { version: string; doc: string } = { version: "", doc: "" };
 
 /**
- * AI に渡す資料の全文（NotebookLM と同じく、資料全体を読んで答えるため）。
- * スプレッドシート（正）→ ホームページ（補足）の順。ホームページの金額は、同じ話題の料金表がスプレッドシートにあれば消す。
- * ナレッジの版ごとに同じ文字列になるので、OpenAI のプロンプトキャッシュが効く（2 回目からの入力は割安・速い）
+ * 料金表の見方（資料の料金表を読むための、システムの補足。料金表の単位・税込・「時価」・行の名前の数の意味）。
+ * 「襖の張替えは1枚いくら？」に、行の名前に「１枚」とある「枠交換（１枚）」を答えないように
+ */
+const PRICE_TABLE_GUIDE = `### 料金表の見方（システムの補足）
+- 料金表の金額は税込みです。各料金表の見出しのかっこ内に、金額の単位（1畳あたり・1枚あたり など）を書いています。
+- 畳の「表替え」は畳表の張替え、「新調」は畳床ごと新しくすること、「ウラ返し」は畳表の裏返しです。畳のヘリ（畳縁）代は畳の料金とは別で、ヘリの料金表も1畳あたりです。
+- 行の名前の中の数（「枠交換（１枚）」「枠交換（１本）」など）は、その行の作業の単位です。その行は名前のとおりの作業（例：枠交換）の料金で、張替えの料金ではありません。
+- 「時価」は金額が決まっていないもの（担当者が確認してご案内）です。
+- 網戸の料金表の最後の「諸経費3300円/一式」は、工事全体に一式でかかる諸経費です。`;
+
+/**
+ * AI に渡す資料の全文（NotebookLM と同じく、資料全体を読んで答えるため）。中身は指定のスプレッドシートだけ（ホームページは使わない）。
+ * 料金表は見出しに金額の単位を添える。ナレッジの版ごとに同じ文字列になるので、OpenAI のプロンプトキャッシュが効く
  */
 export function knowledgeDocument(snapshot: KnowledgeSnapshot): string {
   if (docCache.version === snapshot.version && docCache.doc) return docCache.doc;
-  const tableIds = new Set(snapshot.tables.map((t) => t.id));
+  const tableOf = new Map(snapshot.tables.map((t) => [t.id, t]));
   const sheet = snapshot.entries.filter((e) => e.origin !== "website");
-  const site = snapshot.entries.filter((e) => e.origin === "website");
-  const pricedTopics = new Set(sheet.filter((e) => tableIds.has(e.id)).flatMap((e) => e.topics ?? []));
-  const block = (title: string, body: string) => `■ ${title}\n${body.trim()}`;
-  const sheetText = sheet.map((e) => block(e.title, e.content)).join("\n\n");
-  const siteText = site
-    .map((e) => {
-      const priced = hasAmount(e.content) && (e.topics ?? []).some((t) => pricedTopics.has(t));
-      if (!priced) return block(e.title, e.content);
-      const body = e.content.normalize("NFKC").replace(SITE_AMOUNT, "").replace(/[ \t]{2,}/g, " ");
-      return block(e.title, `${body}\n（この項目の金額は使わない。料金はスプレッドシートの料金表のとおりに答える）`);
-    })
-    .join("\n\n");
-  // ホームページは KNOWLEDGE_INCLUDE_WEBSITE=1 のときだけ（既定はスプレッドシートだけ）
-  const doc = [
-    `## スプレッドシート（正）：料金・品名・工期・営業時間・営業範囲・店舗・支払方法などは、ここに書かれているとおりに答える`,
-    sheetText,
-    ...(site.length
-      ? [`## ホームページ（補足）：スプレッドシートに書かれていない説明を補うときだけ使う。スプレッドシートと食い違うときはスプレッドシートが正`, siteText]
-      : []),
-  ].join("\n\n");
+  const block = (e: KnowledgeEntry) => {
+    const t = tableOf.get(e.id);
+    const unit = t ? tableUnit(t) : null;
+    const title = t ? `${e.title}（料金表${unit ? `・金額は${unit}` : ""}）` : e.title;
+    return `■ ${title}\n${e.content.trim()}`;
+  };
+  const doc = [`${DOCUMENT_HEADING}\n\n${PRICE_TABLE_GUIDE}`, ...sheet.map(block)].join("\n\n");
   docCache.version = snapshot.version;
   docCache.doc = doc;
   return doc;
@@ -311,7 +315,24 @@ export async function planAnswer(
   const talk = SMALLTALK.find((s) => s.re.test(plain));
   if (talk) return finish({ ...base, mode: "smalltalk", kind: "smalltalk", reply: talk.reply });
 
-  // 2. 料金表（数量があれば合計の目安を計算。「やっぱり8畳で」などの訂正もそれまでの発言から反映）
+  // 2. 資料の全文を AI が読んで答える（NotebookLM と同じ）。数量のある料金の質問だけ、システムが計算した合計を参考に添える
+  if (full) {
+    // 数量が 1（「1枚いくら」「1畳いくら」）は単価の質問：合計（諸経費込み）の計算は添えず、AI が料金表の単価で答える
+    const quoted = SIZE_PRICE.test(normPrice(q)) ? null : answerQuote(q, history, snapshot.tables, style);
+    const quote = quoted && !quoted.single ? quoted : null;
+    const hits = keywordSearch(contentQuery(query), snapshot.entries, 5, 0.2);
+    const quoteSources = (quote?.tableIds ?? [])
+      .map((id) => snapshot.entries.find((e) => e.id === id))
+      .filter((e): e is KnowledgeEntry => Boolean(e))
+      .map((e) => ({ id: e.id, title: e.title, category: e.category, origin: e.origin, score: 1 }));
+    const sources = [...quoteSources, ...hits.map(toSource).filter((s) => !quoteSources.some((p) => p.id === s.id))];
+    // 計算は資料の全文のあと（資料の部分が質問をまたいで同じ文字列になり、プロンプトキャッシュが効く）
+    const calc = quote ? `\n\n${QUOTE_REFERENCE_HEADING}\n${quote.reply}` : "";
+    return { ...base, mode: "openai", kind: "llm", reply: "", sources, hits, fullContext: true, context: `${doc}${calc}` };
+  }
+
+  // ---- ここから下は、AI に資料の全文を渡せないとき（デモモード・ANSWER_CONTEXT=search）だけ ----
+  // 3. 料金表（数量があれば合計の目安を計算。「やっぱり8畳で」などの訂正もそれまでの発言から反映）
   // 続きの質問は、前の質問とあわせた query でも料金表を探す（ただし今の質問が工期などなら料金表では答えない）
   const nq = normPrice(q);
   const otherNow = OTHER_INTENT.test(nq) && !PRICE_INTENT.test(nq);
@@ -333,15 +354,15 @@ export async function planAnswer(
     priced = { reply: price.reply, sources };
   }
 
-  // 3. 営業範囲（○○町は対応？）
+  // 4. 営業範囲（○○町は対応？）
   const area = answerArea(q, manualText(snapshot));
   if (area) {
     const src = snapshot.entries.find((e) => e.id === "c-area") ?? snapshot.entries.find((e) => /営業範囲/.test(e.content));
     return finish({ ...base, mode: "local", kind: "area", reply: area.reply, sources: src ? [{ id: src.id, title: src.title, category: src.category, origin: src.origin, score: 1 }] : [] });
   }
 
-  // 4. 学習済みの回答（同じ質問に以前 AI が答えたもの。根拠の項目が変わっていない＝資料の全文で答えたものは資料全体が同じ版）
-  if (standalone && key) {
+  // 5. 以前の回答の再利用（ANSWER_REUSE=1 のときだけ。根拠の項目が変わっていないもの）
+  if (env.answerReuse && standalone && key) {
     const valid = new Set([...snapshot.entries.map(entryHash), snapshot.version]);
     const learned = await findLearned(key, style, valid);
     if (learned) {
@@ -355,7 +376,7 @@ export async function planAnswer(
     }
   }
 
-  // 5. 関係するナレッジの検索（OpenAI があれば意味の近さも使う）
+  // 6. 関係するナレッジの検索（OpenAI があれば意味の近さも使う）
   // キーワードの照合は「ありますか」「できますか」などの言い回しを除いた語で行う（どの項目にも当たる語で誤って一致しないように）
   // 料金の質問でなければ料金表は探さない（料金表は「表替え」などの語が多く、工期などの質問で文章より上に来てしまうため）
   const pool = PRICE_INTENT.test(normPrice(q)) ? snapshot.entries : snapshot.entries.filter((e) => !snapshot.tables.some((t) => t.id === e.id));
@@ -378,7 +399,7 @@ export async function planAnswer(
   if (!llm) {
     return finish({ ...base, mode: env.hasOpenAI ? "local" : "demo", kind: "search", reply: demoReply(hits, snapshot, query, style), sources, hits });
   }
-  // 6. OpenAI（参考情報は資料の全文、または関係するものだけ。検索の結果は「根拠」の表示に使う）
+  // 7. OpenAI（参考情報は関係するものだけ。検索の結果は「根拠」の表示に使う）
   // 料金の計算は資料の全文のあと（資料の部分が質問をまたいで同じ文字列になり、プロンプトキャッシュが効く）
   const calc = priced
     ? `\n\n## この質問の料金（料金表からシステムが計算した目安。金額・合計は、ヘリ代や諸経費を含む・含まないの区別も含めてこの文のとおりに伝え、計算し直さない）\n${priced.reply}`
@@ -432,7 +453,8 @@ export async function learnAnswer(plan: AnswerPlan, reply: string): Promise<void
     await logUnanswered(plan.query, plan.channel);
     return;
   }
-  if (!plan.standalone || !plan.key || text.length < 8) return;
+  // 以前の回答の再利用を使わないとき（既定）は保存もしない（毎回、資料から答える）
+  if (!env.answerReuse || !plan.standalone || !plan.key || text.length < 8) return;
   await saveLearned({
     key: plan.key,
     question: plan.query.slice(0, 300),
@@ -440,7 +462,7 @@ export async function learnAnswer(plan: AnswerPlan, reply: string): Promise<void
     sources: [
       ...plan.hits.slice(0, 5).map((h) => ({ id: h.entry.id, title: h.entry.title, hash: entryHash(h.entry) })),
       // 資料の全文で答えた回答は、資料のどこかが変わったら使わない（ナレッジの版）
-      ...(plan.fullContext ? [{ id: "knowledge", title: "スプレッドシートとホームページの全文", hash: plan.snapshot.version }] : []),
+      ...(plan.fullContext ? [{ id: "knowledge", title: "スプレッドシートの全文", hash: plan.snapshot.version }] : []),
     ],
     style: plan.style,
     channel: plan.channel,

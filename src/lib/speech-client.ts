@@ -153,13 +153,21 @@ export function stopSpeaking(): void {
   c?.();
 }
 
+/** 日本語の女性の声（自然に聞こえる順。Edge の Nanami・Apple の Kyoko／O-Ren・Chrome の Google 日本語 など） */
+const JA_FEMALE_VOICES = [/Nanami/i, /Kyoko/i, /O-?Ren/i, /Google/i, /Mayu|Aoi|Shiori/i, /Haruka/i, /Ayumi/i, /Sayaka/i];
+/** 男性の声は選ばない（AI 相談員は女性の声） */
+const JA_MALE_VOICES = /Ichiro|Keita|Otoya|Daichi|Naoki|Hattori/i;
+
 function pickJapaneseVoice(): SpeechSynthesisVoice | undefined {
   if (typeof speechSynthesis === "undefined") return undefined;
-  const voices = speechSynthesis.getVoices();
-  return (
-    voices.find((v) => v.lang.replace("_", "-").startsWith("ja") && /Google|Nanami|Ayumi|Kyoko|O-Ren|Haruka|Ichiro|Sayaka/i.test(v.name)) ??
-    voices.find((v) => v.lang.replace("_", "-").startsWith("ja"))
-  );
+  const ja = speechSynthesis.getVoices().filter((v) => v.lang.replace("_", "-").startsWith("ja"));
+  // 同じ名前なら、より自然な「Natural」「Online」「Premium」「Enhanced」の声を先に
+  const better = (v: SpeechSynthesisVoice) => (/Natural|Online|Premium|Enhanced/i.test(v.name) ? 0 : 1);
+  for (const re of JA_FEMALE_VOICES) {
+    const v = ja.filter((x) => re.test(x.name)).sort((a, b) => better(a) - better(b))[0];
+    if (v) return v;
+  }
+  return ja.find((v) => !JA_MALE_VOICES.test(v.name)) ?? ja[0];
 }
 
 /** 声の一覧は遅れて読み込まれることがあるため最大 1 秒待ってから、日本語の声があるか確かめる */

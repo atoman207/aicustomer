@@ -52,14 +52,31 @@ export const env = {
   get realtimeTurn(): "semantic" | "server" {
     return str("OPENAI_REALTIME_TURN", "semantic") === "server" ? "server" : "semantic";
   },
+  /**
+   * 声の相談の AI の声。2026-10-22 に女性の声（marin・sage・coral・shimmer）を同じ文 × 6 回で比べ、
+   * 声の高さ（20代の女性らしい明るさ）・聞き取りやすさ（文字起こしの誤り）・文の途中の途切れの少なさで最もよかった sage を既定にする
+   */
   get realtimeVoice() {
-    return str("OPENAI_REALTIME_VOICE", "marin");
+    return str("OPENAI_REALTIME_VOICE", "sage");
+  },
+  /** 声の相談の話す速さ（1＝標準。sage は標準だと少しゆっくりなので、ふつうの会話の速さになる 1.1） */
+  get realtimeSpeed() {
+    const n = Number(str("OPENAI_REALTIME_SPEED", "1.1"));
+    return Number.isFinite(n) ? Math.min(1.5, Math.max(0.25, n)) : 1.1;
+  },
+  /**
+   * 声の相談のモデルが話す前に考える深さ（gpt-realtime-2 系だけ。minimal＝ほとんど考えずにすぐ話す・low・medium・high）。
+   * 深くすると、話の途中・答える前の無言が長くなる（事実は search_knowledge の回答を話すので、深く考える必要がない）
+   */
+  get realtimeReasoning() {
+    return str("OPENAI_REALTIME_REASONING", "minimal");
   },
   get ttsModel() {
     return str("OPENAI_TTS_MODEL", "gpt-4o-mini-tts");
   },
+  /** 読み上げ（電話のシミュレーター・簡易音声モード）の声。声の相談と同じ sage */
   get ttsVoice() {
-    return str("OPENAI_TTS_VOICE", "coral");
+    return str("OPENAI_TTS_VOICE", "sage");
   },
   get embeddingModel() {
     return str("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small");
@@ -115,18 +132,19 @@ export const env = {
     return str("KNOWLEDGE_SHEET_CSV_URL");
   },
   /**
-   * AI に渡す参考情報：full（既定）＝スプレッドシートとホームページの全文（NotebookLM と同じく資料全体を読んで答える）、
-   * search＝質問に関係する部分だけ（トークンは少ないが、検索で見つからない内容は答えられない）
+   * AI に渡す参考情報：full（既定）＝指定のスプレッドシートの全文（NotebookLM と同じく資料全体を読んで答える。料金の質問も）、
+   * search＝質問に関係する部分だけ（トークンは少ないが、検索で見つからない内容は答えられない。料金は料金表から直接）
+   * 回答の根拠は指定のスプレッドシートだけ（ホームページは使わない。一畳屋様のご要望 2026-10-22・10-23）
    */
   get answerContext(): "full" | "search" {
     return str("ANSWER_CONTEXT", "full") === "search" ? "search" : "full";
   },
   /**
-   * ホームページの内容も回答に使うか（既定は使わない＝回答の根拠は指定のスプレッドシートだけ。一畳屋様のご要望 2026-10-22）。
-   * 1 にするとホームページ（database/website.json・管理画面で再学習した内容）を補足として使う
+   * 以前に AI が作った回答を、同じ質問に再利用するか（1 で再利用）。既定は再利用しない：
+   * 似た質問に別の質問の回答を返すおそれがあるため、毎回、資料から答える（一畳屋様のご要望＝回答精度を優先 2026-10-23）
    */
-  get knowledgeIncludeWebsite() {
-    return str("KNOWLEDGE_INCLUDE_WEBSITE") === "1";
+  get answerReuse() {
+    return str("ANSWER_REUSE") === "1";
   },
   get knowledgeCacheSeconds() {
     const n = Number(str("KNOWLEDGE_CACHE_SECONDS", "60"));
@@ -152,8 +170,9 @@ export const env = {
   get twilioPhoneNumber() {
     return str("TWILIO_PHONE_NUMBER");
   },
+  /** 電話の読み上げの声（Amazon Polly の日本語のニューラル音声・女性。以前の Mizuki は標準音声で、機械的に聞こえる） */
   get twilioVoice() {
-    return str("TWILIO_TTS_VOICE", "Polly.Mizuki");
+    return str("TWILIO_TTS_VOICE", "Polly.Kazuha-Neural");
   },
   get hasTwilio() {
     return this.twilioAccountSid !== "" && this.twilioAuthToken !== "";

@@ -64,9 +64,9 @@
   root.innerHTML =
     "<style>" + css + "</style>" +
     '<button type="button" class="fab" aria-haspopup="dialog" aria-expanded="false" aria-controls="ichijoya-ai-panel">' + ICON_CHAT +
-    "<span>AIに相談<small>24時間・文字でも声でも</small></span></button>" +
+    "<span>AI相談<small>24時間受付</small></span></button>" +
     '<div class="panel" id="ichijoya-ai-panel" role="dialog" aria-modal="false" aria-label="一畳屋 AI相談" hidden>' +
-    '<div class="bar"><p class="title">一畳屋 AI相談<small>文字でも声でも</small></p>' +
+    '<div class="bar"><p class="title">一畳屋 AI相談<small>24時間受付</small></p>' +
     '<a class="icon ext" target="_blank" rel="noopener" title="新しいタブで開く" aria-label="新しいタブで開く">' + ICON_EXT + "</a>" +
     '<button type="button" class="icon close" title="閉じる" aria-label="閉じる">' + ICON_CLOSE + "</button></div>" +
     '<iframe title="一畳屋 AI相談" allow="microphone; autoplay; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>' +

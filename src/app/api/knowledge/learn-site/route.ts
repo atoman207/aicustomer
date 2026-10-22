@@ -1,26 +1,14 @@
-import { error, json, requireAdmin } from "@/lib/http";
-import { describeKnowledge, getKnowledge, invalidateKnowledgeCache } from "@/lib/knowledge";
-import { learnWebsite } from "@/lib/site-learn";
-import { saveSiteKnowledge } from "@/lib/store";
+import { error, requireAdmin } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
 
-/** ホームページ（ichijoya.co.jp）を読み直して学習（OpenAI は使わない）。?reset=1 で同梱の内容に戻す */
-export async function POST(req: Request) {
+/**
+ * ホームページ（ichijoya.co.jp）の再学習。回答の根拠は指定のスプレッドシートだけにしたため（一畳屋様のご要望 2026-10-22・10-23）、
+ * ホームページは読み込まない
+ */
+export async function POST() {
   const denied = await requireAdmin();
   if (denied) return denied;
-  if (new URL(req.url).searchParams.get("reset") === "1") {
-    await saveSiteKnowledge(null);
-    invalidateKnowledgeCache();
-    return json({ ...describeKnowledge(await getKnowledge(true)), pages: [] });
-  }
-  const result = await learnWebsite();
-  if (result.entries.length === 0) {
-    return error(`ホームページを読み込めませんでした（${result.pages.map((p) => `${p.path}: ${p.error ?? "0件"}`).join(" / ")}）`, 502);
-  }
-  await saveSiteKnowledge({ fetchedAt: result.fetchedAt, entries: result.entries, pages: result.pages });
-  invalidateKnowledgeCache();
-  return json({ ...describeKnowledge(await getKnowledge(true)), pages: result.pages });
+  return error("ホームページは回答に使わないため、再学習はできません（回答の根拠は指定のスプレッドシートだけです）。", 410);
 }

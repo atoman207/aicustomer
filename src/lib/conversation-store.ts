@@ -29,18 +29,24 @@ export interface StoredConversation {
   savedAt: number;
 }
 
-const KEY = "ichijoya-ai-conversation-v2";
-/** 以前の文字の相談だけの保存（タブごと） */
+/**
+ * 保存の名前。v3（2026-10-23）：一畳屋様のご依頼で、それまでの会話（以前の仕組みの回答を含む）はすべて消して使わない
+ */
+const KEY = "ichijoya-ai-conversation-v3";
+/** 以前の保存（読まずに消す） */
+const OLD_LOCAL_KEYS = ["ichijoya-ai-conversation-v2"];
 const LEGACY_KEY = "ichijoya-ai-chat-v1";
 export const CONVERSATION_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_MESSAGES = 80;
 
 export function loadConversation(): StoredConversation | null {
   try {
-    const raw = localStorage.getItem(KEY) ?? sessionStorage.getItem(LEGACY_KEY);
+    OLD_LOCAL_KEYS.forEach((k) => localStorage.removeItem(k));
+    sessionStorage.removeItem(LEGACY_KEY);
+    const raw = localStorage.getItem(KEY);
     if (!raw) return null;
-    const c = JSON.parse(raw) as Partial<StoredConversation> & { sessionId?: string };
-    const id = c.id ?? c.sessionId;
+    const c = JSON.parse(raw) as Partial<StoredConversation>;
+    const id = c.id;
     if (!id || !Array.isArray(c.messages) || !c.messages.length || !c.savedAt || Date.now() - c.savedAt > CONVERSATION_TTL_MS) return null;
     const messages = c.messages.filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim());
     return messages.length ? { id, messages, estimateId: c.estimateId, intake: c.intake ? sanitizeIntake(c.intake) : undefined, savedAt: c.savedAt } : null;

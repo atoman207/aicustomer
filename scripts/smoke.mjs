@@ -32,7 +32,7 @@ await check("GET / (トップページ：そのまま相談できる 1 つの画
   const html = await res.text();
   if (!res.ok || !html.includes("に相談する") || !html.includes("logo-color.svg")) throw new Error(`status ${res.status}`);
   if (!html.includes("data-consult-console") || !html.includes('aria-label="ご質問"') || !html.includes("data-voice-button")) throw new Error("トップページに相談の画面（入力欄・マイク）がありません");
-  if (/data-channel="\/voice"/.test(html)) throw new Error("文字・声で入口が分かれています");
+  if (/data-channel="\/voice"/.test(html) || /文字で相談|声で相談/.test(html)) throw new Error("文字・声で入口（見出し）が分かれています");
   if (!html.includes("営業時間外・土日はAIが受付") || !html.includes('href="tel:0120158108"')) throw new Error("電話ボタンの案内がありません");
   return `${res.status} ${html.length}B 相談の画面（文字・声）あり`;
 });
@@ -105,21 +105,22 @@ await check("今のホームページへの埋め込み（embed.js）と、ほ�
   if (!/frame-ancestors 'none'/.test(adminCsp) || admin.headers.get("x-frame-options") !== "DENY") throw new Error(`/admin: ${adminCsp} ${admin.headers.get("x-frame-options")}`);
   return `embed.js ${Math.round(code.length / 1024)}KB／相談のページ：${chat.replace("frame-ancestors ", "")}／管理画面：none`;
 });
-await check("POST /api/knowledge/search（料金は料金表から回答）", async () => {
+await check("POST /api/knowledge/search（声の相談のツール：料金も資料から回答）", async () => {
   const { res, body } = await json("/api/knowledge/search", { method: "POST", body: JSON.stringify({ query: "6畳の畳の表替えはいくら？" }) });
   if (!res.ok || !(body.answer || body.hits?.length)) throw new Error(`status ${res.status} ${JSON.stringify(body).slice(0, 100)}`);
   if (body.answer && !/円/.test(body.answer)) throw new Error(`no price in answer: ${body.answer.slice(0, 80)}`);
   return `${body.mode}/${body.kind}: ${(body.answer ?? body.hits[0].title).slice(0, 40)}`;
 });
-await check("POST /api/chat（料金表から AI なしで即答）", async () => {
+await check("POST /api/chat（料金：AI があれば資料の全文から・デモは料金表から直接）", async () => {
   const res = await fetch(`${BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessionId: "smoke-price", channel: "web_text", messages: [{ role: "user", content: "朱雀の襖の両面はいくら？" }] }),
   });
-  const text = await res.text();
-  if (!res.ok || res.headers.get("x-mode") !== "local" || !/23,100円/.test(text)) throw new Error(`mode=${res.headers.get("x-mode")} ${text.slice(0, 80)}`);
-  return `mode=local ${text.split("\n")[1] ?? ""}`;
+  const text = (await res.text()).normalize("NFKC");
+  const mode = res.headers.get("x-mode");
+  if (!res.ok || !["local", "openai"].includes(mode ?? "") || !/23,100円/.test(text) || /枠交換/.test(text)) throw new Error(`mode=${mode} ${text.slice(0, 120)}`);
+  return `mode=${mode} ${text.replace(/\s+/g, " ").slice(0, 50)}`;
 });
 await check("POST /api/knowledge/answer（営業時間はスプレッドシートの内容で回答）", async () => {
   const { res, body } = await json("/api/knowledge/answer", { method: "POST", body: JSON.stringify({ question: "営業時間を教えてください" }) });
@@ -129,8 +130,9 @@ await check("POST /api/knowledge/answer（営業時間はスプレッドシー�
 });
 await check("POST /api/knowledge/answer（料金表・シートにない質問）", async () => {
   const cases = [
-    ["畳のヘリの値段は？", "price", /純金/],
-    ["6畳の表替えはいくら？", "price", /合計の目安/],
+    // AI があれば資料の全文から（llm）、デモは料金表から直接（price）
+    ["畳のヘリの値段は？", /^(price|llm)$/, /7,700円/],
+    ["6畳の表替えはいくら？", /^(price|llm)$/, /\d{2,3},\d{3}円/],
     // 資料にない質問：AI なし（デモ・検索の方式）なら定型文、資料の全文で答える方式なら AI が資料にないと判断して折り返しを案内
     ["駐車場は何台とめられますか？", /^(notfound|llm)$/, /お答えできかねます|担当者より折り返し/],
   ];

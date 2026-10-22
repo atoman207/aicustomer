@@ -10,6 +10,8 @@ export interface PriceAnswer {
   reply: string;
   tableIds: string[];
   rows: number;
+  /** 合計の目安（quote.ts）で、どの品目も数量が 1（「1枚」「1畳」）：1枚あたり・1畳あたりの単価の質問とみなせる */
+  single?: boolean;
 }
 
 export const PRICE_INTENT = /(いくら|幾ら|料金|価格|値段|費用|単価|相場|金額|円|安い|安く|高い|コスト|予算|お手頃|手頃|費(は|って|を|が|$|\?|？))/;
@@ -199,10 +201,16 @@ const UNIT: [RegExp, string][] = [
   [/^ヘリ有り 1畳物$/, "1畳あたり"],
   [/^ヘリ無し半畳$/, "半畳1枚あたり"],
   [/置き畳/, "1枚（半畳）あたり"],
+  [/^ヘリ$/, "1畳あたり"],
   [/^襖/, "1枚あたり"],
   [/^障子/, "1枚あたり"],
   [/^網戸/, "1枚あたり"],
 ];
+
+/** 料金表の金額の単位（「1畳あたり」「1枚あたり」。決まっていない表は null） */
+export function tableUnit(t: PriceTable): string | null {
+  return UNIT.find(([re]) => re.test(t.title))?.[1] ?? null;
+}
 
 function displayTitle(t: PriceTable): { name: string; extra: string } {
   const m = t.title.match(/^(.*?)[（(]([^）)]*\d[^）)]*)[）)]$/);

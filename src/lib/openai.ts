@@ -325,6 +325,8 @@ export async function createRealtimeSecret(opts: {
         instructions: opts.instructions,
         tools: opts.tools,
         tool_choice: "auto",
+        // gpt-realtime-2 系は話す前に考える。深く考えるほど、答える前・話の途中の無言が長くなる（既定 minimal）
+        ...(/^gpt-realtime-2/.test(model) ? { reasoning: { effort: env.realtimeReasoning } } : {}),
         audio: {
           input: {
             // 文字起こし：言葉の手がかり（prompt）は渡さない（雑音のときに手がかりの文をそのまま返し、
@@ -336,7 +338,7 @@ export async function createRealtimeSecret(opts: {
             turn_detection: realtimeTurnDetection(),
             noise_reduction: { type: "far_field" },
           },
-          output: { voice },
+          output: { voice, speed: env.realtimeSpeed },
         },
       },
       },

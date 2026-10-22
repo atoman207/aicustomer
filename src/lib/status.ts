@@ -19,6 +19,8 @@ export async function getIntegrationStatus(baseUrl: string, check = false): Prom
       answerModel: env.answerModel,
       answerContext: env.answerContext,
       realtimeModel: env.realtimeModel,
+      realtimeVoice: env.realtimeVoice,
+      realtimeSpeed: env.realtimeSpeed,
       ok: openaiCheck.ok,
       detail: openaiCheck.detail,
     },

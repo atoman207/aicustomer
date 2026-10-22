@@ -565,7 +565,7 @@ export default function ConsultConsole({
         data-busy={busy ? "true" : "false"}
         data-mode={mode}
         data-status={voice.status}
-        aria-label="AI相談（文字・声）"
+        aria-label="AI相談"
       >
         <header className="flex items-center gap-3 bg-ptn-logo px-4 py-3 text-white">
           <AiAvatar size="h-10 w-10" />
@@ -577,7 +577,6 @@ export default function ConsultConsole({
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-[#9be37a]" />
               </span>
               {voice.live ? `声で通話中 ${clockLabel}` : "24時間受付中"}
-              <span className="hidden sm:inline">・文字でも声でもご相談いただけます</span>
             </p>
           </div>
           <button

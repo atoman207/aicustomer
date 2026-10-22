@@ -754,11 +754,13 @@ export function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus 
           <p>
             質問への回答：
             {status.openai.answerContext === "full"
-              ? `スプレッドシートとホームページの全文を読んで回答（${status.openai.answerModel}・根拠の文を確かめてから回答）`
+              ? `指定のスプレッドシートの全文を読んで回答（${status.openai.answerModel}・根拠の文を確かめてから回答）`
               : `検索で見つかった部分だけで回答（${status.openai.model}）`}
           </p>
           <p>そのほか（見積の聞き取り・要約など）：{status.openai.model}</p>
-          <p>音声会話モデル：{status.openai.realtimeModel}</p>
+          <p>
+            音声会話モデル：{status.openai.realtimeModel}（声：{status.openai.realtimeVoice}・話す速さ {status.openai.realtimeSpeed}）
+          </p>
           {status.openai.detail ? <p className={status.openai.ok ? "text-tatami-700" : "text-amber-700"}>{status.openai.detail}</p> : null}
           {!status.openai.configured ? <p className="text-xs text-amber-700">未設定のため、テンプレート応答（デモモード）で動作しています。</p> : null}
         </Card>

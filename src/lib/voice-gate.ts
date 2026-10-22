@@ -6,6 +6,7 @@
 //     そのとき、送らずにおいた話し始めから送る（「いや、8畳です」の「いや、8畳」が抜けない）。
 //     遅れた分は、話の切れ目の静かな部分を飛ばして追いつく
 //   ・AI が話し終わったときにお客様が話し始めていたら、その頭から送る
+//   ・AI が話しているかは、受信した AI の音声の音で判定する（OpenAI の「再生が終わった」の知らせには頼らない）
 // 音の処理は AudioWorklet（音声の処理の専用スレッド。タイマーの間引きの影響を受けない）。
 // 使えない環境では、マイクの送信の入り切り（頭は少し抜ける）で同じ判定をする
 
@@ -32,10 +33,13 @@ const MIC_RELEASE = 0.6;
 const MIC_LEVEL = 0.03;
 /** AI の声が出ているとみなす音量（受信した音声の RMS。話している間は 0.08〜0.3 程度、無音は 0） */
 const AI_LEVEL = 0.01;
-/** AI の声が聞こえている間（この時間内に音があれば話し中）。OpenAI の「再生中」の知らせが届かない場合の補い */
+/** AI の声が聞こえている間（この時間内に音があれば話し中）。受信した音声を見られないときに、OpenAI の「再生中」の知らせと合わせて使う */
 const AI_HANGOVER_S = 0.3;
-/** 「再生中」の知らせのまま音声が届かなくなったら、この時間でマイクを戻す（知らせが遅れた・届かない場合） */
-const AI_SILENT_RELEASE_S = 1.5;
+/**
+ * 受信した AI の音声を見られるときは、音で「話し中」を決める：最後に音があってからこの時間までは話し中（文と文の間をつなぐ）。
+ * gpt-realtime-2.1 は「再生が終わった」の知らせ（output_audio_buffer.stopped）を送らないため、知らせには頼らない
+ */
+const AI_TAIL_S = 1.2;
 /** 遅れを取り戻すとき、静かな部分を最大でこの倍率で飛ばす（話している部分は飛ばさない） */
 const CATCH_UP = 6;
 
@@ -43,7 +47,7 @@ export interface VoiceGate {
   /** OpenAI に送るマイクの音声 */
   track: MediaStreamTrack;
   kind: "worklet" | "toggle";
-  /** OpenAI からの「AI の音声を再生中」の知らせ（output_audio_buffer.started〜stopped/cleared） */
+  /** OpenAI からの「AI の音声を再生中」の知らせ（output_audio_buffer.started〜stopped/cleared。受信した音声を見られないときに使う） */
   setAiPlaying(on: boolean): void;
   setMuted(on: boolean): void;
   /** 受信した AI の音声（音量で「いま AI が話しているか」を見る） */
@@ -54,6 +58,8 @@ export interface VoiceGate {
 interface Options {
   /** お客様がはっきり話し続けた：AI を止める */
   onBargeIn: () => void;
+  /** AI の声が流れ始めた・流れ終わった（受信した音声の音で判定。文と文の間の短い無音では終わりにしない） */
+  onAiAudio?: (on: boolean) => void;
 }
 
 /** 関所の設定（AudioWorklet に渡す。試験でも同じ値を使う） */
@@ -69,7 +75,7 @@ export const GATE_OPTIONS = {
   micLevel: MIC_LEVEL,
   aiLevel: AI_LEVEL,
   aiHangover: AI_HANGOVER_S,
-  aiSilentRelease: AI_SILENT_RELEASE_S,
+  aiTail: AI_TAIL_S,
   catchUp: CATCH_UP,
 };
 
@@ -94,6 +100,8 @@ class VoiceGate extends AudioWorkletProcessor {
     this.quiet = 1e9;
     this.aiFlag = false;
     this.lastAi = -1e9;
+    this.remoteLive = false;
+    this.aiWas = false;
     this.hold = -1e9;
     this.muted = false;
     this.gated = false;
@@ -125,8 +133,17 @@ class VoiceGate extends AudioWorkletProcessor {
     const t = currentTime;
     const mic = inputs[0] && inputs[0][0];
     const ai = inputs[1] && inputs[1][0];
-    if (ai && this.rms(ai) > c.aiLevel) this.lastAi = t;
-    const aiTalking = t - this.lastAi < c.aiHangover || (this.aiFlag && (!ai || t - this.lastAi < c.aiSilentRelease));
+    if (ai && this.rms(ai) > c.aiLevel) {
+      this.lastAi = t;
+      this.remoteLive = true;
+    }
+    // AI が話しているか：受信した AI の音声が届いていれば音で（最後の音から aiTail 秒まで）、
+    // 届いていない環境（受信した音声を音の処理に回せないブラウザ）では OpenAI の知らせで決める
+    const aiTalking = this.remoteLive ? t - this.lastAi < c.aiTail : this.aiFlag || t - this.lastAi < c.aiHangover;
+    if (aiTalking !== this.aiWas) {
+      this.aiWas = aiTalking;
+      if (this.remoteLive) this.port.postMessage({ type: "ai", on: aiTalking });
+    }
     // マイクの音を輪のバッファに書く
     this.cur = this.w;
     if (mic) this.ring.set(mic, this.cur);
@@ -213,7 +230,9 @@ async function workletGate(ctx: AudioContext, mic: MediaStream, opts: Options): 
     processorOptions: GATE_OPTIONS,
   });
   node.port.onmessage = (e) => {
-    if ((e.data as { type?: string })?.type === "barge") opts.onBargeIn();
+    const m = e.data as { type?: string; on?: boolean };
+    if (m?.type === "barge") opts.onBargeIn();
+    else if (m?.type === "ai") opts.onAiAudio?.(m.on === true);
   };
   const src = ctx.createMediaStreamSource(mic);
   src.connect(node, 0, 0);
@@ -274,6 +293,8 @@ function toggleGate(ctx: AudioContext | null, mic: MediaStream, opts: Options): 
     }
   }
   let lastAi = -1e9;
+  let remoteLive = false;
+  let aiWas = false;
   let hold = -1e9;
   let last = performance.now();
   // 直近 BARGE_WINDOW_S 秒の「声が出ていた時間」（タイマーは間引かれることがあるので、実際に経った時間で数える）
@@ -282,8 +303,16 @@ function toggleGate(ctx: AudioContext | null, mic: MediaStream, opts: Options): 
     const now = performance.now();
     const dt = Math.min(now - last, 250) / 1000;
     last = now;
-    if (aiNode && rmsOf(aiNode, buf) > AI_LEVEL) lastAi = now;
-    const aiTalking = now - lastAi < AI_HANGOVER_S * 1000 || (aiPlaying && (!aiNode || now - lastAi < AI_SILENT_RELEASE_S * 1000));
+    if (aiNode && rmsOf(aiNode, buf) > AI_LEVEL) {
+      lastAi = now;
+      remoteLive = true;
+    }
+    // AudioWorklet の関所と同じ：受信した AI の音声が届いていれば音で、届いていなければ OpenAI の知らせで決める
+    const aiTalking = remoteLive ? now - lastAi < AI_TAIL_S * 1000 : aiPlaying || now - lastAi < AI_HANGOVER_S * 1000;
+    if (aiTalking !== aiWas) {
+      aiWas = aiTalking;
+      if (remoteLive) opts.onAiAudio?.(aiTalking);
+    }
     if (aiTalking && now > hold) {
       if (track.enabled) track.enabled = false;
       if (micNode && rmsOf(micNode, buf) > MIC_LEVEL) voicedTicks.push({ at: now, dt });

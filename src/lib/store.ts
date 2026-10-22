@@ -7,7 +7,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { LEGACY_COMPANY_NAMES, LEGACY_PHONES } from "./brand";
 import { env } from "./env";
-import { kvConfigured, kvGet, kvSet } from "./kv";
+import { kvCommand, kvConfigured, kvGet, kvSet, kvSource } from "./kv";
 import type { AgentSession, AppSettings, ConversationLog, EstimateRequest, KnowledgeEntry, StorageInfo } from "./types";
 
 type CollectionName =
@@ -33,7 +33,17 @@ interface StoreState {
   writable: boolean | null;
   dir: string | null | undefined;
   kvError?: string;
+  purged?: Promise<void>;
 }
+
+/**
+ * 保存データの世代。上げると、それまでに保存したデータ（受付・会話・設定・セッション・以前の回答・答えられなかった質問・
+ * 利用状況・エラー履歴・ホームページの再学習）を、最初に使うときに一度だけすべて消す（Redis・ファイルとも）。
+ *   2：2026-10-23 一畳屋様のご依頼（それまでの保存データとキャッシュをすべて削除）
+ * Googleスプレッドシートの「受付一覧」タブ（受付の記録）は消さない
+ */
+const DATA_EPOCH = 2;
+const ALL_COLLECTIONS: CollectionName[] = ["estimates", "conversations", "sessions", "settings", "site_knowledge", "learned", "unanswered", "usage", "error_log", "embeddings"];
 
 const g = globalThis as unknown as { __aicustomerStore?: StoreState };
 const state: StoreState = g.__aicustomerStore ?? { cache: new Map(), queues: new Map(), writable: null, dir: undefined };
@@ -88,12 +98,42 @@ function useKv(name: CollectionName): boolean {
   return kvConfigured() && !MEMORY_ONLY.includes(name);
 }
 
+/** 以前の世代の保存データを消す（インスタンスごとに最初の 1 回だけ。失敗しても読み書きは続ける） */
+function purgeOldData(): Promise<void> {
+  state.purged ??= (async () => {
+    if (kvConfigured()) {
+      try {
+        // 最初に世代を書けたインスタンスだけが消す（消したあとに書かれたデータを、ほかのインスタンスが消さないように）
+        const won = await kvCommand(["SET", `aic:epoch:${DATA_EPOCH}`, new Date().toISOString(), "NX"]);
+        if (won === "OK") await kvCommand(["DEL", ...ALL_COLLECTIONS.map((n) => `aic:${n}`)]);
+      } catch (e) {
+        state.kvError = (e as Error).message;
+      }
+    }
+    const dir = await ensureDir();
+    if (!dir) return;
+    const mark = path.join(dir, `.epoch-${DATA_EPOCH}`);
+    try {
+      await fs.access(mark);
+    } catch {
+      try {
+        for (const f of await fs.readdir(dir)) if (/\.json$|\.tmp$/.test(f)) await fs.rm(path.join(dir, f), { force: true });
+        await fs.writeFile(mark, new Date().toISOString());
+      } catch {
+        // 読み取り専用など：そのまま使う
+      }
+    }
+  })();
+  return state.purged;
+}
+
 function remember<T>(name: CollectionName, value: T): T {
   state.cache.set(name, { value, at: Date.now() });
   return value;
 }
 
 async function read<T>(name: CollectionName): Promise<T> {
+  await purgeOldData();
   const cached = state.cache.get(name);
   const kv = useKv(name);
   if (cached && (!kv || Date.now() - cached.at < KV_CACHE_TTL_MS)) return cached.value as T;
@@ -126,6 +166,7 @@ async function read<T>(name: CollectionName): Promise<T> {
 }
 
 async function write<T>(name: CollectionName, value: T): Promise<void> {
+  await purgeOldData();
   remember(name, value);
   const prev = state.queues.get(name) ?? Promise.resolve();
   const next = prev
@@ -164,7 +205,7 @@ export function storageInfo(): StorageInfo {
     return {
       backend: "redis",
       persistent: true,
-      label: "Upstash Redis（永続・複数インスタンス共有）",
+      label: `Upstash Redis（永続・複数インスタンス共有。${kvSource()} で接続）`,
       detail: state.kvError ? `直近のエラー：${state.kvError}（ファイル／メモリへフォールバック中）` : undefined,
     };
   }
@@ -173,7 +214,8 @@ export function storageInfo(): StorageInfo {
       backend: "memory",
       persistent: false,
       label: "一時保存（サーバーレス：再デプロイやスリープで消えます）",
-      detail: "Vercel の Storage から Upstash Redis を追加すると、受付・会話・設定が永続化され、電話・LINE の会話状態も安定します。",
+      detail:
+        "Vercel の Storage から Upstash Redis を追加すると、受付・会話・設定が永続化され、電話・LINE の会話状態も安定します（声の相談の資料の読み込みも速くなります）。追加したあとは Redeploy してください。",
     };
   }
   return { backend: "file", persistent: true, label: "ローカルファイル（data/runtime）", detail: state.writable === false ? "書き込みに失敗したためメモリで動作中" : undefined };

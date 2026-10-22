@@ -1,28 +1,29 @@
 // ナレッジ（AIの回答情報源）の読み込み・統合・キャッシュ
-//   回答の根拠は「Googleスプレッドシート（顧客対応マニュアルのタブ）」と「一畳屋のホームページ（ichijoya.co.jp）」だけ
+//   回答の根拠は、指定の「Googleスプレッドシート（顧客対応マニュアルのタブ）」だけ（ホームページは使わない）
+//   キャッシュ：KNOWLEDGE_CACHE_SECONDS（既定 60 秒）ごとに裏で読み直す（お客様をスプレッドシートの読み込みで待たせない）。
+//             Upstash Redis があれば、読んだ内容を複数のインスタンスで共有する（起動直後のインスタンスもすぐ答えられる）
 //   1. Googleスプレッドシート … サービスアカウント（GOOGLE_SERVICE_ACCOUNT_EMAIL・GOOGLE_PRIVATE_KEY・KNOWLEDGE_SHEET_ID・KNOWLEDGE_SHEET_GID）
 //                             または管理画面で入力した URL・GAS_WEBHOOK_URL・KNOWLEDGE_SHEET_CSV_URL
 //                             読めないときは同じシートの保存版（database/manual.json＝npm run knowledge:build でシートから作成）
-//   2. ホームページ … database/website.json（管理画面から再学習した場合はその内容）。料金がシートと違う項目は使わない
-// 食い違いがあればスプレッドシートが正です。
+//   ホームページ（database/website.json・管理画面での再学習）は回答に使わない（一畳屋様のご要望 2026-10-22・10-23）
 import crypto from "crypto";
 import manualJson from "../../database/manual.json";
 import rulesJson from "../../database/manual-rules.json";
-import websiteJson from "../../database/website.json";
 import { env } from "./env";
 import { logError } from "./errorlog";
 import { gasRequest, sheetsReadTab } from "./google";
+import { kvConfigured, kvGet, kvSet } from "./kv";
 import { DEFAULT_MANUAL_RULES, gridToManual, type ManualRules, type PriceTable } from "./manual";
 import { labelTokens, normPrice } from "./price";
 import { parseSheetLink, type SheetLink } from "./sheet-link";
-import { getSettings, getSiteKnowledge } from "./store";
+import { getSettings } from "./store";
 import type { KnowledgeEntry, KnowledgeSnapshot, KnowledgeSource } from "./types";
 
 interface Cache {
   snapshot: KnowledgeSnapshot;
   expires: number;
 }
-const g = globalThis as unknown as { __knowledgeCache?: Cache | null };
+const g = globalThis as unknown as { __knowledgeCache?: Cache | null; __knowledgeRefreshing?: Promise<KnowledgeSnapshot> | null };
 
 export const SOURCE_LABEL: Record<KnowledgeSource, string> = {
   sheets_api: "Googleスプレッドシート（Sheets API で読み取り中）",
@@ -318,11 +319,90 @@ export function entryHash(e: KnowledgeEntry): string {
   return crypto.createHash("sha1").update(`${e.id}|${e.content}`).digest("hex").slice(0, 12);
 }
 
-export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
-  const now = Date.now();
-  const cached = g.__knowledgeCache;
-  if (!force && cached && cached.expires > now) return cached.snapshot;
+/** 資料の保存先（Upstash Redis）のキー。シートの指定が変わったら別のキーになる */
+async function sharedKey(): Promise<string> {
+  const sheetUrl = (await getSettings().catch(() => null))?.knowledgeSheetUrl ?? "";
+  const spec = [sheetUrl, env.knowledgeSheetId, env.knowledgeSheetGid].join("|");
+  return `aic:knowledge:${crypto.createHash("sha1").update(spec).digest("hex").slice(0, 12)}`;
+}
+/** Redis に置いた資料を、ここまで古くても使う（スプレッドシートを読めないときの予備も兼ねる） */
+const SHARED_KEEP_SECONDS = 24 * 60 * 60;
 
+async function readShared(): Promise<{ at: number; snapshot: KnowledgeSnapshot } | null> {
+  if (!kvConfigured()) return null;
+  try {
+    const raw = await kvGet(await sharedKey());
+    return raw ? (JSON.parse(raw) as { at: number; snapshot: KnowledgeSnapshot }) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeShared(snapshot: KnowledgeSnapshot): Promise<void> {
+  if (!kvConfigured()) return;
+  try {
+    await kvSet(await sharedKey(), JSON.stringify({ at: Date.now(), snapshot }), SHARED_KEEP_SECONDS);
+  } catch {
+    // 保存できなくても、このインスタンスのキャッシュで続ける
+  }
+}
+
+/** 読み直す（同時に頼まれても 1 回だけ）。ほかのインスタンスが少し前に読んだ内容が Redis にあればそれを使う */
+function refreshKnowledge(force: boolean): Promise<KnowledgeSnapshot> {
+  if (!force && g.__knowledgeRefreshing) return g.__knowledgeRefreshing;
+  const ttl = env.knowledgeCacheSeconds * 1000;
+  const p = (async () => {
+    const shared = force ? null : await readShared();
+    if (shared && Date.now() - shared.at < ttl) {
+      g.__knowledgeCache = { snapshot: shared.snapshot, expires: shared.at + ttl };
+      return shared.snapshot;
+    }
+    const snapshot = await buildKnowledge();
+    g.__knowledgeCache = { snapshot, expires: Date.now() + ttl };
+    await writeShared(snapshot);
+    return snapshot;
+  })().finally(() => {
+    if (g.__knowledgeRefreshing === p) g.__knowledgeRefreshing = null;
+  });
+  g.__knowledgeRefreshing = p;
+  return p;
+}
+
+/** 裏で読み直す（Vercel では応答のあとも、読み直し終わるまで動かしておく） */
+function refreshInBackground(): void {
+  const p = refreshKnowledge(false).catch(() => undefined);
+  // Next の after（要求の外＝スクリプト・試験では使えないので、そのまま裏で読み直す）。npm run knowledge:build などからも読めるように後から読み込む
+  void import("next/server")
+    .then(({ after }) => after(() => p))
+    .catch(() => undefined);
+}
+
+/**
+ * 回答に使う資料。お客様をスプレッドシートの読み込みで待たせない：
+ *   ・このインスタンスのキャッシュが新しければそれを、古くなっていればそれで答えながら裏で読み直す
+ *   ・キャッシュがなければ（起動直後）Redis に置いた資料を使う（なければスプレッドシートを読む）
+ * force：管理画面の「再読み込み」など。必ずスプレッドシートを読み直す
+ */
+export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
+  if (force) return refreshKnowledge(true);
+  const cached = g.__knowledgeCache;
+  if (cached) {
+    if (cached.expires <= Date.now()) refreshInBackground();
+    return cached.snapshot;
+  }
+  const shared = await readShared();
+  if (shared) {
+    const ttl = env.knowledgeCacheSeconds * 1000;
+    g.__knowledgeCache = { snapshot: shared.snapshot, expires: shared.at + ttl };
+    if (shared.at + ttl <= Date.now()) refreshInBackground();
+    return shared.snapshot;
+  }
+  return refreshKnowledge(false);
+}
+
+/** スプレッドシート（読めなければ保存版）とホームページから資料を作る */
+async function buildKnowledge(): Promise<KnowledgeSnapshot> {
+  const now = Date.now();
   const errors: string[] = [];
   // 1. Googleスプレッドシート（読めなければ同じシートの保存版 database/manual.json）
   const sheetUrl = (await getSettings().catch(() => null))?.knowledgeSheetUrl ?? "";
@@ -330,15 +410,11 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
   const remote = sheetConfigured ? await loadRemote(errors, sheetUrl) : null;
   const manual = remote ?? bundledManual();
 
-  // 2. ホームページ（管理画面で再学習した内容、なければ同梱の database/website.json）。
-  //    既定では回答に使わない（回答の根拠は指定のスプレッドシートだけ）。KNOWLEDGE_INCLUDE_WEBSITE=1 で補足として使う
-  const websiteUsed = env.knowledgeIncludeWebsite;
-  const siteStored = await getSiteKnowledge();
-  const relearned = Boolean(siteStored && siteStored.entries.length > 0);
-  const siteAll = websiteUsed
-    ? (relearned ? siteStored!.entries : (websiteJson as { entries: KnowledgeEntry[] }).entries).map((e) => ({ ...e, origin: "website" as const }))
-    : [];
-  const websiteFetchedAt = relearned ? siteStored!.fetchedAt : (websiteJson as { fetchedAt?: string }).fetchedAt;
+  // 2. ホームページは回答に使わない（回答の根拠は指定のスプレッドシートだけ。一畳屋様のご要望 2026-10-22・10-23）
+  const websiteUsed = false;
+  const relearned = false;
+  const siteAll: KnowledgeEntry[] = [];
+  const websiteFetchedAt: string | undefined = undefined;
 
   // 料金はスプレッドシートの料金表が正：違う金額を書いたホームページの項目は使わない
   const site = checkPrices(siteAll, priceIndex(manual.tables));
@@ -378,13 +454,13 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
       url: sheetUrl,
     },
   };
-  g.__knowledgeCache = { snapshot, expires: now + env.knowledgeCacheSeconds * 1000 };
   if (errors.length) void logError("sheet", "スプレッドシートの読み込み", errors.join(" / "));
   return snapshot;
 }
 
 export function invalidateKnowledgeCache(): void {
   g.__knowledgeCache = null;
+  g.__knowledgeRefreshing = null;
 }
 
 /** 管理画面向け：ナレッジの一覧と情報源ごとの件数（料金表は表ごとの概要のみ） */

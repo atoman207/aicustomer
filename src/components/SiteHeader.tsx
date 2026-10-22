@@ -2,7 +2,7 @@
 
 // ヘッダー（一畳屋サイトと同じ見た目）
 //   PC：ロゴ／百年企業／無料お見積りOK／フリーダイヤル（営業時間外・土日は AI が受付）／受付時間／AIに相談
-//   SP：固定ヘッダー＋赤い「もくじ」ボタンで、AI 相談（文字・声）と電話のメニューを開く
+//   SP：固定ヘッダー＋赤い「もくじ」ボタンで、AI相談と電話のメニューを開く
 import { PhoneCall, Settings2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -74,7 +74,7 @@ export default function SiteHeader() {
               href="/#ai-consult"
               command={{ action: "text" }}
               className="flex h-[100px] w-[187px] flex-col items-center justify-center gap-1.5 bg-ichi-line text-white transition-opacity duration-300 hover:opacity-80"
-              aria-label="AIに相談する（24時間受付・文字でも声でも）"
+              aria-label="AI相談（24時間受付）"
             >
               <span className="relative block h-[46px] w-[50px]" aria-hidden>
                 <svg viewBox="0 0 49.91 46" className="absolute inset-0 h-full w-full">
@@ -98,7 +98,7 @@ export default function SiteHeader() {
       {/* SP：固定ヘッダーの高さ分のスペーサー */}
       <div className="h-20 lg:hidden" aria-hidden />
 
-      {/* AI 相談（文字・声）と電話のメニュー（トップはキービジュアルの下に表示） */}
+      {/* AI相談と電話のメニュー（トップはキービジュアルの下に表示） */}
       {!isHome ? <AiNav /> : null}
 
       {/* SP：もくじボタン */}
@@ -132,15 +132,9 @@ export default function SiteHeader() {
               );
               return (
                 <li key={n.href} className="border-b border-dashed border-white/50">
-                  {n.action ? (
-                    <ConsultLink href={n.href} command={{ action: n.action }} className={className} tabIndex={open ? 0 : -1} onDone={() => setOpen(false)}>
-                      {label}
-                    </ConsultLink>
-                  ) : (
-                    <Link href={n.href} className={className} tabIndex={open ? 0 : -1}>
-                      {label}
-                    </Link>
-                  )}
+                  <ConsultLink href={n.href} command={{ action: n.action }} className={className} tabIndex={open ? 0 : -1} onDone={() => setOpen(false)}>
+                    {label}
+                  </ConsultLink>
                 </li>
               );
             })}

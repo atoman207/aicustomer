@@ -7,7 +7,7 @@ import { getSettings } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
-  title: "AIに相談（文字・声）",
+  title: "AI相談",
   description: "畳・襖・障子・網戸の料金の目安や工期、対応エリアなどに、一畳屋のAI相談員が24時間お答えします。文字でも声でも、1つの画面でご相談いただけます。無料お見積りのご依頼もこちらから。",
 };
 
@@ -17,7 +17,7 @@ export default async function ChatPage() {
   return (
     <PageHero
       compact
-      kicker="AI相談（文字・声）"
+      kicker="AI相談"
       ruby="えーあいにそうだん"
       title="AIに相談"
       badge={["24", "時間"]}
