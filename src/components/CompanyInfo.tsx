@@ -1,8 +1,8 @@
 // トップページの会社情報（営業のご案内・よくあるご質問・選ばれる理由・会社メッセージ・店舗）
 // 写真は一畳屋サイト（ichijoya.co.jp）のもの。内容は src/lib/company.ts
 import { CalendarCheck, ChevronDown, Clock3, MapPin, MessageSquareText, PhoneCall, Wrench } from "lucide-react";
-import Link from "next/link";
 import type { ReactNode } from "react";
+import ConsultLink from "./consult/ConsultLink";
 import Reveal from "./Reveal";
 import { BRAND } from "@/lib/brand";
 import { BUSINESS, FAQ, MESSAGE, PHILOSOPHY, REASONS, STORES, infoPhoto, mapUrl } from "@/lib/company";
@@ -114,13 +114,15 @@ export function Faq() {
                     {f.a.map((p) => (
                       <p key={p}>{p}</p>
                     ))}
-                    <Link
+                    {/* トップページの相談の画面でそのまま質問する（相談の画面がないページでは /chat で） */}
+                    <ConsultLink
                       href={`/chat?q=${encodeURIComponent(f.q)}`}
+                      command={{ action: "ask", q: f.q }}
                       className="inline-flex items-center gap-1.5 pt-1 text-xs font-bold text-ichi-green underline-offset-2 hover:underline"
                     >
                       <MessageSquareText className="h-3.5 w-3.5" />
                       AIにくわしく聞く
-                    </Link>
+                    </ConsultLink>
                   </div>
                 </div>
               </details>

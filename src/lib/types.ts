@@ -52,6 +52,8 @@ export interface KnowledgeSnapshot {
   excludedLines: string[];
   websiteFetchedAt?: string;
   websiteOrigin: "bundled" | "relearned";
+  /** ホームページの内容を回答に使っているか（既定は使わない＝スプレッドシートだけ） */
+  websiteUsed: boolean;
   /** Googleスプレッドシートの接続状況（connected＝今回シートから読めた） */
   sheet?: { configured: boolean; connected: boolean; via: "gas" | "csv" | "env" | null; url: string };
 }
@@ -171,7 +173,7 @@ export interface StorageInfo {
 }
 
 export interface IntegrationStatus {
-  openai: { configured: boolean; model: string; realtimeModel: string; ok?: boolean; detail?: string };
+  openai: { configured: boolean; model: string; answerModel: string; answerContext: "full" | "search"; realtimeModel: string; ok?: boolean; detail?: string };
   storage: StorageInfo;
   knowledge: { source: KnowledgeSource; label: string; entries: number; fetchedAt: string; warning?: string };
   reception: { sink: "gas" | "sheets_api" | "local"; label: string };

@@ -27,14 +27,20 @@ const json = async (path, init) => {
 
 const form = (obj) => new URLSearchParams(obj).toString();
 
-await check("GET / (トップページ：AIの窓口は文字・声の2つ＋電話ボタン)", async () => {
+await check("GET / (トップページ：そのまま相談できる 1 つの画面＝文字の入力欄＋声のマイク＋電話ボタン)", async () => {
   const res = await fetch(`${BASE}/`);
   const html = await res.text();
   if (!res.ok || !html.includes("に相談する") || !html.includes("logo-color.svg")) throw new Error(`status ${res.status}`);
-  const channels = [...html.matchAll(/data-channel="([^"]+)"/g)].map((m) => m[1]);
-  if (channels.join(",") !== "/chat,/voice") throw new Error(`窓口: ${channels.join(",") || "なし"}`);
+  if (!html.includes("data-consult-console") || !html.includes('aria-label="ご質問"') || !html.includes("data-voice-button")) throw new Error("トップページに相談の画面（入力欄・マイク）がありません");
+  if (/data-channel="\/voice"/.test(html)) throw new Error("文字・声で入口が分かれています");
   if (!html.includes("営業時間外・土日はAIが受付") || !html.includes('href="tel:0120158108"')) throw new Error("電話ボタンの案内がありません");
-  return `${res.status} ${html.length}B 窓口=${channels.join("・")}`;
+  return `${res.status} ${html.length}B 相談の画面（文字・声）あり`;
+});
+await check("GET /voice（以前の声の相談の入口 → 同じ相談の画面へ）", async () => {
+  const res = await fetch(`${BASE}/voice?embed=1`, { redirect: "manual" });
+  const to = res.headers.get("location") ?? "";
+  if (res.status < 300 || res.status >= 400 || !/\/chat\?/.test(to) || !/voice=1/.test(to) || !/embed=1/.test(to)) throw new Error(`${res.status} → ${to}`);
+  return `${res.status} → ${to}`;
 });
 for (const p of ["/", "/chat", "/voice", "/phone", "/admin"]) {
   await check(`GET ${p}`, async () => {
@@ -60,7 +66,7 @@ await check("Googleスプレッドシート（回答の情報源・受付の記�
   if (!body.sheet?.configured) return `未設定（保存版 ${body.knowledge.source} で回答）`;
   return `サービスアカウントで接続（ナレッジ ${body.knowledge.source}・${body.knowledge.entries} 件${body.knowledge.warning ? `・${body.knowledge.warning.slice(0, 60)}` : ""}／受付 ${body.reception.sink}）`;
 });
-await check("GET /api/knowledge（スプレッドシート・ホームページ）", async () => {
+await check("GET /api/knowledge（回答の根拠は指定のスプレッドシートだけ）", async () => {
   const { res, body } = await json("/api/knowledge");
   if (res.status === 401) {
     // 管理画面のパスワード保護あり → 公開の接続状況で件数だけ確認
@@ -70,10 +76,12 @@ await check("GET /api/knowledge（スプレッドシート・ホームページ�
   }
   if (!res.ok || !Array.isArray(body.entries) || body.entries.length === 0) throw new Error(`status ${res.status}`);
   const st = body.stats ?? {};
-  if (body.source === "local" || !(st.manualTables > 0) || !(st.website > 0)) throw new Error(`sources missing: ${body.source} ${JSON.stringify(st)}`);
+  if (body.source === "local" || !(st.manualText > 0) || !(st.manualTables > 0)) throw new Error(`sources missing: ${body.source} ${JSON.stringify(st)}`);
   const origins = [...new Set(body.entries.map((e) => e.origin))];
+  // 既定はスプレッドシートだけ（KNOWLEDGE_INCLUDE_WEBSITE=1 のときだけホームページも補足に使う）
+  if (body.websiteUsed === false && origins.some((o) => o !== "manual")) throw new Error(`スプレッドシート以外の情報源: ${origins.join(",")}`);
   if (origins.some((o) => o !== "manual" && o !== "website")) throw new Error(`スプレッドシート・ホームページ以外の情報源: ${origins.join(",")}`);
-  return `${body.entries.length} entries（${body.source}: 文章${st.manualText}・料金表${st.manualTables} / HP${st.website}）`;
+  return `${body.entries.length} entries（${body.source}: 文章${st.manualText}・料金表${st.manualTables}${body.websiteUsed ? ` / HP${st.website}` : "・ホームページは使わない"}）`;
 });
 await check("管理画面の API（ADMIN_PASSWORD 設定時はログインが必要）", async () => {
   const { body } = await json("/api/status");
@@ -123,12 +131,14 @@ await check("POST /api/knowledge/answer（料金表・シートにない質問�
   const cases = [
     ["畳のヘリの値段は？", "price", /純金/],
     ["6畳の表替えはいくら？", "price", /合計の目安/],
-    ["駐車場は何台とめられますか？", "notfound", /担当者より折り返し/],
+    // 資料にない質問：AI なし（デモ・検索の方式）なら定型文、資料の全文で答える方式なら AI が資料にないと判断して折り返しを案内
+    ["駐車場は何台とめられますか？", /^(notfound|llm)$/, /お答えできかねます|担当者より折り返し/],
   ];
   const out = [];
   for (const [question, kind, re] of cases) {
     const { res, body } = await json("/api/knowledge/answer", { method: "POST", body: JSON.stringify({ question }) });
-    if (!res.ok || body.kind !== kind || !re.test(body.reply)) throw new Error(`${question} → ${body.mode}/${body.kind} ${String(body.reply).slice(0, 50)}`);
+    const kindOk = kind instanceof RegExp ? kind.test(body.kind) : body.kind === kind;
+    if (!res.ok || !kindOk || !re.test(body.reply)) throw new Error(`${question} → ${body.mode}/${body.kind} ${String(body.reply).slice(0, 50)}`);
     out.push(`${body.kind}`);
   }
   return out.join("・");

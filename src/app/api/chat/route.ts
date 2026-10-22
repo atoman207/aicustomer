@@ -3,10 +3,12 @@ import { logError } from "@/lib/errorlog";
 import { error, rateLimited, readJson } from "@/lib/http";
 import { sanitizeIntake } from "@/lib/intake";
 import { intakeApplies, intakeTurn } from "@/lib/intake-ai";
+import { env } from "@/lib/env";
 import { getKnowledge } from "@/lib/knowledge";
-import { streamChatCompletion } from "@/lib/openai";
-import { buildChatSystemPrompt } from "@/lib/prompts";
+import { canRetryWithChatModel, streamChatCompletion } from "@/lib/openai";
+import { ANSWER_MARKER, buildChatSystemPrompt, splitEvidence, usesEvidence } from "@/lib/prompts";
 import { getConversation, getSettings, upsertConversation } from "@/lib/store";
+import { isPromptEcho } from "@/lib/transcribe";
 import type { Channel, ChatMessage } from "@/lib/types";
 import { truncate, uid } from "@/lib/utils";
 
@@ -36,6 +38,8 @@ export async function POST(req: Request) {
   const channel: Channel = body.channel === "web_voice" ? "web_voice" : "web_text";
   const messages = body.messages
     .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+    // 声の相談の雑音で、文字起こしが手がかりの文をなぞっただけの行（お客様の発言ではない）は使わない
+    .filter((m) => !(m.role === "user" && isPromptEcho(m.content)))
     .slice(-20)
     .map((m) => ({ role: m.role, content: m.content.slice(0, 4000), at: m.at }));
   const last = [...messages].reverse().find((m) => m.role === "user");
@@ -102,18 +106,38 @@ export async function POST(req: Request) {
 
   try {
     const system = buildChatSystemPrompt(settings.companyName, plan.context, channel);
-    const stream = await streamChatCompletion(
-      {
-        messages: [{ role: "system", content: system }, ...recentHistory(messages)],
-        temperature: 0.3,
-        maxTokens: 600,
-        purpose: "chat",
-      },
-      async (full) => {
-        await persist(full, "openai", plan.snapshot.source, plan.kind);
-        await learnAnswer(plan, full);
-      },
-    );
+    // 資料の全文で答えるとき：先に資料から根拠を引用させ（お客様には送らない）、回答だけを送る
+    const evidence = usesEvidence(plan.context);
+    const hide = evidence
+      ? { until: ANSWER_MARKER, onMissing: (all: string) => splitEvidence(all).answer || "申し訳ありません、ただいま回答をまとめられませんでした。もう一度お送りいただくか、お電話（0120-158-108）でお問い合わせください。" }
+      : undefined;
+    const start = (model: string) =>
+      streamChatCompletion(
+        {
+          model,
+          // 回答のモデルが推論するモデル（gpt-5 系）なら、考える深さは設定のとおり（既定 none＝すぐ答える）
+          reasoningEffort: model === env.answerModel ? env.answerReasoning : undefined,
+          messages: [{ role: "system", content: system }, ...recentHistory(messages)],
+          temperature: 0.3,
+          maxTokens: evidence ? 1200 : 600,
+          purpose: "chat",
+        },
+        async (full) => {
+          await persist(full, "openai", plan.snapshot.source, plan.kind);
+          await learnAnswer(plan, full);
+        },
+        hide,
+      );
+    const model = plan.fullContext ? env.answerModel : env.chatModel;
+    let stream: ReadableStream<Uint8Array>;
+    try {
+      stream = await start(model);
+    } catch (e) {
+      // 混み合っている・一時的な障害・この API キーでは使えないモデル：いつものモデルで答え直す
+      if (model === env.chatModel || !canRetryWithChatModel(e)) throw e;
+      await logError("openai", `文字の相談（${model} が使えないため ${env.chatModel} で回答）`, e);
+      stream = await start(env.chatModel);
+    }
     return new Response(stream, { headers: planHeaders(plan, "openai") });
   } catch (e) {
     // エラーの内容は管理画面の「エラー履歴」に記録し、お客様には登録済みの情報からご案内する

@@ -30,6 +30,7 @@ interface KnowledgeResp {
   excludedLines: string[];
   websiteFetchedAt?: string;
   websiteOrigin: "bundled" | "relearned";
+  websiteUsed?: boolean;
   remoteConfigured: boolean;
   sheet?: { configured: boolean; connected: boolean; via: "gas" | "csv" | "env" | null; url: string };
 }
@@ -281,9 +282,13 @@ function SourcesCard({
     <div className="card p-5" data-sources>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-serif text-base font-bold text-sumi-800">AIの回答情報源：Googleスプレッドシートとホームページ</p>
+          <p className="font-serif text-base font-bold text-sumi-800">
+            AIの回答情報源：{data?.websiteUsed === false ? "Googleスプレッドシートだけ" : "Googleスプレッドシートとホームページ"}
+          </p>
           <p className="mt-1 text-xs leading-relaxed text-sumi-500">
-            AI はこの 2 つの内容だけを根拠に回答します（食い違いはスプレッドシートが優先・料金はスプレッドシートの料金表）。
+            {data?.websiteUsed === false
+              ? "AI は指定のスプレッドシートの内容だけを根拠に回答します（書かれていないことは推測せず「お答えできかねます」と案内）。"
+              : "AI はこの 2 つの内容だけを根拠に回答します（食い違いはスプレッドシートが優先・料金はスプレッドシートの料金表）。"}
             内容を変えるときはスプレッドシートを直してください（約 1 分で反映。「スプレッドシートを再読み込み」ですぐに反映）。
           </p>
         </div>
@@ -364,9 +369,15 @@ function SourcesCard({
             <Globe className="mt-0.5 h-4 w-4 shrink-0 text-ai-600" />
             <span className="min-w-0">
               <span className="block font-semibold text-sumi-800">② ホームページ（ichijoya.co.jp）</span>
-              <span className="block text-xs text-sumi-600">
-                {s?.website ?? 0} 件／{data.websiteFetchedAt ? `${formatJst(data.websiteFetchedAt)} に学習` : "—"}（{data.websiteOrigin === "relearned" ? "管理画面で再学習" : "同梱版"}）
-              </span>
+              {data.websiteUsed === false ? (
+                <span className="block text-xs text-sumi-600">
+                  回答には使っていません（回答の根拠は指定のスプレッドシートだけ）。ホームページも使う場合は、環境変数 KNOWLEDGE_INCLUDE_WEBSITE=1 を設定して再デプロイします。
+                </span>
+              ) : (
+                <span className="block text-xs text-sumi-600">
+                  {s?.website ?? 0} 件／{data.websiteFetchedAt ? `${formatJst(data.websiteFetchedAt)} に学習` : "—"}（{data.websiteOrigin === "relearned" ? "管理画面で再学習" : "同梱版"}）
+                </span>
+              )}
               {data.stale.length ? (
                 <span className="mt-0.5 block text-[11px] text-amber-700">
                   料金がスプレッドシートと違うため使っていないページ：{data.stale.map((x) => `${x.title}（${x.missing.join("、")}）`).join(" ／ ")}
@@ -489,6 +500,7 @@ function UsageCard({ usage }: { usage: Usage[] }) {
     embedding: "意味の近さの検索",
     tts: "音声合成",
     realtime_session: "音声相談の接続",
+    voice_answer: "音声相談の回答（資料から）",
     answer_test: "回答テスト",
   };
   return (

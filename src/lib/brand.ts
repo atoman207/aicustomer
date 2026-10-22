@@ -33,11 +33,14 @@ export const ASSETS = {
   appleTouch: `${A}/apple-touch-icon.png`,
 } as const;
 
-/** AI 相談のメニュー（AI の窓口は「文字」と「声」の 2 つ。電話はふつうの電話ボタン） */
+/**
+ * AI 相談のメニュー。相談の画面は 1 つ（トップページの「AIに相談する」。文字でも声でも）。
+ * 「文字で相談」「声で相談」は、その画面で入力欄を開く・声で話し始めるだけ（入口を分けない）。電話はふつうの電話ボタン
+ */
 export const AI_NAV = [
-  { href: "/", label: "AI相談トップ", short: "トップ" },
-  { href: "/chat", label: "文字で相談", short: "文字" },
-  { href: "/voice", label: "声で相談", short: "声" },
+  { href: "/", label: "AI相談トップ", short: "トップ", icon: "home", action: null },
+  { href: "/#ai-consult", label: "文字で相談", short: "文字", icon: "text", action: "text" },
+  { href: "/?voice=1#ai-consult", label: "声で相談", short: "声", icon: "voice", action: "voice" },
 ] as const;
 
 /** キービジュアルの写真（WebP 1x/2x + PNG フォールバック） */

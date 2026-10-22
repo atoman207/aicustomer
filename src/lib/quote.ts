@@ -538,10 +538,13 @@ function parseMessage(ctx: Ctx, raw: string, state: State): Parsed {
     if (/^(?:の(?:張替え|表替え|新調))?(?:だけ|のみ)/.test(rest)) parsed.only = h.group;
   }
 
-  const clauses = text.split(SPLIT).filter((c) => c && c.trim());
+  // 文（「。」「?」「!」・改行）ごとに区切りを作る。数量は、同じ文の中は足し（「6畳と8畳」）、別の文なら言い直し・訂正として
+  // 後の文の数量にする（「いや、8畳でした。8畳だといくら？」は 8畳。「あと」「も」などの追加のときだけ足す）
+  const clauses = text.split(/[。!?\n]+/).flatMap((s, si) => s.split(SPLIT).filter((c) => c && c.trim()).map((c) => ({ c, si })));
   let prevGroup: Group | null = null;
-  const pending: { c: string; pieces: PieceHit[]; mats: Qty | null }[] = [];
-  const assign = (g: Group, c: string, pieces: PieceHit[], mats: Qty | null) => {
+  const pending: { c: string; si: number; pieces: PieceHit[]; mats: Qty | null }[] = [];
+  const qtyBySentence = new Map<Group, Map<number, Qty>>();
+  const assign = (g: Group, c: string, si: number, pieces: PieceHit[], mats: Qty | null) => {
     const current = state.items.get(g);
     const patch = clausePatch(ctx, c, raw, g, current);
     parsed.patches.set(g, mergePatch(parsed.patches.get(g) ?? {}, patch));
@@ -552,10 +555,13 @@ function parseMessage(ctx: Ctx, raw: string, state: State): Parsed {
       if (pieceSum || halfSum) q = { n: pieceSum, half: halfSum, unit: pieceSum ? "枚" : "畳" };
       else if (mats) q = mats;
     } else if (pieceSum) q = { n: pieceSum, half: 0, unit: "枚" };
-    if (q) parsed.qtys.set(g, addQty(parsed.qtys.get(g), q));
+    if (!q) return;
+    const bySentence = qtyBySentence.get(g) ?? new Map<number, Qty>();
+    bySentence.set(si, addQty(bySentence.get(si), q));
+    qtyBySentence.set(g, bySentence);
   };
 
-  for (const c of clauses) {
+  for (const { c, si } of clauses) {
     const hits = groupHits(c);
     const pieces = piecesIn(c);
     // 建具の話で、畳の作業の言葉がないときの「6畳」はお部屋の広さ
@@ -577,13 +583,13 @@ function parseMessage(ctx: Ctx, raw: string, state: State): Parsed {
       if (!g && (mats || tatamiRows(ctx, c, raw))) g = "畳";
       if (!g && prevGroup) g = prevGroup;
       if (g) {
-        assign(g, c, pieces, mats);
+        assign(g, c, si, pieces, mats);
         prevGroup = g;
-      } else pending.push({ c, pieces, mats });
+      } else pending.push({ c, si, pieces, mats });
       continue;
     }
     if (groups.length === 1) {
-      assign(groups[0], c, pieces, mats);
+      assign(groups[0], c, si, pieces, mats);
       prevGroup = groups[0];
       continue;
     }
@@ -594,26 +600,40 @@ function parseMessage(ctx: Ctx, raw: string, state: State): Parsed {
         const after = hits.find((h) => h.index > p.index);
         return (before ?? after)?.group === g;
       });
-      assign(g, c, own, g === "畳" ? mats : null);
+      assign(g, c, si, own, g === "畳" ? mats : null);
     }
     prevGroup = groups[groups.length - 1];
   }
 
   // 商品の言葉がない区切り（「8畳で」「両面で」「4枚」）
-  for (const { c, pieces, mats } of pending) {
+  const implicitBySentence = new Map<number, { qty: Qty | null; pieces: number }>();
+  for (const { c, si, pieces, mats } of pending) {
     const g = prevGroup ?? allHits[0]?.group ?? null;
     if (g) {
-      assign(g, c, pieces, mats);
+      assign(g, c, si, pieces, mats);
       continue;
     }
     parsed.implicit = mergePatch(parsed.implicit ?? {}, clausePatch(ctx, c, raw, null, undefined));
-    if (mats) parsed.implicitQty = addQty(parsed.implicitQty, mats);
+    const cur = implicitBySentence.get(si) ?? { qty: null, pieces: 0 };
+    if (mats) cur.qty = addQty(cur.qty, mats);
     const n = pieces.reduce((s, p) => s + p.count, 0);
     const halfN = pieces.filter((p) => p.half).reduce((s, p) => s + p.count, 0);
-    if (halfN) parsed.implicitQty = addQty(parsed.implicitQty, { n: 0, half: halfN, unit: "畳" });
-    else if (n) parsed.implicitPieces = (parsed.implicitPieces ?? 0) + n;
+    if (halfN) cur.qty = addQty(cur.qty, { n: 0, half: halfN, unit: "畳" });
+    else if (n) cur.pieces += n;
+    implicitBySentence.set(si, cur);
   }
   if (isEmptyPatch(parsed.implicit)) parsed.implicit = null;
+  // 文ごとの数量をまとめる（追加のときは足す・それ以外は最後の文の数量）
+  const add = parsed.additive || parsed.qtyAdd;
+  for (const [g, bySentence] of qtyBySentence) {
+    const list = [...bySentence.entries()].sort((a, b) => a[0] - b[0]).map(([, q]) => q);
+    parsed.qtys.set(g, add ? list.reduce((a, b) => addQty(a, b)) : list[list.length - 1]);
+  }
+  const implicit = [...implicitBySentence.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+  const qtys = implicit.map((v) => v.qty).filter((q): q is Qty => Boolean(q));
+  if (qtys.length) parsed.implicitQty = add ? qtys.reduce((a, b) => addQty(a, b)) : qtys[qtys.length - 1];
+  const pieceCounts = implicit.map((v) => v.pieces).filter((n) => n > 0);
+  if (pieceCounts.length) parsed.implicitPieces = add ? pieceCounts.reduce((a, b) => a + b, 0) : pieceCounts[pieceCounts.length - 1];
   // 天袋・地袋を別に数えるのは、同じ発言に襖の枚数があるとき（「襖4枚と天袋2枚」）・追加のとき（「天袋も2枚」）。
   // それ以外（「天袋2枚だと？」「天袋の張替えは？」）は、相談中の襖の種類の指定
   const tp = parsed.patches.get("天地袋");

@@ -3,14 +3,13 @@
 // ヘッダー（一畳屋サイトと同じ見た目）
 //   PC：ロゴ／百年企業／無料お見積りOK／フリーダイヤル（営業時間外・土日は AI が受付）／受付時間／AIに相談
 //   SP：固定ヘッダー＋赤い「もくじ」ボタンで、AI 相談（文字・声）と電話のメニューを開く
-import { Home, MessageSquareText, Mic, PhoneCall, Settings2 } from "lucide-react";
+import { PhoneCall, Settings2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { AiNav } from "./SiteNav";
+import ConsultLink from "./consult/ConsultLink";
+import { AI_ICONS, AiNav } from "./SiteNav";
 import { AI_NAV, ASSETS, BRAND } from "@/lib/brand";
-
-const AI_ICONS = { "/": Home, "/chat": MessageSquareText, "/voice": Mic } as const;
 
 export default function SiteHeader() {
   const pathname = usePathname() ?? "/";
@@ -71,10 +70,11 @@ export default function SiteHeader() {
 
           {/* 一畳屋サイトの「LINEで相談」の位置を、AI相談の入口にしています（ご相談の窓口を AI に一元化） */}
           <div className="hidden pl-10 lg:block">
-            <Link
-              href="/chat"
+            <ConsultLink
+              href="/#ai-consult"
+              command={{ action: "text" }}
               className="flex h-[100px] w-[187px] flex-col items-center justify-center gap-1.5 bg-ichi-line text-white transition-opacity duration-300 hover:opacity-80"
-              aria-label="AIに相談する（24時間受付）"
+              aria-label="AIに相談する（24時間受付・文字でも声でも）"
             >
               <span className="relative block h-[46px] w-[50px]" aria-hidden>
                 <svg viewBox="0 0 49.91 46" className="absolute inset-0 h-full w-full">
@@ -90,7 +90,7 @@ export default function SiteHeader() {
                 </span>
               </span>
               <span className="font-hand text-[21px] leading-none">AIに相談</span>
-            </Link>
+            </ConsultLink>
           </div>
         </div>
       </header>
@@ -122,13 +122,25 @@ export default function SiteHeader() {
           <p className="px-6 pt-4 text-[11px] font-bold tracking-widest text-white/70">AIに相談（24時間受付）</p>
           <ul className="px-4">
             {AI_NAV.map((n) => {
-              const Icon = AI_ICONS[n.href];
+              const Icon = AI_ICONS[n.icon];
+              const className = "flex items-center gap-3 px-2 py-4 font-hand text-lg";
+              const label = (
+                <>
+                  <Icon className="h-5 w-5 text-ichi-yellow" strokeWidth={2.4} />
+                  {n.label}
+                </>
+              );
               return (
                 <li key={n.href} className="border-b border-dashed border-white/50">
-                  <Link href={n.href} className="flex items-center gap-3 px-2 py-4 font-hand text-lg" tabIndex={open ? 0 : -1}>
-                    <Icon className="h-5 w-5 text-ichi-yellow" strokeWidth={2.4} />
-                    {n.label}
-                  </Link>
+                  {n.action ? (
+                    <ConsultLink href={n.href} command={{ action: n.action }} className={className} tabIndex={open ? 0 : -1} onDone={() => setOpen(false)}>
+                      {label}
+                    </ConsultLink>
+                  ) : (
+                    <Link href={n.href} className={className} tabIndex={open ? 0 : -1}>
+                      {label}
+                    </Link>
+                  )}
                 </li>
               );
             })}

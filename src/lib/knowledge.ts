@@ -330,10 +330,14 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
   const remote = sheetConfigured ? await loadRemote(errors, sheetUrl) : null;
   const manual = remote ?? bundledManual();
 
-  // 2. ホームページ（管理画面で再学習した内容、なければ同梱の database/website.json）
+  // 2. ホームページ（管理画面で再学習した内容、なければ同梱の database/website.json）。
+  //    既定では回答に使わない（回答の根拠は指定のスプレッドシートだけ）。KNOWLEDGE_INCLUDE_WEBSITE=1 で補足として使う
+  const websiteUsed = env.knowledgeIncludeWebsite;
   const siteStored = await getSiteKnowledge();
   const relearned = Boolean(siteStored && siteStored.entries.length > 0);
-  const siteAll = (relearned ? siteStored!.entries : (websiteJson as { entries: KnowledgeEntry[] }).entries).map((e) => ({ ...e, origin: "website" as const }));
+  const siteAll = websiteUsed
+    ? (relearned ? siteStored!.entries : (websiteJson as { entries: KnowledgeEntry[] }).entries).map((e) => ({ ...e, origin: "website" as const }))
+    : [];
   const websiteFetchedAt = relearned ? siteStored!.fetchedAt : (websiteJson as { fetchedAt?: string }).fetchedAt;
 
   // 料金はスプレッドシートの料金表が正：違う金額を書いたホームページの項目は使わない
@@ -366,6 +370,7 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
     excludedLines: manual.excluded,
     websiteFetchedAt,
     websiteOrigin: relearned ? "relearned" : "bundled",
+    websiteUsed,
     sheet: {
       configured: sheetConfigured,
       connected: Boolean(remote),
@@ -399,6 +404,7 @@ export function describeKnowledge(s: KnowledgeSnapshot) {
     excludedLines: s.excludedLines,
     websiteFetchedAt: s.websiteFetchedAt,
     websiteOrigin: s.websiteOrigin,
+    websiteUsed: s.websiteUsed,
     remoteConfigured: s.sheet?.configured ?? false,
     sheet: s.sheet,
   };

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import ChatConsole from "@/components/ChatConsole";
+import ConsultConsole from "@/components/ConsultConsole";
 import PageHero from "@/components/PageHero";
 import { serverBaseUrl } from "@/lib/server-url";
 import { getIntegrationStatus } from "@/lib/status";
@@ -7,22 +7,23 @@ import { getSettings } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
-  title: "文字でAI相談",
-  description: "畳・襖・障子・網戸の料金の目安や工期、対応エリアなどに、一畳屋のAI相談員が24時間お答えします。無料お見積りのご依頼もこちらから。",
+  title: "AIに相談（文字・声）",
+  description: "畳・襖・障子・網戸の料金の目安や工期、対応エリアなどに、一畳屋のAI相談員が24時間お答えします。文字でも声でも、1つの画面でご相談いただけます。無料お見積りのご依頼もこちらから。",
 };
 
+// AI 相談のページ（文字・声を 1 つの画面で）。トップページにも同じ相談の画面があり、会話は共通
 export default async function ChatPage() {
   const [status, settings] = await Promise.all([getIntegrationStatus(await serverBaseUrl()), getSettings()]);
   return (
     <PageHero
       compact
-      kicker="AI相談（文字）"
-      ruby="もじでそうだん"
-      title="文字でAI相談"
+      kicker="AI相談（文字・声）"
+      ruby="えーあいにそうだん"
+      title="AIに相談"
       badge={["24", "時間"]}
-      lead="料金の目安・工期・対応エリアなどに、その場でお答えします。ご相談・お見積りは無料です。"
+      lead="文字で入力しても、マイクで話しかけても大丈夫です。途中で切り替えても、会話はそのまま続きます。"
     >
-      <ChatConsole
+      <ConsultConsole
         mode={status.openai.configured ? "openai" : "demo"}
         company={settings.companyName}
         lineUrl={settings.lineAddFriendUrl}

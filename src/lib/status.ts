@@ -16,6 +16,8 @@ export async function getIntegrationStatus(baseUrl: string, check = false): Prom
     openai: {
       configured: env.hasOpenAI,
       model: env.chatModel,
+      answerModel: env.answerModel,
+      answerContext: env.answerContext,
       realtimeModel: env.realtimeModel,
       ok: openaiCheck.ok,
       detail: openaiCheck.detail,

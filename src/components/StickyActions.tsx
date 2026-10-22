@@ -3,8 +3,8 @@
 // スマホ：トップを読み進めても「AIに相談」と「電話する」をすぐ押せるように、画面下に小さく固定表示
 //   ・最初の「AIに相談する」欄が見えている間と、ページの最下部では隠す（同じボタンが見えているため）
 import { MessageSquareText, PhoneCall } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useState } from "react";
+import ConsultLink from "./consult/ConsultLink";
 import { BRAND } from "@/lib/brand";
 
 export default function StickyActions({ watchId }: { watchId: string }) {
@@ -41,10 +41,10 @@ export default function StickyActions({ watchId }: { watchId: string }) {
       data-show={show ? "true" : "false"}
     >
       <div className="mx-auto grid max-w-[520px] grid-cols-2 gap-2">
-        <Link href="/chat" className="btn-primary h-12 rounded-xl text-[15px]" tabIndex={show ? 0 : -1}>
+        <ConsultLink href="/#ai-consult" command={{ action: "text" }} className="btn-primary h-12 rounded-xl text-[15px]" tabIndex={show ? 0 : -1}>
           <MessageSquareText className="h-5 w-5" />
           AIに相談
-        </Link>
+        </ConsultLink>
         <a
           href={`tel:${BRAND.freeDialTel}`}
           className="flex h-12 flex-col items-center justify-center rounded-xl border-2 border-ichi-red bg-white text-ichi-red transition-opacity hover:opacity-80"

@@ -13,6 +13,15 @@ export class OpenAIError extends Error {
   }
 }
 
+/**
+ * 回答のモデル（OPENAI_ANSWER_MODEL）で答えられなかったときに、いつものモデル（OPENAI_CHAT_MODEL）で答え直してよいか：
+ *   混み合っている（429）・一時的な障害（5xx）に加えて、この API キーではそのモデルを使えない（403・404）・設定が合わない（400）とき。
+ *   API キーが正しくない（401）は、どのモデルでも同じなので答え直さない
+ */
+export function canRetryWithChatModel(e: unknown): boolean {
+  return e instanceof OpenAIError && (e.status === 429 || e.status >= 500 || e.status === 400 || e.status === 403 || e.status === 404);
+}
+
 function headers(extra: Record<string, string> = {}): Record<string, string> {
   return { Authorization: `Bearer ${env.openaiKey}`, "Content-Type": "application/json", ...extra };
 }
@@ -62,6 +71,8 @@ export interface ChatOptions {
   purpose?: string;
   /** 既定 45 秒（資料の解析など時間がかかるものは長めに） */
   timeoutMs?: number;
+  /** 推論するモデル（gpt-5 系・o 系）の考える深さ（none / low / medium / high）。未指定はモデルの既定 */
+  reasoningEffort?: string;
 }
 
 export interface TokenUsage {
@@ -78,7 +89,9 @@ function chatBody(o: ChatOptions, stream: boolean): Record<string, unknown> {
   const body: Record<string, unknown> = { model, messages: o.messages, stream };
   if (stream) body.stream_options = { include_usage: true };
   if (isReasoningModel(model)) {
-    body.max_completion_tokens = o.maxTokens ?? 1500;
+    // 推論の分も出力のトークンに数えられるので、上限は多めに
+    body.max_completion_tokens = Math.max(o.maxTokens ?? 1500, 1500) + (o.reasoningEffort && o.reasoningEffort !== "none" ? 3000 : 0);
+    if (o.reasoningEffort) body.reasoning_effort = o.reasoningEffort;
   } else {
     body.temperature = o.temperature ?? 0.3;
     body.max_tokens = o.maxTokens ?? 800;
@@ -123,7 +136,12 @@ export async function chatCompletionJson<T>(
  */
 export async function streamChatCompletion(
   o: ChatOptions,
-  onComplete?: (fullText: string, usage: TokenUsage) => void | Promise<void>,
+  onComplete?: (fullText: string, usage: TokenUsage, hidden: string) => void | Promise<void>,
+  /**
+   * 出力の先頭の、この印まで（資料から引用した根拠など）はお客様に送らない。onComplete には印のあとだけを渡す。
+   * 印が出なかったときは onMissing(全文) を送る
+   */
+  hide?: { until: string; onMissing: (all: string) => string },
 ): Promise<ReadableStream<Uint8Array>> {
   if (!env.hasOpenAI) throw new OpenAIError("OPENAI_API_KEY が設定されていません", 401);
   const ac = new AbortController();
@@ -158,6 +176,20 @@ export async function streamChatCompletion(
       let buffer = "";
       let full = "";
       const usage: TokenUsage = { prompt: 0, completion: 0 };
+      // 印（hide.until）より前は送らずにためておく。印のあとは空白を除いてから送り始める
+      let shownFrom = hide ? -1 : 0;
+      let lead = Boolean(hide);
+      let sent = "";
+      const emit = (s: string) => {
+        let text = s;
+        if (lead) {
+          text = text.replace(/^\s+/, "");
+          if (!text) return;
+          lead = false;
+        }
+        sent += text;
+        controller.enqueue(encoder.encode(text));
+      };
       try {
         for (;;) {
           const { done, value } = await reader.read();
@@ -182,7 +214,14 @@ export async function streamChatCompletion(
               const delta = j.choices?.[0]?.delta?.content;
               if (delta) {
                 full += delta;
-                controller.enqueue(encoder.encode(delta));
+                if (shownFrom >= 0) emit(delta);
+                else if (hide) {
+                  const i = full.indexOf(hide.until);
+                  if (i >= 0) {
+                    shownFrom = i + hide.until.length;
+                    emit(full.slice(shownFrom));
+                  }
+                }
               }
             } catch {
               // 不完全なJSONは無視
@@ -191,17 +230,19 @@ export async function streamChatCompletion(
         }
       } catch (e) {
         clearTimeout(timer);
-        if (full) {
+        if (sent) {
           controller.enqueue(encoder.encode("\n（通信が途中で切断されました）"));
-        } else {
+        } else if (!full) {
           controller.error(e);
           return;
         }
       }
       clearTimeout(timer);
+      // 印が出なかった（形式どおりでない・途中で切れた）：根拠の部分を除いた残りを送る
+      if (hide && shownFrom < 0) emit(hide.onMissing(full));
       void recordTokens(o.purpose ?? "chat", usage);
       try {
-        await onComplete?.(full, usage);
+        await onComplete?.(sent.trim(), usage, hide ? full.slice(0, shownFrom >= 0 ? shownFrom - hide.until.length : full.length) : "");
       } catch {
         // 完了処理の失敗は応答に影響させない
       }
@@ -247,20 +288,23 @@ export interface RealtimeSecret {
 
 /** Realtime API 用の一時キー（ephemeral key）を発行。GAエンドポイント→旧β版の順に試す */
 /**
- * 声の相談の話し終わりの判定（server_vad）。応答の開始と割り込みはブラウザ側（VoiceConsole）で行う
+ * 声の相談の話し終わりの判定。応答の開始と割り込みはブラウザ側（useVoiceSession・voice-gate.ts）で行う
  * （サーバーに任せると、AI が話している間の相づち「はい」や雑音でも AI の声が止まり、途中で切れて聞こえるため）
+ *   semantic：話の内容から話し終わりを判断（「えっと…」「8畳で、…」のような言葉の途中の間で区切らない）
+ *   server  ：無音が 0.65 秒続いたら話し終わり
  */
-export const REALTIME_TURN_DETECTION = {
-  type: "server_vad",
-  threshold: 0.6,
-  prefix_padding_ms: 300,
-  silence_duration_ms: 650,
-  create_response: false,
-  interrupt_response: false,
-} as const;
+export function realtimeTurnDetection() {
+  return env.realtimeTurn === "semantic"
+    ? ({ type: "semantic_vad", eagerness: "auto", create_response: false, interrupt_response: false } as const)
+    : ({ type: "server_vad", threshold: 0.6, prefix_padding_ms: 300, silence_duration_ms: 650, create_response: false, interrupt_response: false } as const);
+}
 
-/** お客様の声の文字起こしに渡す言葉の手がかり（「網戸」が「アニード」などにならないように） */
-const TRANSCRIBE_PROMPT = "一畳屋への畳・襖・障子・網戸のご相談。表替え、新調、裏返し、ヘリ、天袋、地袋、張替え、見積、熊本。";
+/** 文字起こしの設定（新しいモデルは languages で言語を指定する） */
+function transcriptionConfig() {
+  const model = env.transcribeModel;
+  return /^gpt-(live-)?transcribe$/.test(model) ? { model, languages: ["ja"] } : { model, language: "ja" };
+}
+
 
 export async function createRealtimeSecret(opts: {
   instructions: string;
@@ -283,11 +327,13 @@ export async function createRealtimeSecret(opts: {
         tool_choice: "auto",
         audio: {
           input: {
-            transcription: { model: "gpt-4o-mini-transcribe", language: "ja", prompt: TRANSCRIBE_PROMPT },
+            // 文字起こし：言葉の手がかり（prompt）は渡さない（雑音のときに手がかりの文をそのまま返し、
+            //   お客様が言っていない言葉が会話に入ることがあるため。雑音のある試験で誤りも増えた）
+            transcription: transcriptionConfig(),
             // AI の声が途中で切れないように：割り込み（AI の発話を止める）と応答の開始はブラウザが判断する
             //   （voice-gate.ts：AI が話している間の短い音＝相づち・咳・雑音・スピーカーの回り込みでは止めない）
-            //   threshold は既定 0.5 より少し高め、雑音除去はスマホ・ノート PC のスピーカー利用（far_field）向け
-            turn_detection: { ...REALTIME_TURN_DETECTION },
+            //   雑音除去はスマホ・ノート PC のスピーカー利用（far_field）向け
+            turn_detection: realtimeTurnDetection(),
             noise_reduction: { type: "far_field" },
           },
           output: { voice },
@@ -313,8 +359,8 @@ export async function createRealtimeSecret(opts: {
         instructions: opts.instructions,
         tools: opts.tools,
         tool_choice: "auto",
-        input_audio_transcription: { model: "whisper-1", language: "ja", prompt: TRANSCRIBE_PROMPT },
-        turn_detection: { ...REALTIME_TURN_DETECTION },
+        input_audio_transcription: { model: "whisper-1", language: "ja" },
+        turn_detection: realtimeTurnDetection(),
         input_audio_noise_reduction: { type: "far_field" },
       },
       { "OpenAI-Beta": "realtime=v1" },

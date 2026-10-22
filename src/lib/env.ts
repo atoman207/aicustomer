@@ -1,6 +1,10 @@
 // 環境変数の集約。サーバー側専用（クライアントから import しないこと）
 import { BRAND, LEGACY_COMPANY_NAMES, LEGACY_PHONES, LINKS } from "./brand";
 
+const REALTIME_DEFAULT = "gpt-realtime-2.1";
+/** 以前の既定（.env.example にあった値）。設定がこのままなら新しい既定を使う */
+const LEGACY_REALTIME_MODELS = ["gpt-realtime"];
+
 function str(name: string, fallback = ""): string {
   const v = process.env[name];
   return typeof v === "string" && v.trim() !== "" ? v.trim() : fallback;
@@ -20,8 +24,33 @@ export const env = {
   get chatModel() {
     return str("OPENAI_CHAT_MODEL", "gpt-4.1-mini");
   },
+  /**
+   * 資料の全文を読んで答えるときのモデル（お客様の質問への回答）。2026-10-22 の比較（資料で答えが決まる 80 問＋
+   * 別のモデルによる採点）で、資料にないことを言った回答が最も少なかった gpt-5.6-sol（OpenAI の最上位）を既定にする。
+   * 混み合って使えないとき（429 など）は OPENAI_CHAT_MODEL で答える
+   */
+  get answerModel() {
+    return str("OPENAI_ANSWER_MODEL", "gpt-5.6-sol");
+  },
+  /** 回答のモデルが推論するモデル（gpt-5 系）のときの考える深さ（none＝考えずにすぐ答える・low・medium） */
+  get answerReasoning() {
+    return str("OPENAI_ANSWER_REASONING", "none");
+  },
+  /**
+   * 声の相談のモデル。以前の既定（.env.example の gpt-realtime）のままなら新しい既定に置き換える
+   * （聞き取り・数字や英字の認識・雑音や割り込みの扱いが改善された版。前のモデルに固定したいときは日付つきの名前を指定）
+   */
   get realtimeModel() {
-    return str("OPENAI_REALTIME_MODEL", "gpt-realtime");
+    const v = str("OPENAI_REALTIME_MODEL", REALTIME_DEFAULT);
+    return LEGACY_REALTIME_MODELS.includes(v) ? REALTIME_DEFAULT : v;
+  },
+  /** 声の相談の文字起こし（画面に出る文字・見積の自動入力に使う）のモデル */
+  get transcribeModel() {
+    return str("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe");
+  },
+  /** 声の相談の話し終わりの判定：semantic（話の内容から判断・既定）／server（無音の長さで判断） */
+  get realtimeTurn(): "semantic" | "server" {
+    return str("OPENAI_REALTIME_TURN", "semantic") === "server" ? "server" : "semantic";
   },
   get realtimeVoice() {
     return str("OPENAI_REALTIME_VOICE", "marin");
@@ -84,6 +113,20 @@ export const env = {
   },
   get knowledgeCsvUrl() {
     return str("KNOWLEDGE_SHEET_CSV_URL");
+  },
+  /**
+   * AI に渡す参考情報：full（既定）＝スプレッドシートとホームページの全文（NotebookLM と同じく資料全体を読んで答える）、
+   * search＝質問に関係する部分だけ（トークンは少ないが、検索で見つからない内容は答えられない）
+   */
+  get answerContext(): "full" | "search" {
+    return str("ANSWER_CONTEXT", "full") === "search" ? "search" : "full";
+  },
+  /**
+   * ホームページの内容も回答に使うか（既定は使わない＝回答の根拠は指定のスプレッドシートだけ。一畳屋様のご要望 2026-10-22）。
+   * 1 にするとホームページ（database/website.json・管理画面で再学習した内容）を補足として使う
+   */
+  get knowledgeIncludeWebsite() {
+    return str("KNOWLEDGE_INCLUDE_WEBSITE") === "1";
   },
   get knowledgeCacheSeconds() {
     const n = Number(str("KNOWLEDGE_CACHE_SECONDS", "60"));

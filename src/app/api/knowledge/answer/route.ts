@@ -1,7 +1,5 @@
-import { learnAnswer, planAnswer } from "@/lib/answer";
+import { composeAnswer, planAnswer } from "@/lib/answer";
 import { error, json, rateLimited, readJson } from "@/lib/http";
-import { chatCompletion } from "@/lib/openai";
-import { buildChatSystemPrompt } from "@/lib/prompts";
 import { getSettings } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -21,21 +19,12 @@ export async function POST(req: Request) {
   const style = body?.style === "voice" ? "voice" : "text";
   const plan = await planAnswer(question, [], { channel: style === "voice" ? "web_voice" : "web_text", style });
   let reply = plan.reply;
-  let tokens: { prompt: number; completion: number } | null = null;
+  let elapsedMs: number | undefined;
   if (plan.mode === "openai") {
     const settings = await getSettings();
     const t0 = Date.now();
-    reply = await chatCompletion({
-      messages: [
-        { role: "system", content: buildChatSystemPrompt(settings.companyName, plan.context, style === "voice" ? "web_voice" : "web_text") },
-        { role: "user", content: question },
-      ],
-      temperature: 0.3,
-      maxTokens: 600,
-      purpose: "answer_test",
-    });
-    tokens = { prompt: Math.round(plan.context.length), completion: Date.now() - t0 };
-    await learnAnswer(plan, reply);
+    reply = await composeAnswer(plan, settings.companyName, [{ role: "user", content: question }], "answer_test");
+    elapsedMs = Date.now() - t0;
   }
   return json({
     ok: true,
@@ -44,6 +33,7 @@ export async function POST(req: Request) {
     reply,
     sources: plan.sources,
     contextChars: plan.context.length,
-    elapsedMs: tokens?.completion,
+    fullContext: plan.fullContext,
+    elapsedMs,
   });
 }
