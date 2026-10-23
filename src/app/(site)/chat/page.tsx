@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import ConsultConsole from "@/components/ConsultConsole";
+import ConsultBoundary from "@/components/consult/ConsultBoundary";
 import PageHero from "@/components/PageHero";
 import { serverBaseUrl } from "@/lib/server-url";
 import { getIntegrationStatus } from "@/lib/status";
@@ -23,12 +24,14 @@ export default async function ChatPage() {
       badge={["24", "時間"]}
       lead="文字で入力しても、マイクで話しかけても大丈夫です。途中で切り替えても、会話はそのまま続きます。"
     >
-      <ConsultConsole
-        mode={status.openai.configured ? "openai" : "demo"}
-        company={settings.companyName}
-        lineUrl={settings.lineAddFriendUrl}
-        knowledgeLabel={status.knowledge.label}
-      />
+      <ConsultBoundary>
+        <ConsultConsole
+          mode={status.openai.configured ? "openai" : "demo"}
+          company={settings.companyName}
+          lineUrl={settings.lineAddFriendUrl}
+          knowledgeLabel={status.knowledge.label}
+        />
+      </ConsultBoundary>
     </PageHero>
   );
 }

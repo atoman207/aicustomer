@@ -115,11 +115,12 @@ export async function POST(req: Request) {
       streamChatCompletion(
         {
           model,
-          // 回答のモデルが推論するモデル（gpt-5 系）なら、考える深さは設定のとおり（既定 none＝すぐ答える）
-          reasoningEffort: model === env.answerModel ? env.answerReasoning : undefined,
+          // 回答のモデルは設定の考える深さ（既定 low）。答え直しのモデル（gpt-5.6-sol）は考えずにすぐ答える
+          reasoningEffort: model === env.answerModel ? env.answerReasoning : model === env.answerFallbackModel ? "none" : undefined,
           messages: [{ role: "system", content: system }, ...recentHistory(messages)],
           temperature: 0.3,
-          maxTokens: evidence ? 1200 : 600,
+          // 料金の一覧なども省略せずに答えられる長さ（根拠の引用の分も）
+          maxTokens: evidence ? 3000 : 2000,
           purpose: "chat",
         },
         async (full) => {
@@ -133,10 +134,11 @@ export async function POST(req: Request) {
     try {
       stream = await start(model);
     } catch (e) {
-      // 混み合っている・一時的な障害・この API キーでは使えないモデル：いつものモデルで答え直す
-      if (model === env.chatModel || !canRetryWithChatModel(e)) throw e;
-      await logError("openai", `文字の相談（${model} が使えないため ${env.chatModel} で回答）`, e);
-      stream = await start(env.chatModel);
+      // 混み合っている・一時的な障害・この API キーでは使えないモデル：答え直しのモデルで答える（理由は管理画面のエラー履歴に）
+      const backup = plan.fullContext ? env.answerFallbackModel : null;
+      if (!backup || backup === model || !canRetryWithChatModel(e)) throw e;
+      await logError("openai", `文字の相談（${model} が使えないため ${backup} で回答）`, e);
+      stream = await start(backup);
     }
     return new Response(stream, { headers: planHeaders(plan, "openai") });
   } catch (e) {

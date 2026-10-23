@@ -147,7 +147,7 @@ export default function AdminApp({
           </button>
           <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold">{TITLES[key]}</h1>
           <div className="flex items-center gap-1.5">
-            <button type="button" onClick={() => go("ai")} className="hidden sm:block" title="AIの学習状況・情報源">
+            <button type="button" onClick={() => go("ai")} className="hidden min-h-10 items-center sm:flex" title="AIの学習状況・情報源">
               <Chip tone={initialStatus.sheet.configured ? "green" : "amber"}>{initialStatus.sheet.configured ? "スプレッドシート接続" : "スプレッドシート未設定"}</Chip>
             </button>
             <Chip tone={initialStatus.openai.configured ? "green" : "amber"}>{initialStatus.openai.configured ? "OpenAI 接続中" : "デモモード"}</Chip>

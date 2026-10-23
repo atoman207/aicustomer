@@ -2,6 +2,9 @@
 import { BRAND, LEGACY_COMPANY_NAMES, LEGACY_PHONES, LINKS } from "./brand";
 
 const REALTIME_DEFAULT = "gpt-realtime-2.1";
+/** 文字の相談の回答のモデルの既定と、以前の既定（.env・Vercel に残っていても新しい既定を使う） */
+const ANSWER_DEFAULT = "gpt-6-astra";
+const LEGACY_ANSWER_MODELS = ["gpt-4.1", "gpt-5.6-sol"];
 /** 以前の既定（.env.example にあった値）。設定がこのままなら新しい既定を使う */
 const LEGACY_REALTIME_MODELS = ["gpt-realtime"];
 
@@ -25,16 +28,32 @@ export const env = {
     return str("OPENAI_CHAT_MODEL", "gpt-4.1-mini");
   },
   /**
-   * 資料の全文を読んで答えるときのモデル（お客様の質問への回答）。2026-10-22 の比較（資料で答えが決まる 80 問＋
-   * 別のモデルによる採点）で、資料にないことを言った回答が最も少なかった gpt-5.6-sol（OpenAI の最上位）を既定にする。
-   * 混み合って使えないとき（429 など）は OPENAI_CHAT_MODEL で答える
+   * 文字の相談で、資料の全文を読んで答えるモデル。2026-10-23 の比較（NotebookLM と同じ水準の答え方を求める 32 問・
+   * 別のモデルによる採点：正確さ・答えの十分さ・作り話・計算）で、正確さを保ったまま答えが最も十分だった
+   * gpt-6-astra（OpenAI の最上位）を、考える深さ low で使う。以前の既定（gpt-4.1・gpt-5.6-sol）のままなら、新しい既定に置き換える
    */
   get answerModel() {
-    return str("OPENAI_ANSWER_MODEL", "gpt-5.6-sol");
+    const v = str("OPENAI_ANSWER_MODEL", ANSWER_DEFAULT);
+    return LEGACY_ANSWER_MODELS.includes(v) ? ANSWER_DEFAULT : v;
   },
-  /** 回答のモデルが推論するモデル（gpt-5 系）のときの考える深さ（none＝考えずにすぐ答える・low・medium） */
+  /** 回答のモデルの考える深さ（gpt-6 系は low・medium・high。gpt-5 系は none も可）。以前の既定 none のままなら low */
   get answerReasoning() {
-    return str("OPENAI_ANSWER_REASONING", "none");
+    const v = str("OPENAI_ANSWER_REASONING", "low");
+    return v === "none" && /^gpt-6/.test(this.answerModel) ? "low" : v;
+  },
+  /**
+   * 声の相談（search_knowledge）の回答のモデルと考える深さ。声は待ち時間が長いと会話が途切れて感じるので、
+   * 2026-10-23 の比較（声の回答 15 問）で正確さ・十分さが最も高く、待ち時間も短かった gpt-6.1-sol（low）を使う
+   */
+  get voiceAnswerModel() {
+    return str("OPENAI_VOICE_ANSWER_MODEL", "gpt-6.1-sol");
+  },
+  get voiceAnswerReasoning() {
+    return str("OPENAI_VOICE_ANSWER_REASONING", "low");
+  },
+  /** 回答のモデルが混み合って使えない・一時的な障害のときに答え直すモデル（gpt-5.6-sol は比較でもほぼ同じ正確さ） */
+  get answerFallbackModel() {
+    return str("OPENAI_ANSWER_FALLBACK_MODEL", "gpt-5.6-sol");
   },
   /**
    * 声の相談のモデル。以前の既定（.env.example の gpt-realtime）のままなら新しい既定に置き換える

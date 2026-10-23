@@ -11,6 +11,11 @@ export const BRAND = {
   /** 電話ボタンに添える一言（営業時間外・土日は AI が電話を受け付ける） */
   phoneAiNote: "営業時間外・土日はAIが受付",
   copyright: "© ICHIJOYA. All Rights Reserved.",
+  /** フッターの会社情報（一畳屋のホームページのフッターと同じ） */
+  postal: "〒861-1113",
+  address: "熊本県合志市栄3415-11",
+  tel: "096-348-3176",
+  telHref: "0963483176",
 } as const;
 
 export const LINKS = {

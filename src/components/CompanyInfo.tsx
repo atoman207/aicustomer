@@ -118,7 +118,7 @@ export function Faq() {
                     <ConsultLink
                       href={`/chat?q=${encodeURIComponent(f.q)}`}
                       command={{ action: "ask", q: f.q }}
-                      className="inline-flex items-center gap-1.5 pt-1 text-xs font-bold text-ichi-green underline-offset-2 hover:underline"
+                      className="inline-flex min-h-10 items-center gap-1.5 text-[13px] font-bold text-ichi-green underline-offset-2 hover:underline"
                     >
                       <MessageSquareText className="h-3.5 w-3.5" />
                       AIにくわしく聞く
@@ -257,7 +257,7 @@ export function Stores() {
                     href={mapUrl(st.address)}
                     target="_blank"
                     rel="noreferrer"
-                    className="mt-auto inline-flex items-center gap-1 self-start pt-3 text-xs font-bold text-ichi-green underline-offset-2 hover:underline"
+                    className="mt-auto inline-flex min-h-10 items-center gap-1 self-start pt-2 text-[13px] font-bold text-ichi-green underline-offset-2 hover:underline"
                   >
                     <MapPin className="h-3.5 w-3.5" />
                     地図を見る

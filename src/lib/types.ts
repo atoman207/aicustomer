@@ -173,7 +173,7 @@ export interface StorageInfo {
 }
 
 export interface IntegrationStatus {
-  openai: { configured: boolean; model: string; answerModel: string; answerContext: "full" | "search"; realtimeModel: string; realtimeVoice: string; realtimeSpeed: number; ok?: boolean; detail?: string };
+  openai: { configured: boolean; model: string; answerModel: string; voiceAnswerModel: string; answerContext: "full" | "search"; realtimeModel: string; realtimeVoice: string; realtimeSpeed: number; ok?: boolean; detail?: string };
   storage: StorageInfo;
   knowledge: { source: KnowledgeSource; label: string; entries: number; fetchedAt: string; warning?: string };
   reception: { sink: "gas" | "sheets_api" | "local"; label: string };

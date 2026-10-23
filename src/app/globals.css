@@ -184,6 +184,64 @@ img {
 .ainav__link.is-current::before {
   opacity: 1;
 }
+/* スマホ・タブレットは一畳屋のホームページの画面下のボタンと同じ（緑と黄色の 2 つ。点線の区切り・黄色のアクセントなし） */
+@media (max-width: 1023.98px) {
+  .ainav__item + .ainav__item::before,
+  .ainav__link::before {
+    display: none;
+  }
+}
+
+/* タッチ操作の端末（スマホ・タブレット）：入力欄の文字は 16px 以上
+   （iPhone・iPad は 16px 未満の入力欄を押すと画面が拡大され、戻すのに手間がかかるため） */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]),
+  textarea,
+  select {
+    font-size: max(16px, 1em) !important;
+  }
+  /* 指で押しやすい高さ（40px 以上） */
+  .btn-primary,
+  .btn-accent,
+  .btn-secondary,
+  .btn-ghost {
+    min-height: 40px;
+  }
+}
+
+/* スマホ・タブレット：固定ヘッダー（高さ 80px）の下に見出しが隠れないように、ページ内のリンクで移動したときに少し下に止める */
+@media (max-width: 1023.98px) {
+  section[id] {
+    scroll-margin-top: 88px;
+  }
+}
+
+/* スマホの横向きなど、高さの低い画面：ヘッダーを 56px に、相談の画面は会話が見えるように「よくある質問」のボタンと注意書きを隠す */
+@media (max-width: 1023.98px) and (max-height: 500px) and (orientation: landscape) {
+  [data-header-bar] {
+    height: 56px !important;
+  }
+  .trigger {
+    height: 56px !important;
+    width: 64px !important;
+  }
+  .trigger img {
+    display: none;
+  }
+  .drawer__container {
+    padding-top: 0;
+  }
+  section[id] {
+    scroll-margin-top: 64px;
+  }
+  .chat-card {
+    scroll-margin-top: 60px;
+  }
+  .chat-card [data-quick],
+  .chat-card [data-disclaimer] {
+    display: none;
+  }
+}
 
 /* ---------- SP メニュー（もくじ）トリガー ---------- */
 .trigger__u {

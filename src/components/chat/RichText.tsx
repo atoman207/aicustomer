@@ -6,7 +6,22 @@ import { polishJa, toParagraphs } from "@/lib/jtext";
 
 const TOKEN = /(https?:\/\/[^\s）)」』]+|0120[-‐ー－]?\d{2,3}[-‐ー－]?\d{3}|0\d{1,4}[-‐ー－]\d{1,4}[-‐ー－]\d{3,4})/g;
 
+/** **太字**（大事な金額・結論）。閉じていない **（届いている途中）は記号だけ消す */
 function inline(text: string, key: string): ReactNode[] {
+  const parts = text.split(/\*\*([^*\n]+)\*\*/);
+  if (parts.length === 1) return links(text.replace(/\*\*/g, ""), key);
+  return parts.flatMap<ReactNode>((p, i) =>
+    i % 2 === 1
+      ? [
+          <strong key={`${key}-b${i}`} className="font-bold text-sumi-900">
+            {links(p, `${key}-b${i}`)}
+          </strong>,
+        ]
+      : links(p.replace(/\*\*/g, ""), `${key}-t${i}`),
+  );
+}
+
+function links(text: string, key: string): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
   let i = 0;
@@ -38,9 +53,27 @@ type Block = { type: "p" | "note" | "head" | "total"; text: string; rest?: strin
 function blocks(text: string): Block[] {
   const out: Block[] = [];
   for (const raw of polishJa(text).split("\n")) {
-    const line = raw.trimEnd();
+    let line = raw.trimEnd();
     if (!line.trim()) continue;
-    const item = line.match(/^\s*(?:[・･•]|[-*]\s)\s*(.*)$/);
+    // 表（| 品名 | 金額 |）は、1行ずつの箇条書きにする（スマホでも読めるように）。区切りの行（|---|）は捨てる
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      if (/^\s*\|[\s:|-]+\|\s*$/.test(line)) continue;
+      const cells = line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()).filter(Boolean);
+      const prevList = out[out.length - 1];
+      // 表の見出しの行（最初の行）は、そのあとに行が続くなら見出しとして出す
+      if (!(prevList && prevList.type === "list") && cells.length > 1 && cells.every((c) => !/\d/.test(c))) {
+        out.push({ type: "head", text: cells.join("・") });
+        continue;
+      }
+      line = `・${cells[0]}${cells.length > 1 ? `：${cells.slice(1).join("／")}` : ""}`;
+    }
+    // Markdown の見出し（### 料金の目安）は【見出し】と同じに
+    const md = line.match(/^\s*#{1,4}\s+(.+)$/);
+    if (md) {
+      out.push({ type: "head", text: md[1].replace(/\*\*/g, "") });
+      continue;
+    }
+    const item = line.match(/^\s*(?:[・･•]|[-*]\s|\d+[.)．]\s)\s*(.*)$/);
     if (item) {
       const prev = out[out.length - 1];
       if (prev && prev.type === "list") prev.items.push(item[1]);

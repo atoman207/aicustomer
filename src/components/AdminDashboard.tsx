@@ -757,6 +757,7 @@ export function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus 
               ? `指定のスプレッドシートの全文を読んで回答（${status.openai.answerModel}・根拠の文を確かめてから回答）`
               : `検索で見つかった部分だけで回答（${status.openai.model}）`}
           </p>
+          <p>声の相談の回答：{status.openai.voiceAnswerModel}（待ち時間が短いモデル）</p>
           <p>そのほか（見積の聞き取り・要約など）：{status.openai.model}</p>
           <p>
             音声会話モデル：{status.openai.realtimeModel}（声：{status.openai.realtimeVoice}・話す速さ {status.openai.realtimeSpeed}）

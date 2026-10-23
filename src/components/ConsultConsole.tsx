@@ -531,8 +531,8 @@ export default function ConsultConsole({
           : "どうぞ、お話しください";
   const panelHeight =
     layout === "section"
-      ? "h-[min(760px,calc(100dvh-96px))] min-h-[520px]"
-      : "h-[calc(100dvh-92px)] min-h-[480px] lg:h-[calc(100dvh-230px)] lg:max-h-[860px] lg:min-h-[600px]";
+      ? "h-[min(760px,calc(100dvh-96px))] min-h-[min(520px,calc(100dvh-88px))]"
+      : "h-[calc(100dvh-92px)] min-h-[min(480px,calc(100dvh-88px))] lg:h-[calc(100dvh-230px)] lg:max-h-[860px] lg:min-h-[600px]";
 
   const micButton = (big = false) => (
     <button
@@ -542,7 +542,7 @@ export default function ConsultConsole({
       className={
         big
           ? "inline-flex items-center justify-center gap-2 rounded-full bg-ichi-green px-5 py-3 text-[15px] font-bold text-white shadow-sm transition hover:opacity-90 disabled:opacity-50"
-          : `grid h-9 w-9 shrink-0 place-items-center rounded-full transition disabled:opacity-40 ${
+          : `grid h-10 w-10 shrink-0 place-items-center rounded-full transition disabled:opacity-40 ${
               voice.live ? "bg-ichi-red text-white hover:opacity-90" : "bg-ichi-cream text-ichi-green hover:bg-ichi-green hover:text-white"
             }`
       }
@@ -582,13 +582,13 @@ export default function ConsultConsole({
           <button
             type="button"
             onClick={reset}
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white/85 transition hover:bg-white/10 hover:text-white"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-white/85 transition hover:bg-white/10 hover:text-white"
             aria-label="新しい相談を始める"
             title="新しい相談を始める"
           >
             <RotateCcw className="h-4 w-4" />
           </button>
-          <button type="button" onClick={openEstimate} className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-ichi-yellow px-3 py-1.5 text-xs font-bold text-ichi-theme transition hover:opacity-90 sm:px-4 sm:text-[13px]">
+          <button type="button" onClick={openEstimate} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-full bg-ichi-yellow px-3.5 py-2 text-[13px] font-bold text-ichi-theme transition hover:opacity-90 sm:px-4">
             <ClipboardCheck className="h-4 w-4" />
             <span className="hidden sm:inline">無料お見積り</span>
             <span className="sm:hidden">見積</span>
@@ -617,7 +617,7 @@ export default function ConsultConsole({
                     {m.content === "…" ? <span className="tracking-widest">…</span> : m.content}
                   </div>
                   {m.at || tag ? (
-                    <span className="mt-1 flex items-center gap-2 text-[10px] text-sumi-400">
+                    <span className="mt-1 flex items-center gap-2 text-[11px] text-sumi-500">
                       {tag}
                       {timeLabel(m.at)}
                     </span>
@@ -646,7 +646,7 @@ export default function ConsultConsole({
                     )}
                   </div>
                   {m.retry ? (
-                    <button type="button" onClick={() => retry(m)} className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-shu-300 bg-white px-3 py-1 text-xs font-bold text-shu-600 hover:bg-shu-50">
+                    <button type="button" onClick={() => retry(m)} className="mt-2 inline-flex min-h-10 items-center gap-1.5 rounded-full border border-shu-300 bg-white px-3.5 py-2 text-xs font-bold text-shu-600 hover:bg-shu-50">
                       <RotateCcw className="h-3.5 w-3.5" />
                       もう一度送る
                     </button>
@@ -758,13 +758,13 @@ export default function ConsultConsole({
                   type="button"
                   onClick={voice.toggleMute}
                   aria-pressed={voice.muted}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-full border border-ichi-green/40 bg-white px-2.5 py-1.5 text-xs font-bold text-ichi-theme"
+                  className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full border border-ichi-green/40 bg-white px-3 py-2 text-xs font-bold text-ichi-theme"
                 >
                   {voice.muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
                   {voice.muted ? "解除" : "ミュート"}
                 </button>
               ) : null}
-              <button type="button" onClick={voice.stop} className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ichi-red px-3 py-1.5 text-xs font-bold text-white" data-voice-end>
+              <button type="button" onClick={voice.stop} className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full bg-ichi-red px-3.5 py-2 text-xs font-bold text-white" data-voice-end>
                 <Keyboard className="h-3.5 w-3.5" />
                 文字に戻す
               </button>
@@ -777,9 +777,9 @@ export default function ConsultConsole({
             </p>
           ) : null}
           {asked && !voice.live ? (
-            <div className="-mx-1 mb-2 flex gap-1.5 overflow-x-auto px-1 pb-0.5">
+            <div className="-mx-1 mb-2 flex gap-1.5 overflow-x-auto px-1 pb-0.5" data-quick>
               {!lastEstimate ? (
-                <button type="button" onClick={openEstimate} className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ichi-red px-3 py-1 text-xs font-bold text-white">
+                <button type="button" onClick={openEstimate} className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full bg-ichi-red px-3.5 py-2 text-[13px] font-bold text-white">
                   <ClipboardCheck className="h-3.5 w-3.5" />
                   {intake.ready ? "内容を確認して送信" : "無料お見積りを依頼"}
                 </button>
@@ -790,7 +790,7 @@ export default function ConsultConsole({
                   type="button"
                   onClick={() => submit(t.q)}
                   disabled={busy}
-                  className="shrink-0 rounded-full border border-ichi-green/40 bg-white px-3 py-1 text-xs font-bold text-ichi-theme transition hover:bg-ichi-cream disabled:opacity-50"
+                  className="min-h-10 shrink-0 rounded-full border border-ichi-green/40 bg-white px-3.5 py-2 text-[13px] font-bold text-ichi-theme transition hover:bg-ichi-cream disabled:opacity-50"
                 >
                   {t.label}
                 </button>
@@ -806,7 +806,7 @@ export default function ConsultConsole({
           >
             <textarea
               ref={textareaRef}
-              className="max-h-[140px] min-h-[36px] flex-1 resize-none bg-transparent py-1.5 text-[16px] leading-relaxed text-sumi-800 outline-none placeholder:text-sumi-300 sm:text-[15px]"
+              className="max-h-[140px] min-h-[36px] flex-1 resize-none bg-transparent py-2 text-[16px] leading-relaxed text-sumi-800 outline-none placeholder:text-sumi-300"
               rows={1}
               value={input}
               placeholder={voice.live ? "話しかけるか、ここに入力してください" : "ご質問を入力（マイクで話しても大丈夫です）"}
@@ -824,14 +824,14 @@ export default function ConsultConsole({
             {micButton()}
             <button
               type="submit"
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ichi-green text-white transition hover:opacity-90 disabled:bg-sumi-200"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-ichi-green text-white transition hover:opacity-90 disabled:bg-sumi-200"
               disabled={(busy && !voice.live) || !input.trim()}
               aria-label="送信"
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-[18px] w-[18px]" />}
             </button>
           </form>
-          <p className="mt-1.5 text-center text-[10px] leading-snug text-sumi-400">
+          <p className="mt-1.5 text-center text-[11px] leading-snug text-sumi-500" data-disclaimer>
             AIは一畳屋の公式情報をもとにお答えします。正式なお見積りは担当者が現地を確認してご案内します。
           </p>
         </footer>

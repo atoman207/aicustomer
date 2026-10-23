@@ -14,6 +14,7 @@ import { findLearned, logUnanswered, questionKey, saveLearned } from "./learned"
 import { canRetryWithChatModel, chatCompletion } from "./openai";
 import { OTHER_INTENT, PRICE_INTENT, answerPrice, normPrice, sliceTableForQuestion, tableUnit, voiceClean, type AnswerStyle } from "./price";
 import { DOCUMENT_HEADING, buildChatSystemPrompt, splitEvidence, usesEvidence } from "./prompts";
+import { quantityReference } from "./quantity";
 import { answerQuote } from "./quote";
 import { hybridSearch, keywordScore, keywordSearch } from "./retrieval";
 import { recordAnswer, type AnswerOriginKind } from "./usage";
@@ -129,7 +130,7 @@ const WITH_PRICE_OTHER = /(何日|日数|工期|期間|仕上が|納期|終わ|�
  * AI が質問と照らし合わせて、合っているときだけ使う
  */
 const QUOTE_REFERENCE_HEADING =
-  "## 参考：この質問の数量で、料金表からシステムが計算した合計の目安（品目・作業・数量・種類が質問と合っているときだけ使う。合っていれば金額・合計はヘリ代や諸経費を含む・含まないの区別も含めてこのとおりに伝え、計算し直さない。ここにある金額どうしを足して別の合計を作らない（例：ヘリ代別の合計とヘリ代を足さない）。合っていなければこの参考は使わず、料金表から答える）";
+  "## 参考：この質問の数量で、料金表からシステムが計算した見積の目安（半畳の8掛けなど料金表の注記も反映済み。品目・作業・数量・種類が質問と合っているときだけ使い、合っていれば金額はこのとおりに伝える。ヘリ代や諸経費を含む・含まないの区別もこのとおりに書く）";
 
 /** 畳の大きさ（江戸間・京間など）で料金が変わるかの質問 */
 const SIZE_PRICE = /(江戸間|京間|本間|団地間|中京間|五八|六一).{0,20}(安|高|違|変わ|同じ)|(安|高|違|変わ|同じ).{0,12}(江戸間|京間|本間|団地間|中京間)/;
@@ -254,7 +255,7 @@ const PRICE_TABLE_GUIDE = `### 料金表の見方（システムの補足）
 - 畳の「表替え」は畳表の張替え、「新調」は畳床ごと新しくすること、「ウラ返し」は畳表の裏返しです。畳のヘリ（畳縁）代は畳の料金とは別で、ヘリの料金表も1畳あたりです。
 - 行の名前の中の数（「枠交換（１枚）」「枠交換（１本）」など）は、その行の作業の単位です。その行は名前のとおりの作業（例：枠交換）の料金で、張替えの料金ではありません。
 - 「時価」は金額が決まっていないもの（担当者が確認してご案内）です。
-- 網戸の料金表の最後の「諸経費3300円/一式」は、工事全体に一式でかかる諸経費です。`;
+- 「諸経費3300円/一式」は、資料の料金表の最後（襖・障子・網戸の料金表の側と、畳の料金表の側の両方）に書かれている、工事全体に一式でかかる諸経費です。`;
 
 /**
  * AI に渡す資料の全文（NotebookLM と同じく、資料全体を読んで答えるため）。中身は指定のスプレッドシートだけ（ホームページは使わない）。
@@ -317,8 +318,10 @@ export async function planAnswer(
 
   // 2. 資料の全文を AI が読んで答える（NotebookLM と同じ）。数量のある料金の質問だけ、システムが計算した合計を参考に添える
   if (full) {
-    // 数量が 1（「1枚いくら」「1畳いくら」）は単価の質問：合計（諸経費込み）の計算は添えず、AI が料金表の単価で答える
-    const quoted = SIZE_PRICE.test(normPrice(q)) ? null : answerQuote(q, history, snapshot.tables, style);
+    // 数量の計算表（単価×数量を種類ごとに。聞き方が違っても合計を出せるように）。半畳を含む数量（4畳半など）は、
+    // 計算の決まりが多いので見積の計算（quote.ts）を添える。数量が 1（「1枚いくら」）は単価の質問なので計算は添えない
+    const qty = SIZE_PRICE.test(normPrice(q)) ? null : quantityReference(q, history, snapshot.tables);
+    const quoted = qty || SIZE_PRICE.test(normPrice(q)) ? null : answerQuote(q, history, snapshot.tables, style);
     const quote = quoted && !quoted.single ? quoted : null;
     const hits = keywordSearch(contentQuery(query), snapshot.entries, 5, 0.2);
     const quoteSources = (quote?.tableIds ?? [])
@@ -327,7 +330,7 @@ export async function planAnswer(
       .map((e) => ({ id: e.id, title: e.title, category: e.category, origin: e.origin, score: 1 }));
     const sources = [...quoteSources, ...hits.map(toSource).filter((s) => !quoteSources.some((p) => p.id === s.id))];
     // 計算は資料の全文のあと（資料の部分が質問をまたいで同じ文字列になり、プロンプトキャッシュが効く）
-    const calc = quote ? `\n\n${QUOTE_REFERENCE_HEADING}\n${quote.reply}` : "";
+    const calc = qty ? `\n\n${qty}` : quote ? `\n\n${QUOTE_REFERENCE_HEADING}\n${quote.reply}` : "";
     return { ...base, mode: "openai", kind: "llm", reply: "", sources, hits, fullContext: true, context: `${doc}${calc}` };
   }
 
@@ -418,26 +421,33 @@ export async function composeAnswer(
   purpose: string,
 ): Promise<string> {
   const evidence = usesEvidence(plan.context);
+  // 声の相談は、待ち時間が短くなるように別のモデル・考える深さにできる（OPENAI_VOICE_ANSWER_MODEL）
+  const voice = plan.style === "voice";
+  const answerModel = voice ? env.voiceAnswerModel : env.answerModel;
+  const answerEffort = voice ? env.voiceAnswerReasoning : env.answerReasoning;
   const ask = (model: string) =>
     chatCompletion({
       model,
-      // 回答のモデルが推論するモデル（gpt-5 系）なら、考える深さは設定のとおり（既定 none＝すぐ答える）
-      reasoningEffort: model === env.answerModel ? env.answerReasoning : undefined,
+      // 回答のモデルは設定の考える深さ。答え直しのモデル（gpt-5.6-sol）は考えずにすぐ答える
+      reasoningEffort: model === answerModel ? answerEffort : model === env.answerFallbackModel ? "none" : undefined,
       messages: [{ role: "system", content: buildChatSystemPrompt(company, plan.context, plan.channel) }, ...messages],
       temperature: 0.3,
-      // 資料の全文で答えるときは、先に根拠の引用が入る分だけ長く
-      maxTokens: evidence ? 1200 : plan.style === "voice" ? 400 : 600,
+      // 料金の一覧なども省略せずに答えられる長さ（根拠の引用の分も）。声は短く
+      maxTokens: voice ? (evidence ? 1600 : 700) : evidence ? 3000 : 2000,
+      // 考える深さのあるモデルは時間がかかるので、待ち時間の上限を長めに
+      timeoutMs: 90_000,
       purpose,
     });
-  const model = plan.fullContext ? env.answerModel : env.chatModel;
+  const model = plan.fullContext ? answerModel : env.chatModel;
   let raw: string;
   try {
     raw = await ask(model);
   } catch (e) {
-    // 混み合っている・一時的な障害・この API キーでは使えないモデル：いつものモデルで答え直す（理由は管理画面のエラー履歴に）
-    if (model === env.chatModel || !canRetryWithChatModel(e)) throw e;
-    await logError("openai", `資料からの回答（${model} が使えないため ${env.chatModel} で回答）`, e);
-    raw = await ask(env.chatModel);
+    // 混み合っている・一時的な障害・この API キーでは使えないモデル：答え直しのモデルで答える（理由は管理画面のエラー履歴に）
+    const backup = plan.fullContext ? env.answerFallbackModel : null;
+    if (!backup || backup === model || !canRetryWithChatModel(e)) throw e;
+    await logError("openai", `資料からの回答（${model} が使えないため ${backup} で回答）`, e);
+    raw = await ask(backup);
   }
   const reply = evidence ? splitEvidence(raw).answer : raw.trim();
   await learnAnswer(plan, reply);

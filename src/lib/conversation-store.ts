@@ -39,6 +39,23 @@ const LEGACY_KEY = "ichijoya-ai-chat-v1";
 export const CONVERSATION_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_MESSAGES = 80;
 
+/** 保存した発言の形をそろえる（id・時刻・窓口・根拠の見出しの形が違うものは直すか捨てる） */
+function cleanMessage(m: StoredMessage, i: number): StoredMessage {
+  const sources = Array.isArray(m.sources)
+    ? m.sources.filter((s) => s && typeof s === "object" && typeof s.title === "string").map((s) => ({ title: s.title, category: typeof s.category === "string" ? s.category : "", origin: typeof s.origin === "string" ? s.origin : undefined }))
+    : undefined;
+  return {
+    id: typeof m.id === "string" && m.id ? m.id : `restored-${i}`,
+    role: m.role,
+    content: m.content,
+    at: typeof m.at === "number" && Number.isFinite(m.at) ? m.at : undefined,
+    channel: m.channel === "voice" ? "voice" : "text",
+    sources,
+    mode: typeof m.mode === "string" ? m.mode : undefined,
+    kind: typeof m.kind === "string" ? m.kind : undefined,
+  };
+}
+
 export function loadConversation(): StoredConversation | null {
   try {
     OLD_LOCAL_KEYS.forEach((k) => localStorage.removeItem(k));
@@ -46,10 +63,13 @@ export function loadConversation(): StoredConversation | null {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
     const c = JSON.parse(raw) as Partial<StoredConversation>;
-    const id = c.id;
-    if (!id || !Array.isArray(c.messages) || !c.messages.length || !c.savedAt || Date.now() - c.savedAt > CONVERSATION_TTL_MS) return null;
-    const messages = c.messages.filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim());
-    return messages.length ? { id, messages, estimateId: c.estimateId, intake: c.intake ? sanitizeIntake(c.intake) : undefined, savedAt: c.savedAt } : null;
+    const id = typeof c.id === "string" ? c.id : "";
+    if (!id || !Array.isArray(c.messages) || !c.messages.length || typeof c.savedAt !== "number" || Date.now() - c.savedAt > CONVERSATION_TTL_MS) return null;
+    // 保存した内容が壊れていても表示できるように、形の合わない値は捨てる（相談の画面が表示できなくなるのを防ぐ）
+    const messages = c.messages.filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim()).map(cleanMessage);
+    return messages.length
+      ? { id, messages, estimateId: typeof c.estimateId === "string" ? c.estimateId : undefined, intake: c.intake && typeof c.intake === "object" ? sanitizeIntake(c.intake) : undefined, savedAt: c.savedAt }
+      : null;
   } catch {
     return null;
   }

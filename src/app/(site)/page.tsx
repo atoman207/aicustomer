@@ -1,6 +1,7 @@
 import { CheckCircle2 } from "lucide-react";
 import { BusinessInfo, Faq, Message, Reasons, Stores } from "@/components/CompanyInfo";
 import ConsultConsole from "@/components/ConsultConsole";
+import ConsultBoundary from "@/components/consult/ConsultBoundary";
 import KeyVisual from "@/components/KeyVisual";
 import { PhoneCallout } from "@/components/PhoneButton";
 import Reveal from "@/components/Reveal";
@@ -43,13 +44,15 @@ export default async function HomePage() {
             </p>
           </Reveal>
           <div className="mt-8" data-consult="home">
-            <ConsultConsole
-              layout="section"
-              mode={status.openai.configured ? "openai" : "demo"}
-              company={settings.companyName}
-              lineUrl={settings.lineAddFriendUrl}
-              knowledgeLabel={status.knowledge.label}
-            />
+            <ConsultBoundary>
+              <ConsultConsole
+                layout="section"
+                mode={status.openai.configured ? "openai" : "demo"}
+                company={settings.companyName}
+                lineUrl={settings.lineAddFriendUrl}
+                knowledgeLabel={status.knowledge.label}
+              />
+            </ConsultBoundary>
           </div>
           <Reveal effect="fade-up">
             <ul className="mt-6 flex flex-wrap justify-center gap-2" aria-label="安心してご利用いただくために">

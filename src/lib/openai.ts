@@ -81,7 +81,17 @@ export interface TokenUsage {
 }
 
 function isReasoningModel(model: string): boolean {
-  return /^(o\d|gpt-5)/.test(model);
+  return /^(o\d|gpt-5|gpt-6)/.test(model);
+}
+
+/**
+ * モデルが受け付ける考える深さにそろえる。gpt-6 系（gpt-6-astra・gpt-6.1-sol など）は none・minimal を受け付けず low からなので、
+ * none・minimal は low にする（2026-10 時点の API の仕様）
+ */
+export function reasoningEffortFor(model: string, effort?: string): string | undefined {
+  if (!effort) return undefined;
+  if (/^gpt-6/.test(model) && (effort === "none" || effort === "minimal")) return "low";
+  return effort;
 }
 
 function chatBody(o: ChatOptions, stream: boolean): Record<string, unknown> {
@@ -90,8 +100,9 @@ function chatBody(o: ChatOptions, stream: boolean): Record<string, unknown> {
   if (stream) body.stream_options = { include_usage: true };
   if (isReasoningModel(model)) {
     // 推論の分も出力のトークンに数えられるので、上限は多めに
-    body.max_completion_tokens = Math.max(o.maxTokens ?? 1500, 1500) + (o.reasoningEffort && o.reasoningEffort !== "none" ? 3000 : 0);
-    if (o.reasoningEffort) body.reasoning_effort = o.reasoningEffort;
+    const effort = reasoningEffortFor(model, o.reasoningEffort);
+    body.max_completion_tokens = Math.max(o.maxTokens ?? 1500, 1500) + (effort && effort !== "none" ? 4000 : 0);
+    if (effort) body.reasoning_effort = effort;
   } else {
     body.temperature = o.temperature ?? 0.3;
     body.max_tokens = o.maxTokens ?? 800;

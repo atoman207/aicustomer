@@ -11,7 +11,7 @@ import { japanNow } from "./hours";
 import { normalizeDraft } from "./intake";
 import { getKnowledge } from "./knowledge";
 import { canRetryWithChatModel, chatCompletionJson } from "./openai";
-import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt, usesEvidence } from "./prompts";
+import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt, isFullDocumentContext } from "./prompts";
 import { getSession, getSettings, saveSession, upsertConversation } from "./store";
 import type { AgentSession, AgentStage, AgentTurnResult, Channel, IntakeDraft, SearchHit } from "./types";
 import { domesticPhone, fillTemplate, readDigits, truncate, uid } from "./utils";
@@ -121,28 +121,31 @@ async function openaiTurn(session: AgentSession, company: string, context: strin
       : "\n発信者番号: 非通知（お電話番号は市外局番から伺ってください）";
   }
   const history = session.messages.slice(-12).map((m) => ({ role: m.role, content: truncate(m.content, 400) }));
-  // 資料の全文で答えるとき（相談中の質問）は精度の高いモデル。根拠（evidence）の引用が入る分だけ長く
-  const full = usesEvidence(context);
+  // 資料の全文で答えるとき（相談中の質問）は精度の高いモデル（電話は声の相談と同じ速いモデル）。根拠（evidence）の引用が入る分だけ長く
+  const full = isFullDocumentContext(context);
+  const answerModel = session.channel === "phone" ? env.voiceAnswerModel : env.answerModel;
+  const answerEffort = session.channel === "phone" ? env.voiceAnswerReasoning : env.answerReasoning;
   const ask = (model: string) =>
     chatCompletionJson<ModelTurn>({
       model,
-      // 回答のモデルが推論するモデル（gpt-5 系）なら、考える深さは設定のとおり（既定 none＝すぐ答える）
-      reasoningEffort: model === env.answerModel ? env.answerReasoning : undefined,
+      reasoningEffort: model === answerModel ? answerEffort : model === env.answerFallbackModel ? "none" : undefined,
       messages: [{ role: "system", content: system }, ...history],
       jsonSchema: AGENT_JSON_SCHEMA,
       temperature: 0.3,
-      maxTokens: full ? 1200 : 500,
+      maxTokens: full ? 2000 : 500,
+      timeoutMs: 90_000,
       purpose: "agent",
     });
-  const model = full ? env.answerModel : env.chatModel;
+  const model = full ? answerModel : env.chatModel;
   let out: ModelTurn;
   try {
     out = await ask(model);
   } catch (e) {
-    // 混み合っている・一時的な障害・この API キーでは使えないモデル：いつものモデルで答え直す（理由は管理画面のエラー履歴に）
-    if (model === env.chatModel || !canRetryWithChatModel(e)) throw e;
-    await logError("openai", `AI受付（${model} が使えないため ${env.chatModel} で回答）`, e);
-    out = await ask(env.chatModel);
+    // 混み合っている・一時的な障害・この API キーでは使えないモデル：答え直しのモデルで答える（理由は管理画面のエラー履歴に）
+    const backup = full ? env.answerFallbackModel : null;
+    if (!backup || backup === model || !canRetryWithChatModel(e)) throw e;
+    await logError("openai", `AI受付（${model} が使えないため ${backup} で回答）`, e);
+    out = await ask(backup);
   }
   // モデルが既に伺った項目を null で返しても消さない（訂正時は新しい値で上書きされる）
   const prev = session.draft;
