@@ -73,7 +73,7 @@ const MODE_LABEL: Record<string, { label: string; tone: "green" | "blue" | "ambe
   smalltalk: { label: "定型文（AI未使用）", tone: "neutral" },
   notfound: { label: "該当なし → 担当者の折り返しを案内（AI未使用）", tone: "amber" },
   demo: { label: "デモモード（ナレッジ検索）", tone: "neutral" },
-  openai: { label: "AIが回答を作成（関係するナレッジだけを参照）", tone: "blue" },
+  openai: { label: "AIが回答を作成（スプレッドシートの全文を参照）", tone: "blue" },
 };
 
 export default function KnowledgeAdmin() {
@@ -194,7 +194,7 @@ export default function KnowledgeAdmin() {
               </button>
             ) : null}
           </div>
-          <p className="px-4 pt-3 text-xs text-sumi-500">AI が一度作った回答を覚えておき、同じ質問には AI を使わずに答えます。根拠にしたナレッジが変わると自動的に使われなくなります。</p>
+          <p className="px-4 pt-3 text-xs text-sumi-500">AI が一度作った回答を覚えておき、同じ質問（「ですか」「？」などの言い回しの違いはそろえて照合）には AI を使わずに答えます（トークンがかかりません）。スプレッドシートの内容・回答の書き方・AI のモデルが変わると自動的に使われなくなり、30日で消えます。直したい回答は削除すると、次に聞かれたときに AI が答え直します。</p>
           <ul className="max-h-[360px] divide-y divide-washi-200 overflow-auto px-4 py-2 text-sm">
             {learned.length === 0 ? <li className="py-3 text-sumi-400">まだありません</li> : null}
             {learned.map((l) => (
@@ -512,7 +512,7 @@ function UsageCard({ usage }: { usage: Usage[] }) {
         <Zap className="h-4 w-4 text-ichi-green" />
         AIの利用状況
       </p>
-      <p className="mt-1 text-xs text-sumi-500">料金表・会社情報・よくある質問・学習済みの回答は OpenAI を使わずに答えます。OpenAI はナレッジだけでは答えきれない質問にだけ使います。</p>
+      <p className="mt-1 text-xs text-sumi-500">あいさつと、学習済みの回答（前と同じ質問）は OpenAI を使わずに答えます（トークンがかかりません）。それ以外は、AI がスプレッドシートの全文を読んで答えます。</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
         {block(today, "今日")}
         {block(usage, `直近 ${usage.length || 0} 日`)}

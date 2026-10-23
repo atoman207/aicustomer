@@ -117,15 +117,20 @@ function chatBody(o: ChatOptions, stream: boolean): Record<string, unknown> {
 }
 
 interface ChatCompletionResponse {
-  choices?: { message?: { content?: string | null } }[];
+  choices?: { message?: { content?: string | null }; finish_reason?: string | null }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 }
 
-export async function chatCompletion(o: ChatOptions): Promise<string> {
+/** 回答の文と、終わり方（stop＝最後まで書けた・length＝長さの上限で切れた など） */
+export async function chatCompletionResult(o: ChatOptions): Promise<{ text: string; finish: string }> {
   const res = await post("/chat/completions", chatBody(o, false), undefined, o.timeoutMs ?? 45_000);
   const json = (await res.json()) as ChatCompletionResponse;
   void recordTokens(o.purpose ?? "chat", { prompt: json.usage?.prompt_tokens ?? 0, completion: json.usage?.completion_tokens ?? 0 });
-  return json.choices?.[0]?.message?.content ?? "";
+  return { text: json.choices?.[0]?.message?.content ?? "", finish: json.choices?.[0]?.finish_reason ?? "" };
+}
+
+export async function chatCompletion(o: ChatOptions): Promise<string> {
+  return (await chatCompletionResult(o)).text;
 }
 
 export async function chatCompletionJson<T>(
@@ -147,7 +152,8 @@ export async function chatCompletionJson<T>(
  */
 export async function streamChatCompletion(
   o: ChatOptions,
-  onComplete?: (fullText: string, usage: TokenUsage, hidden: string) => void | Promise<void>,
+  /** finish：stop＝最後まで書けた・length＝長さの上限で切れた・cut＝通信が途中で切れた */
+  onComplete?: (fullText: string, usage: TokenUsage, hidden: string, finish: string) => void | Promise<void>,
   /**
    * 出力の先頭の、この印まで（資料から引用した根拠など）はお客様に送らない。onComplete には印のあとだけを渡す。
    * 印が出なかったときは onMissing(全文) を送る
@@ -191,6 +197,7 @@ export async function streamChatCompletion(
       let shownFrom = hide ? -1 : 0;
       let lead = Boolean(hide);
       let sent = "";
+      let finish = "";
       const emit = (s: string) => {
         let text = s;
         if (lead) {
@@ -215,9 +222,10 @@ export async function streamChatCompletion(
             if (data === "[DONE]") continue;
             try {
               const j = JSON.parse(data) as {
-                choices?: { delta?: { content?: string } }[];
+                choices?: { delta?: { content?: string }; finish_reason?: string | null }[];
                 usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
               };
+              if (j.choices?.[0]?.finish_reason) finish = j.choices[0].finish_reason;
               if (j.usage) {
                 usage.prompt = j.usage.prompt_tokens ?? 0;
                 usage.completion = j.usage.completion_tokens ?? 0;
@@ -241,6 +249,7 @@ export async function streamChatCompletion(
         }
       } catch (e) {
         clearTimeout(timer);
+        finish = "cut";
         if (sent) {
           controller.enqueue(encoder.encode("\n（通信が途中で切断されました）"));
         } else if (!full) {
@@ -253,7 +262,7 @@ export async function streamChatCompletion(
       if (hide && shownFrom < 0) emit(hide.onMissing(full));
       void recordTokens(o.purpose ?? "chat", usage);
       try {
-        await onComplete?.(sent.trim(), usage, hide ? full.slice(0, shownFrom >= 0 ? shownFrom - hide.until.length : full.length) : "");
+        await onComplete?.(sent.trim(), usage, hide ? full.slice(0, shownFrom >= 0 ? shownFrom - hide.until.length : full.length) : "", finish);
       } catch {
         // 完了処理の失敗は応答に影響させない
       }

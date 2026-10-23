@@ -3,11 +3,12 @@
 //   2. ローカルファイル data/runtime/*.json（通常のサーバー）… 永続
 //   3. /tmp + メモリ（Vercel などサーバーレスで Redis 未設定）… 一時的（再起動で消える）
 // 受付は Googleスプレッドシート（受付一覧のタブ）にも記録するので、ここはキャッシュ兼ローカル記録として機能します。
+// 会話は Redis では 1 会話 1 キーで保存します（下の「会話履歴」）。
 import { promises as fs } from "fs";
 import path from "path";
 import { LEGACY_COMPANY_NAMES, LEGACY_PHONES } from "./brand";
 import { env } from "./env";
-import { kvCommand, kvConfigured, kvGet, kvSet, kvSource } from "./kv";
+import { kvCommand, kvConfigured, kvDeleteMatching, kvGet, kvPipeline, kvSet, kvSource } from "./kv";
 import type { AgentSession, AppSettings, ConversationLog, EstimateRequest, KnowledgeEntry, StorageInfo } from "./types";
 
 type CollectionName =
@@ -37,13 +38,17 @@ interface StoreState {
 }
 
 /**
- * 保存データの世代。上げると、それまでに保存したデータ（受付・会話・設定・セッション・以前の回答・答えられなかった質問・
- * 利用状況・エラー履歴・ホームページの再学習）を、最初に使うときに一度だけすべて消す（Redis・ファイルとも）。
+ * 保存データの世代。上げると、その世代で消すと決めたデータ（PURGE_*）を、最初に使うときに一度だけ消す（Redis・ファイルとも）。
  *   2：2026-10-23 一畳屋様のご依頼（それまでの保存データとキャッシュをすべて削除）
+ *   3：2026-10-23 それまでの会話の履歴（以前の仕組みの回答を含む）・会話の状態・学習済みの回答・答えられなかった質問を削除。
+ *      受付（見積依頼）・設定・利用状況・エラー履歴は残す
  * Googleスプレッドシートの「受付一覧」タブ（受付の記録）は消さない
  */
-const DATA_EPOCH = 2;
-const ALL_COLLECTIONS: CollectionName[] = ["estimates", "conversations", "sessions", "settings", "site_knowledge", "learned", "unanswered", "usage", "error_log", "embeddings"];
+const DATA_EPOCH = 3;
+const PURGE_COLLECTIONS: CollectionName[] = ["conversations", "sessions", "learned", "unanswered"];
+/** 1 件ずつのキーで保存しているもの（会話・学習済みの回答）。パターンに合うキーと、まとめのキーを消す */
+const PURGE_PATTERNS = ["aic:conv:*", "aic:answer:*"];
+const PURGE_KEYS = ["aic:conv-index", "aic:answer-hits"];
 
 const g = globalThis as unknown as { __aicustomerStore?: StoreState };
 const state: StoreState = g.__aicustomerStore ?? { cache: new Map(), queues: new Map(), writable: null, dir: undefined };
@@ -105,7 +110,10 @@ function purgeOldData(): Promise<void> {
       try {
         // 最初に世代を書けたインスタンスだけが消す（消したあとに書かれたデータを、ほかのインスタンスが消さないように）
         const won = await kvCommand(["SET", `aic:epoch:${DATA_EPOCH}`, new Date().toISOString(), "NX"]);
-        if (won === "OK") await kvCommand(["DEL", ...ALL_COLLECTIONS.map((n) => `aic:${n}`)]);
+        if (won === "OK") {
+          await kvCommand(["DEL", ...PURGE_COLLECTIONS.map((n) => `aic:${n}`), ...PURGE_KEYS]);
+          for (const p of PURGE_PATTERNS) await kvDeleteMatching(p);
+        }
       } catch (e) {
         state.kvError = (e as Error).message;
       }
@@ -117,7 +125,8 @@ function purgeOldData(): Promise<void> {
       await fs.access(mark);
     } catch {
       try {
-        for (const f of await fs.readdir(dir)) if (/\.json$|\.tmp$/.test(f)) await fs.rm(path.join(dir, f), { force: true });
+        const names = new Set(PURGE_COLLECTIONS.map((n) => `${n}.json`));
+        for (const f of await fs.readdir(dir)) if (names.has(f) || /\.tmp$/.test(f)) await fs.rm(path.join(dir, f), { force: true });
         await fs.writeFile(mark, new Date().toISOString());
       } catch {
         // 読み取り専用など：そのまま使う
@@ -125,6 +134,11 @@ function purgeOldData(): Promise<void> {
     }
   })();
   return state.purged;
+}
+
+/** 1 件ずつのキーで Redis に保存するもの（学習済みの回答など）を使う前に呼ぶ（世代が上がっていれば、先に古いデータを消す） */
+export function prepareStore(): Promise<void> {
+  return purgeOldData();
 }
 
 function remember<T>(name: CollectionName, value: T): T {
@@ -318,24 +332,80 @@ export async function updateEstimate(id: string, patch: Partial<EstimateRequest>
 }
 
 // ---------- 会話履歴 ----------
+// Redis では 1 会話 1 キー（aic:conv:<id>）と、更新日時順の一覧（aic:conv-index）で保存する
+// （全会話を 1 つの値にすると、会話が増えるほど毎回の読み書きが重くなり、Redis の 1 回の上限を超えると保存できなくなるため）。
+// ファイル・メモリでは 1 つの一覧で保存する
 
 const MAX_CONVERSATIONS = 300;
+/** Redis に残す会話の数（古いものから消す） */
+const MAX_KV_CONVERSATIONS = 3000;
 const MAX_MESSAGES_PER_CONVERSATION = 60;
+const CONV_INDEX = "aic:conv-index";
+const convKey = (id: string) => `aic:conv:${id}`;
+
+function parseConversation(raw: unknown): ConversationLog | null {
+  if (typeof raw !== "string") return null;
+  try {
+    return JSON.parse(raw) as ConversationLog;
+  } catch {
+    return null;
+  }
+}
 
 export async function listConversations(limit = 100): Promise<ConversationLog[]> {
+  if (kvConfigured()) {
+    try {
+      await purgeOldData();
+      const ids = (await kvCommand(["ZREVRANGE", CONV_INDEX, "0", String(Math.max(1, limit) - 1)])) as string[] | null;
+      if (!ids?.length) return [];
+      const raws = (await kvCommand(["MGET", ...ids.map(convKey)])) as unknown[];
+      return raws.map(parseConversation).filter((c): c is ConversationLog => Boolean(c));
+    } catch (e) {
+      state.kvError = (e as Error).message; // ファイル／メモリへフォールバック
+    }
+  }
   const list = await read<ConversationLog[]>("conversations");
   return [...list].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, limit);
 }
 
 export async function getConversation(id: string): Promise<ConversationLog | null> {
+  if (kvConfigured()) {
+    try {
+      await purgeOldData();
+      return parseConversation(await kvGet(convKey(id)));
+    } catch (e) {
+      state.kvError = (e as Error).message;
+    }
+  }
   const list = await read<ConversationLog[]>("conversations");
   return list.find((c) => c.id === id) ?? null;
 }
 
 export async function upsertConversation(log: ConversationLog): Promise<void> {
+  const trimmed: ConversationLog = { ...log, messages: log.messages.slice(-MAX_MESSAGES_PER_CONVERSATION) };
+  if (kvConfigured()) {
+    try {
+      await purgeOldData();
+      const [, added] = await kvPipeline([
+        ["SET", convKey(log.id), JSON.stringify(trimmed)],
+        ["ZADD", CONV_INDEX, String(Date.parse(trimmed.updatedAt) || Date.now()), log.id],
+      ]);
+      // 新しい会話が増えたときだけ、上限を超えた古い会話を消す
+      if (Number(added) > 0) {
+        const count = Number(await kvCommand(["ZCARD", CONV_INDEX])) || 0;
+        if (count > MAX_KV_CONVERSATIONS) {
+          const old = ((await kvCommand(["ZRANGE", CONV_INDEX, "0", String(count - MAX_KV_CONVERSATIONS - 1)])) as string[] | null) ?? [];
+          if (old.length) await kvPipeline([["DEL", ...old.map(convKey)], ["ZREM", CONV_INDEX, ...old]]);
+        }
+      }
+      state.kvError = undefined;
+      return;
+    } catch (e) {
+      state.kvError = (e as Error).message; // ファイル／メモリへフォールバック
+    }
+  }
   const list = await read<ConversationLog[]>("conversations");
   const others = list.filter((c) => c.id !== log.id);
-  const trimmed: ConversationLog = { ...log, messages: log.messages.slice(-MAX_MESSAGES_PER_CONVERSATION) };
   const next = [...others, trimmed].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, MAX_CONVERSATIONS);
   await write("conversations", next);
 }

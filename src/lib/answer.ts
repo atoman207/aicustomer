@@ -3,15 +3,16 @@
 //   2. それ以外（料金・工期・営業範囲・店舗など、事実の質問はすべて）→ AI（OPENAI_ANSWER_MODEL）が資料の全文を読み、
 //      根拠の文を書き写してから答える。料金に数量があるとき（「8畳だと？」）は、料金表からシステムが計算した合計を
 //      「参考」として添える（品目・作業・数量が質問と合うときだけ AI が使う）
-//   料金表から直接の回答（price.ts）・営業範囲の判定（area.ts）・以前の回答の再利用は、品目の取り違え（「1枚」で襖の枠交換を
+//   料金表から直接の回答（price.ts）・営業範囲の判定（area.ts）は、品目の取り違え（「1枚」で襖の枠交換を
 //   答えるなど）が起きたため、AI を使えないとき（デモモード・ANSWER_CONTEXT=search）だけに使う。
-//   以前の回答の再利用は ANSWER_REUSE=1 のときだけ（既定は毎回、資料から答える）
+//   3. 同じ質問（AI に渡す内容とお客様の質問がまったく同じ）には、前に AI が作った回答をそのまま使う（learned.ts・トークンの節約）。
+//      照合は呼び出し側（文字の相談のストリーミング・composeAnswer）で、AI に渡す直前の指示と会話で行う
 import { answerArea } from "./area";
 import { env } from "./env";
 import { logError } from "./errorlog";
-import { entryHash, getKnowledge } from "./knowledge";
-import { findLearned, logUnanswered, questionKey, saveLearned } from "./learned";
-import { canRetryWithChatModel, chatCompletion } from "./openai";
+import { getKnowledge } from "./knowledge";
+import { findLearned, learnedKey, logUnanswered, questionKey, saveLearned, type LearnedAnswer } from "./learned";
+import { canRetryWithChatModel, chatCompletionResult } from "./openai";
 import { OTHER_INTENT, PRICE_INTENT, answerPrice, normPrice, sliceTableForQuestion, tableUnit, voiceClean, type AnswerStyle } from "./price";
 import { DOCUMENT_HEADING, buildChatSystemPrompt, splitEvidence, usesEvidence } from "./prompts";
 import { quantityReference } from "./quantity";
@@ -35,6 +36,8 @@ export interface AnswerPlan {
   kind: "price" | "area" | "learned" | "smalltalk" | "notfound" | "search" | "llm";
   /** mode が openai 以外のときの回答文 */
   reply: string;
+  /** お客様の質問（そのまま） */
+  question: string;
   query: string;
   key: string;
   standalone: boolean;
@@ -306,7 +309,7 @@ export async function planAnswer(
   const q = question.trim();
   const { query, standalone } = expandQuery(q, history);
   const key = questionKey(q);
-  const base = { query, key, standalone, style, channel: opts.channel, snapshot, context: "", fullContext: false, hits: [] as SearchHit[], sources: [] as AnswerSource[] };
+  const base = { question: q, query, key, standalone, style, channel: opts.channel, snapshot, context: "", fullContext: false, hits: [] as SearchHit[], sources: [] as AnswerSource[] };
   const llm = env.hasOpenAI && opts.allowLLM !== false;
   const doc = llm && env.answerContext === "full" ? knowledgeDocument(snapshot) : "";
   const full = doc.length > 0 && doc.length <= FULL_CONTEXT_MAX_CHARS;
@@ -320,7 +323,7 @@ export async function planAnswer(
   if (full) {
     // 数量の計算表（単価×数量を種類ごとに。聞き方が違っても合計を出せるように）。半畳を含む数量（4畳半など）は、
     // 計算の決まりが多いので見積の計算（quote.ts）を添える。数量が 1（「1枚いくら」）は単価の質問なので計算は添えない
-    const qty = SIZE_PRICE.test(normPrice(q)) ? null : quantityReference(q, history, snapshot.tables);
+    const qty = SIZE_PRICE.test(normPrice(q)) ? null : quantityReference(q, history, snapshot.tables, manualText(snapshot));
     const quoted = qty || SIZE_PRICE.test(normPrice(q)) ? null : answerQuote(q, history, snapshot.tables, style);
     const quote = quoted && !quoted.single ? quoted : null;
     const hits = keywordSearch(contentQuery(query), snapshot.entries, 5, 0.2);
@@ -364,22 +367,7 @@ export async function planAnswer(
     return finish({ ...base, mode: "local", kind: "area", reply: area.reply, sources: src ? [{ id: src.id, title: src.title, category: src.category, origin: src.origin, score: 1 }] : [] });
   }
 
-  // 5. 以前の回答の再利用（ANSWER_REUSE=1 のときだけ。根拠の項目が変わっていないもの）
-  if (env.answerReuse && standalone && key) {
-    const valid = new Set([...snapshot.entries.map(entryHash), snapshot.version]);
-    const learned = await findLearned(key, style, valid);
-    if (learned) {
-      return finish({
-        ...base,
-        mode: "cache",
-        kind: "learned",
-        reply: learned.answer,
-        sources: learned.sources.filter((s) => s.id !== "knowledge").map((s) => ({ id: s.id, title: s.title, category: "学習済み", score: 1 })),
-      });
-    }
-  }
-
-  // 6. 関係するナレッジの検索（OpenAI があれば意味の近さも使う）
+  // 5. 関係するナレッジの検索（OpenAI があれば意味の近さも使う）
   // キーワードの照合は「ありますか」「できますか」などの言い回しを除いた語で行う（どの項目にも当たる語で誤って一致しないように）
   // 料金の質問でなければ料金表は探さない（料金表は「表替え」などの語が多く、工期などの質問で文章より上に来てしまうため）
   const pool = PRICE_INTENT.test(normPrice(q)) ? snapshot.entries : snapshot.entries.filter((e) => !snapshot.tables.some((t) => t.id === e.id));
@@ -402,7 +390,7 @@ export async function planAnswer(
   if (!llm) {
     return finish({ ...base, mode: env.hasOpenAI ? "local" : "demo", kind: "search", reply: demoReply(hits, snapshot, query, style), sources, hits });
   }
-  // 7. OpenAI（参考情報は関係するものだけ。検索の結果は「根拠」の表示に使う）
+  // 6. OpenAI（参考情報は関係するものだけ。検索の結果は「根拠」の表示に使う）
   // 料金の計算は資料の全文のあと（資料の部分が質問をまたいで同じ文字列になり、プロンプトキャッシュが効く）
   const calc = priced
     ? `\n\n## この質問の料金（料金表からシステムが計算した目安。金額・合計は、ヘリ代や諸経費を含む・含まないの区別も含めてこの文のとおりに伝え、計算し直さない）\n${priced.reply}`
@@ -410,9 +398,48 @@ export async function planAnswer(
   return { ...base, mode: "openai", kind: "llm", reply: "", sources, hits, fullContext: full, context: full ? `${doc}${calc}` : buildContext(hits, snapshot, query) };
 }
 
+/** 回答のモデルと考える深さ（声の相談は、待ち時間が短くなるように別のモデル・考える深さにできる：OPENAI_VOICE_ANSWER_MODEL） */
+export function answerModelFor(plan: AnswerPlan): { model: string; effort?: string } {
+  if (!plan.fullContext) return { model: env.chatModel };
+  return plan.style === "voice" ? { model: env.voiceAnswerModel, effort: env.voiceAnswerReasoning } : { model: env.answerModel, effort: env.answerReasoning };
+}
+
+/** お名前・電話番号・住所など、その人だけの内容を含む会話（学習済みの回答として保存も再利用もしない） */
+const PERSONAL = /(?<![\d,])0\d{1,4}[-‐ー－(（]\d{1,4}[-‐ー－)）]\d{3,4}(?!\d)|(?<![\d,])0\d{9,10}(?![\d,])|[\w.+-]+@[\w-]+\.[\w.]+|様です|と申します|番地|丁目/;
+
+/**
+ * 学習済みの回答の照合キー（AI に渡す指示の全文・モデル・考える深さ・お客様の発言がまったく同じときだけ同じ）。
+ * 保存も再利用もしない会話（その人だけの内容を含む・設定で使わない）は null
+ */
+export function learnedKeyFor(
+  plan: AnswerPlan,
+  ai: { model: string; effort?: string; system: string },
+  messages: { role: "user" | "assistant"; content: string }[],
+): string | null {
+  if (!env.answerCache || plan.mode !== "openai") return null;
+  const questions = messages.filter((m) => m.role === "user").map((m) => m.content);
+  if (!questions.length || questions.some((q) => PERSONAL.test(q.normalize("NFKC")))) return null;
+  return learnedKey({ ...ai, questions });
+}
+
+/** 学習済みの回答（同じ質問に前に AI が作った回答）があれば、その回答。利用状況と「答えられなかった質問」も記録する */
+export async function learnedReply(plan: AnswerPlan, key: string | null): Promise<LearnedAnswer | null> {
+  if (!key) return null;
+  const hit = await findLearned(key);
+  if (!hit) return null;
+  void recordAnswer("cache");
+  if (/お答えできかねます/.test(hit.answer)) void logUnanswered(plan.query, plan.channel);
+  return hit;
+}
+
+/** 学習済みの回答の根拠を、回答の根拠の形に戻す（画面の「根拠」の表示用） */
+export function learnedSources(hit: LearnedAnswer): AnswerSource[] {
+  return hit.sources.map((s) => ({ id: s.id, title: s.title, category: s.category ?? "", score: 1 }));
+}
+
 /**
  * OpenAI で回答を作る（文字の相談のストリーミング以外：音声相談の search_knowledge・管理画面の回答テスト）。
- * 文字の相談と同じ指示・同じ参考情報で答え、回答は学習する
+ * 文字の相談と同じ指示・同じ参考情報で答え、回答は学習する（同じ質問には学習済みの回答をそのまま返す）
  */
 export async function composeAnswer(
   plan: AnswerPlan,
@@ -421,16 +448,18 @@ export async function composeAnswer(
   purpose: string,
 ): Promise<string> {
   const evidence = usesEvidence(plan.context);
-  // 声の相談は、待ち時間が短くなるように別のモデル・考える深さにできる（OPENAI_VOICE_ANSWER_MODEL）
   const voice = plan.style === "voice";
-  const answerModel = voice ? env.voiceAnswerModel : env.answerModel;
-  const answerEffort = voice ? env.voiceAnswerReasoning : env.answerReasoning;
-  const ask = (model: string) =>
-    chatCompletion({
-      model,
+  const { model, effort } = answerModelFor(plan);
+  const system = buildChatSystemPrompt(company, plan.context, plan.channel);
+  const key = learnedKeyFor(plan, { model, effort, system }, messages);
+  const learned = await learnedReply(plan, key);
+  if (learned) return learned.answer;
+  const ask = (m: string) =>
+    chatCompletionResult({
+      model: m,
       // 回答のモデルは設定の考える深さ。答え直しのモデル（gpt-5.6-sol）は考えずにすぐ答える
-      reasoningEffort: model === answerModel ? answerEffort : model === env.answerFallbackModel ? "none" : undefined,
-      messages: [{ role: "system", content: buildChatSystemPrompt(company, plan.context, plan.channel) }, ...messages],
+      reasoningEffort: m === model ? effort : m === env.answerFallbackModel ? "none" : undefined,
+      messages: [{ role: "system", content: system }, ...messages],
       temperature: 0.3,
       // 料金の一覧なども省略せずに答えられる長さ（根拠の引用の分も）。声は短く
       maxTokens: voice ? (evidence ? 1600 : 700) : evidence ? 3000 : 2000,
@@ -438,8 +467,8 @@ export async function composeAnswer(
       timeoutMs: 90_000,
       purpose,
     });
-  const model = plan.fullContext ? answerModel : env.chatModel;
-  let raw: string;
+  let raw: { text: string; finish: string };
+  let primary = true;
   try {
     raw = await ask(model);
   } catch (e) {
@@ -448,33 +477,31 @@ export async function composeAnswer(
     if (!backup || backup === model || !canRetryWithChatModel(e)) throw e;
     await logError("openai", `資料からの回答（${model} が使えないため ${backup} で回答）`, e);
     raw = await ask(backup);
+    primary = false;
   }
-  const reply = evidence ? splitEvidence(raw).answer : raw.trim();
-  await learnAnswer(plan, reply);
+  const reply = evidence ? splitEvidence(raw.text).answer : raw.text.trim();
+  // 学習するのは、回答のモデルで最後まで書けた回答だけ（答え直しのモデルの回答・途中で切れた回答は次回は作り直す）
+  await learnAnswer(plan, reply, primary && raw.finish === "stop" ? key : null);
   return reply;
 }
 
-/** OpenAI が作った回答を学習する（答えられなかった場合は「答えられなかった質問」に記録） */
-export async function learnAnswer(plan: AnswerPlan, reply: string): Promise<void> {
+/**
+ * OpenAI が作った回答を記録する（答えられなかった場合は「答えられなかった質問」に）。
+ * key（learnedKeyFor）があれば学習済みの回答として覚え、同じ質問には次回から AI を使わずに答える
+ */
+export async function learnAnswer(plan: AnswerPlan, reply: string, key?: string | null): Promise<void> {
   void recordAnswer("openai");
   const text = reply.trim();
   if (!text) return;
-  if (/お答えできかねます/.test(text)) {
-    await logUnanswered(plan.query, plan.channel);
-    return;
-  }
-  // 以前の回答の再利用を使わないとき（既定）は保存もしない（毎回、資料から答える）
-  if (!env.answerReuse || !plan.standalone || !plan.key || text.length < 8) return;
+  if (/お答えできかねます/.test(text)) await logUnanswered(plan.query, plan.channel);
+  if (!key || text.length < 8) return;
   await saveLearned({
-    key: plan.key,
-    question: plan.query.slice(0, 300),
-    answer: text.slice(0, 2000),
-    sources: [
-      ...plan.hits.slice(0, 5).map((h) => ({ id: h.entry.id, title: h.entry.title, hash: entryHash(h.entry) })),
-      // 資料の全文で答えた回答は、資料のどこかが変わったら使わない（ナレッジの版）
-      ...(plan.fullContext ? [{ id: "knowledge", title: "スプレッドシートの全文", hash: plan.snapshot.version }] : []),
-    ],
+    key,
+    question: plan.question,
+    answer: text,
+    sources: plan.sources.slice(0, 6).map((s) => ({ id: s.id, title: s.title, category: s.category, hash: plan.snapshot.version })),
     style: plan.style,
     channel: plan.channel,
+    docVersion: plan.snapshot.version,
   });
 }

@@ -1,5 +1,5 @@
 // Upstash Redis REST クライアント（Vercel Marketplace の Upstash Redis／旧 Vercel KV の環境変数に対応）
-// 設定されている場合、受付・会話・設定・セッション・資料（スプレッドシートの内容）を保存し、複数インスタンス間で共有します。
+// 設定されている場合、受付・会話・設定・セッション・資料（スプレッドシートの内容）・学習済みの回答を保存し、複数インスタンス間で共有します。
 //
 // 環境変数の名前は、Vercel の Storage で接続したときの「接頭辞（Prefix）」で変わるため、次のどれでも使える：
 //   UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN（Upstash の既定）
@@ -83,4 +83,39 @@ export async function kvSet(key: string, value: string, ttlSeconds?: number): Pr
   if (!res.ok) throw new Error(`Redis SET ${res.status}: ${(await res.text()).slice(0, 120)}`);
   const json = (await res.json().catch(() => ({}))) as { error?: string };
   if (json.error) throw new Error(`Redis SET: ${json.error}`);
+}
+
+/** 複数のコマンドを 1 回の通信で実行する（Upstash の /pipeline）。結果はコマンドの順。どれかが失敗したらエラー */
+export async function kvPipeline(commands: string[][]): Promise<unknown[]> {
+  if (!commands.length) return [];
+  const { url, token } = cfg();
+  const res = await fetch(`${url}/pipeline`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(commands),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw new Error(`Redis pipeline ${res.status}: ${(await res.text()).slice(0, 120)}`);
+  const json = (await res.json()) as { result?: unknown; error?: string }[];
+  const failed = json.find((r) => r.error);
+  if (failed) throw new Error(`Redis pipeline: ${failed.error}`);
+  return json.map((r) => r.result ?? null);
+}
+
+/**
+ * パターン（「aic:conv:*」のように * だけを使う）に合うキーをすべて消す（SCAN で少しずつ。消した数を返す）。
+ * SCAN の結果もこちらでパターンと照らしてから消す（ほかのデータを消さないように）
+ */
+export async function kvDeleteMatching(pattern: string): Promise<number> {
+  const re = new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
+  let cursor = "0";
+  let deleted = 0;
+  for (let i = 0; i < 1000; i++) {
+    const [next, found] = (await kvCommand(["SCAN", cursor, "MATCH", pattern, "COUNT", "500"])) as [string, string[]];
+    const keys = (found ?? []).filter((k) => re.test(k));
+    if (keys.length) deleted += Number(await kvCommand(["DEL", ...keys])) || 0;
+    cursor = String(next);
+    if (cursor === "0") break;
+  }
+  return deleted;
 }

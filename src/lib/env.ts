@@ -159,11 +159,17 @@ export const env = {
     return str("ANSWER_CONTEXT", "full") === "search" ? "search" : "full";
   },
   /**
-   * 以前に AI が作った回答を、同じ質問に再利用するか（1 で再利用）。既定は再利用しない：
-   * 似た質問に別の質問の回答を返すおそれがあるため、毎回、資料から答える（一畳屋様のご要望＝回答精度を優先 2026-10-23）
+   * 同じ質問には、前に AI が作った回答をそのまま使う（AI を使わないのでトークンがかからない）。0 で使わない。
+   * 使うのは、AI に渡す内容（ルール・スプレッドシートの全文・数量の計算表）とお客様の質問（言い回しの違いはそろえる）が
+   * まったく同じときだけ（learned.ts）。意味が近いだけの質問には使わない（「6枚」と「8枚」を取り違えないため）
    */
-  get answerReuse() {
-    return str("ANSWER_REUSE") === "1";
+  get answerCache() {
+    return str("ANSWER_CACHE", "1") !== "0";
+  },
+  /** 学習済みの回答を残す日数（過ぎたら自動的に消え、次に聞かれたときに AI が答え直す） */
+  get answerCacheDays() {
+    const n = Number(str("ANSWER_CACHE_DAYS", "30"));
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 365) : 30;
   },
   get knowledgeCacheSeconds() {
     const n = Number(str("KNOWLEDGE_CACHE_SECONDS", "60"));

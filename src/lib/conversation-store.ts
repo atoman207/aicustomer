@@ -30,11 +30,12 @@ export interface StoredConversation {
 }
 
 /**
- * 保存の名前。v3（2026-10-23）：一畳屋様のご依頼で、それまでの会話（以前の仕組みの回答を含む）はすべて消して使わない
+ * 保存の名前。v3（2026-10-23）：一畳屋様のご依頼で、それまでの会話（以前の仕組みの回答を含む）はすべて消して使わない。
+ * v4（2026-10-23）：回答の仕組みを NotebookLM の書き方にそろえたので、それまでの会話を消す（以前の回答を AI に渡さない）
  */
-const KEY = "ichijoya-ai-conversation-v3";
+const KEY = "ichijoya-ai-conversation-v4";
 /** 以前の保存（読まずに消す） */
-const OLD_LOCAL_KEYS = ["ichijoya-ai-conversation-v2"];
+const OLD_LOCAL_KEYS = ["ichijoya-ai-conversation-v2", "ichijoya-ai-conversation-v3"];
 const LEGACY_KEY = "ichijoya-ai-chat-v1";
 export const CONVERSATION_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_MESSAGES = 80;

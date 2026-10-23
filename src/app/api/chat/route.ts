@@ -1,4 +1,4 @@
-import { learnAnswer, planAnswer, type AnswerPlan, type AnswerSource } from "@/lib/answer";
+import { answerModelFor, learnAnswer, learnedKeyFor, learnedReply, learnedSources, planAnswer, type AnswerPlan, type AnswerSource } from "@/lib/answer";
 import { logError } from "@/lib/errorlog";
 import { error, rateLimited, readJson } from "@/lib/http";
 import { sanitizeIntake } from "@/lib/intake";
@@ -106,30 +106,41 @@ export async function POST(req: Request) {
 
   try {
     const system = buildChatSystemPrompt(settings.companyName, plan.context, channel);
+    const history = recentHistory(messages);
+    const { model, effort } = answerModelFor(plan);
+    // 同じ質問（AI に渡す内容とお客様の質問がまったく同じ）には、前に AI が作った回答をそのまま返す（AI を使わない）。
+    // 見積依頼でお名前・ご連絡先を伺っている会話は、その人だけの会話なので使わない
+    const personal = intake.active || Boolean(intake.draft.name || intake.draft.phone || intake.draft.address);
+    const key = personal ? null : learnedKeyFor(plan, { model, effort, system }, history);
+    const learned = await learnedReply(plan, key);
+    if (learned) {
+      await persist(learned.answer, "cache", plan.snapshot.source, "learned");
+      return new Response(learned.answer, { headers: headers(learnedSources(learned), plan.snapshot.source, "learned", "cache") });
+    }
     // 資料の全文で答えるとき：先に資料から根拠を引用させ（お客様には送らない）、回答だけを送る
     const evidence = usesEvidence(plan.context);
     const hide = evidence
       ? { until: ANSWER_MARKER, onMissing: (all: string) => splitEvidence(all).answer || "申し訳ありません、ただいま回答をまとめられませんでした。もう一度お送りいただくか、お電話（0120-158-108）でお問い合わせください。" }
       : undefined;
-    const start = (model: string) =>
+    const start = (m: string) =>
       streamChatCompletion(
         {
-          model,
+          model: m,
           // 回答のモデルは設定の考える深さ（既定 low）。答え直しのモデル（gpt-5.6-sol）は考えずにすぐ答える
-          reasoningEffort: model === env.answerModel ? env.answerReasoning : model === env.answerFallbackModel ? "none" : undefined,
-          messages: [{ role: "system", content: system }, ...recentHistory(messages)],
+          reasoningEffort: m === model ? effort : m === env.answerFallbackModel ? "none" : undefined,
+          messages: [{ role: "system", content: system }, ...history],
           temperature: 0.3,
           // 料金の一覧なども省略せずに答えられる長さ（根拠の引用の分も）
           maxTokens: evidence ? 3000 : 2000,
           purpose: "chat",
         },
-        async (full) => {
+        async (full, _usage, _hidden, finish) => {
           await persist(full, "openai", plan.snapshot.source, plan.kind);
-          await learnAnswer(plan, full);
+          // 学習するのは、回答のモデルで最後まで書けた回答だけ（答え直しのモデル・途中で切れた回答は、次回は作り直す）
+          await learnAnswer(plan, full, m === model && finish === "stop" ? key : null);
         },
         hide,
       );
-    const model = plan.fullContext ? env.answerModel : env.chatModel;
     let stream: ReadableStream<Uint8Array>;
     try {
       stream = await start(model);

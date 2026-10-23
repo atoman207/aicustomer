@@ -2,6 +2,7 @@
 //   料金表の単価 × 数量を、システムが種類ごとに計算して AI に渡す（AI が計算を誤らないように・聞き方が違っても合計を出せるように）
 //   どの料金表を使うかは、質問の品目の言葉（畳・襖・障子・網戸 など）と数量の単位（畳・枚・本・つ）で決める。
 //   AI は質問の品目・作業・種類に合う行だけを使う（合わない表は使わない）
+import { env } from "./env";
 import type { PriceRow, PriceTable } from "./manual";
 import { normPrice, tableUnit } from "./price";
 import type { ChatMessage } from "./types";
@@ -69,8 +70,8 @@ function pickColumns(t: PriceTable, nq: string): number[] {
     return c.length >= 1 && nq.includes(c);
   });
   if (named.length) return named;
-  if (/^畳（ヘリ付き）$|^ヘリ有り 1畳物$/.test(t.title)) {
-    const re = /新調|新しく|新品|丸ごと|畳床/.test(nq);
+  if (isTatamiTable(t)) {
+    const re =/新調|新しく|新品|丸ごと|畳床/.test(nq);
     const omote = /表替|おもてがえ|畳表|表が|表を|表の/.test(nq);
     if (omote && !re) return all.filter((i) => /表替え/.test(t.columns[i]));
     if (re && !omote) return all.filter((i) => /新調/.test(t.columns[i]));
@@ -81,29 +82,92 @@ function pickColumns(t: PriceTable, nq: string): number[] {
   return all;
 }
 
+const isTatamiTable = (t: PriceTable) => /^畳（ヘリ付き）$|^ヘリ有り 1畳物$/.test(t.title);
+
+/** 列のない表（ヘリ）の行の金額（extra に入っている） */
+const rowAmount = (row: PriceRow) => row.extra.map(amount).find((x) => Number.isFinite(x));
+const rowName = (row: PriceRow) => row.label.replace(/\s+/g, " ").trim();
+
+/** 行の、使う列の単価（金額でない「時価」などは除く） */
+function unitPrices(row: PriceRow, t: PriceTable, cols: number[]): number[] {
+  if (!t.columns.length) {
+    const v = rowAmount(row);
+    return v === undefined ? [] : [v];
+  }
+  return cols.map((i) => amount((row.values[i] ?? "").trim())).filter((v) => Number.isFinite(v));
+}
+
 function rowLine(row: PriceRow, t: PriceTable, cols: number[], n: number, unitWord: string): string | null {
   const cells: string[] = [];
   if (!t.columns.length) {
-    // 列のない表（ヘリ）：金額は extra に入っている
-    const v = row.extra.map(amount).find((x) => Number.isFinite(x));
+    const v = rowAmount(row);
     if (v === undefined) return null;
     cells.push(`${yen(v)}×${n}${unitWord}＝${yen(v * n)}`);
   } else {
-    for (const i of cols) {
+    // 畳の「ウラ返し」は表替え・新調とは別の作業（料金表では最初の列に金額がある）なので、列の名前を付けない
+    const own = isTatamiTable(t) && /ウラ返|裏返/.test(row.label);
+    for (const i of own ? [0] : cols) {
       const raw = (row.values[i] ?? "").trim();
       if (!raw || raw === "-" || raw === "なし") continue;
       const v = amount(raw);
-      cells.push(Number.isFinite(v) ? `${t.columns[i]} ${yen(v)}×${n}${unitWord}＝${yen(v * n)}` : `${t.columns[i]} ${raw}`);
+      const col = own ? "" : `${t.columns[i]} `;
+      cells.push(Number.isFinite(v) ? `${col}${yen(v)}×${n}${unitWord}＝${yen(v * n)}` : `${col}${raw}`);
     }
   }
-  return cells.length ? `・${row.label.replace(/\s+/g, " ").trim()}：${cells.join("／")}` : null;
+  return cells.length ? `・${rowName(row)}：${cells.join("／")}` : null;
+}
+
+/** 行を安い順に（金額のない行「時価」などは最後） */
+function cheapestFirst(rows: PriceRow[], t: PriceTable, cols: number[]): PriceRow[] {
+  const low = (r: PriceRow) => Math.min(...unitPrices(r, t, cols), Number.POSITIVE_INFINITY);
+  return rows.map((r, i) => ({ r, i, v: low(r) })).sort((a, b) => a.v - b.v || a.i - b.i).map((x) => x.r);
+}
+
+/**
+ * 畳の合計の例（ヘリ代・諸経費込み）：質問に出た種類、なければ資料の「一番人気は〜」「迷ったら〜」の種類で、
+ * 資料の「よく選ばれるのは〜円と〜円のグレード」のヘリを使う。資料の書き方が違って読み取れなければ作らない
+ */
+function tatamiExamples(t: PriceTable, cols: number[], n: number, nq: string, heri: PriceTable | undefined, expenses: number | null, sheetText: string): string[] {
+  if (!heri || !cols.length || /ウラ返|裏返/.test(nq)) return [];
+  // 表替えと新調の両方の列なら表替えで。新調だけなら資料の「建材床（3型）をベースに答える」の列
+  const col = cols.find((i) => /表替え/.test(t.columns[i])) ?? cols.find((i) => /建材3型|3型/.test(t.columns[i])) ?? cols[0];
+  // 資料の文は NFKC だけでそろえる（normPrice は「一番」を「1番」にするため）
+  const text = sheetText.normalize("NFKC");
+  // 会社名と同じ名前の種類（「一畳屋」）は、「一畳屋さんで6枚」のように会社のことを言っていることが多いので、種類の指定とみなさない
+  const named = t.rows.filter((r) => {
+    const name = normPrice(rowName(r)).replace(/[（(].*$/, "").split(/\s/)[0];
+    return name.length >= 2 && name !== normPrice(env.companyName) && !/ウラ返|裏返/.test(name) && nq.includes(name);
+  });
+  const pick = (re: RegExp, note: string) => {
+    const name = text.match(re)?.[1];
+    const row = name ? t.rows.find((r) => rowName(r).normalize("NFKC").startsWith(name)) : undefined;
+    return row ? [{ row, note }] : [];
+  };
+  const targets = named.length ? named.map((row) => ({ row, note: "" })) : [...pick(/一番人気は\s*([^\s、。・,]+)/, "一番人気"), ...pick(/迷ったら\s*([^\s、。・,]+)/, "迷ったら")];
+  const popular = [...(text.match(/よく選ばれるのは([\d,円と\s]+)のグレード/)?.[1] ?? "").matchAll(/([\d,]+)円/g)]
+    .map((m) => amount(m[1]))
+    .filter((v) => Number.isFinite(v) && heri.rows.some((r) => rowAmount(r) === v))
+    .sort((a, b) => a - b);
+  if (!targets.length || !popular.length) return [];
+  const out: string[] = [];
+  for (const { row, note } of targets.slice(0, 2)) {
+    const unit = amount((row.values[col] ?? "").trim());
+    if (!Number.isFinite(unit)) continue;
+    const parts = popular.map((h) => {
+      const total = unit * n + h * n + (expenses ?? 0);
+      return `ヘリ 1畳${yen(h)}なら ${yen(unit * n)}＋ヘリ ${yen(h * n)}${expenses ? `＋諸経費 ${yen(expenses)}` : ""}＝${yen(total)}`;
+    });
+    out.push(`・合計の例（${rowName(row)}${note ? `・${note}` : ""}の${t.columns[col]}、よく選ばれるヘリ${expenses ? "・諸経費込み" : ""}）：${parts.join("／")}`);
+  }
+  return out;
 }
 
 /**
  * 数量の計算表（AI に渡す参考）。数量が 2 以上で、品目と料金表がわかるときだけ作る（1枚・1畳は単価の質問なので作らない）。
- * 4畳半などの半畳を含む数量は、計算の決まり（半畳8掛け・縁は8掛けしない など）が多いので、ここでは作らない（quote.ts の計算に任せる）
+ * 4畳半などの半畳を含む数量は、計算の決まり（半畳8掛け・縁は8掛けしない など）が多いので、ここでは作らない（quote.ts の計算に任せる）。
+ * 行は安い順。畳は合計の例（ヘリ代・諸経費込み）、ほかの品目は諸経費込みの合計の範囲も添える（sheetText＝資料の文章：おすすめ・よく選ばれるヘリ）
  */
-export function quantityReference(question: string, history: ChatMessage[], tables: PriceTable[]): string | null {
+export function quantityReference(question: string, history: ChatMessage[], tables: PriceTable[], sheetText = ""): string | null {
   const nq = normPrice(question);
   let found = quantities(nq);
   let text = nq;
@@ -120,6 +184,11 @@ export function quantityReference(question: string, history: ChatMessage[], tabl
   if (!mentions.length) return null;
   const blocks: string[] = [];
   const used = new Set<string>();
+  const expRaw = tables.flatMap((t) => t.notes).map((n) => n.match(/諸経費\s*([\d,]+)\s*円/)?.[1]).find(Boolean);
+  const expenses = expRaw ? Number(expRaw.replace(/,/g, "")) : null;
+  const heri = tables.find((t) => /^ヘリ$/.test(t.title));
+  // 諸経費込みの合計の範囲は、品目が 1 つのときだけ（複数の品目の組み合わせの合計は AI が計算表から足す）
+  const ranges: string[] = [];
   for (const f of found) {
     if (f.n < 2) continue;
     // 数量のすぐ前（なければすぐ後）に出た品目の数量とみなす（「網戸2枚と障子3枚」）
@@ -135,19 +204,28 @@ export function quantityReference(question: string, history: ChatMessage[], tabl
         used.add(key);
         const cols = pickColumns(t, nq);
         const unitWord = f.unit === "帖" ? "畳" : f.unit;
-        const lines = t.rows.map((r) => rowLine(r, t, cols, f.n, unitWord)).filter((x): x is string => Boolean(x));
+        // 畳の「ウラ返し」は表替え・新調の種類ではない別の作業なので、聞かれたときだけ
+        const rows = isTatamiTable(t) && !/ウラ返|裏返/.test(nq) ? t.rows.filter((r) => !/ウラ返|裏返/.test(r.label)) : t.rows;
+        const lines = cheapestFirst(rows, t, cols)
+          .map((r) => rowLine(r, t, cols, f.n, unitWord))
+          .filter((x): x is string => Boolean(x));
         if (!lines.length) continue;
         const unit = tableUnit(t);
-        blocks.push(`■ ${t.title}${unit ? `（${unit}の単価）` : ""} × ${f.n}${unitWord}\n${lines.join("\n")}`);
+        if (isTatamiTable(t)) lines.push(...tatamiExamples(t, cols, f.n, nq, heri, expenses, sheetText));
+        else if (expenses && t !== heri) {
+          const all = t.rows.flatMap((r) => unitPrices(r, t, cols));
+          if (all.length) ranges.push(`・諸経費込みの合計（${t.title}だけの場合）：${yen(Math.min(...all) * f.n + expenses)}〜${yen(Math.max(...all) * f.n + expenses)}`);
+        }
+        blocks.push(`■ ${t.title}${unit ? `（${unit}の単価）` : ""} × ${f.n}${unitWord}（安い順）\n${lines.join("\n")}`);
       }
     }
   }
   if (!blocks.length) return null;
-  const expenses = tables.flatMap((t) => t.notes).map((n) => n.match(/諸経費\s*([\d,]+)\s*円/)?.[1]).find(Boolean);
   return [
     "## 数量の計算表（システムが料金表の単価×数量で計算した金額。質問の品目・作業・種類に合う行だけを使い、合計はこの数字のとおりに伝える）",
     ...blocks,
-    expenses ? `・諸経費：工事全体に一式 ${yen(Number(expenses.replace(/,/g, "")))}（数量によらない）` : "",
+    ...(ranges.length === 1 ? ranges : []),
+    expenses ? `・諸経費：工事全体に一式 ${yen(expenses)}（数量によらない）` : "",
   ]
     .filter(Boolean)
     .join("\n");
