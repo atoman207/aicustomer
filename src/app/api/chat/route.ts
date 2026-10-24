@@ -46,7 +46,9 @@ export async function POST(req: Request) {
   if (!last) return error("ユーザーメッセージがありません");
 
   const intake = sanitizeIntake(body.intake);
-  const useIntake = channel === "web_text" && intakeApplies(last.content, intake);
+  // 直前の AI の発言（「よろしければ、ご都合のよい日にお伺いしましょうか？」への「お願いします」で、見積依頼の聞き取りを始める）
+  const prevAi = [...messages.slice(0, -1)].reverse().find((m) => m.role === "assistant")?.content ?? "";
+  const useIntake = channel === "web_text" && intakeApplies(last.content, intake, prevAi);
   const [settings, plan] = await Promise.all([getSettings(), useIntake ? null : planAnswer(last.content, messages.slice(0, -1), { channel })]);
 
   const headers = (sources: AnswerSource[], knowledgeSource: string, kind: string, mode: string): Record<string, string> => ({

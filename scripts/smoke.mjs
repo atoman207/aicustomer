@@ -167,7 +167,7 @@ await check("POST /api/summarize", async () => {
   if (!res.ok || !body.ok) throw new Error(`status ${res.status}`);
   return `${body.mode}: ${String(body.summary).slice(0, 40)}`;
 });
-await check("POST /api/chat（見積依頼の聞き取り：お名前・ご住所・お電話番号 → ご希望日時 → 確認画面）", async () => {
+await check("POST /api/chat（見積依頼の聞き取り：まとめて答えたお名前・ご住所・お電話番号 → ご希望日 → 確認画面）", async () => {
   const messages = [];
   let intake = { active: false, draft: { dates: [] } };
   const turns = ["6畳の和室の表替えを考えています", "見積をお願いします", "疎通花子、熊本市中央区水前寺1-2-3、090-1234-5678", "11月2日の午前か11月4日の午後"];
@@ -186,7 +186,7 @@ await check("POST /api/chat（見積依頼の聞き取り：お名前・ご住�
     messages.push({ role: "assistant", content: reply });
   }
   const d = intake.draft;
-  if (!intake.ready || d.name !== "疎通花子" || d.phone !== "090-1234-5678" || d.dates.length !== 2 || !/内容を確認して送信/.test(reply)) {
+  if (!intake.ready || d.name !== "疎通花子" || d.phone !== "090-1234-5678" || d.dates.length !== 2 || !/内容をご確認ください/.test(reply)) {
     throw new Error(`ready=${intake.ready} ${JSON.stringify(d)} ${reply.slice(0, 60)}`);
   }
   if (!d.summary || /090|疎通花子/.test(d.summary)) throw new Error(`要約: ${d.summary}`);

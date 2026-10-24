@@ -84,6 +84,15 @@ function pickColumns(t: PriceTable, nq: string): number[] {
 
 const isTatamiTable = (t: PriceTable) => /^畳（ヘリ付き）$|^ヘリ有り 1畳物$/.test(t.title);
 
+/** 張替え・表替えとは別の作業の行（ウラ返し・枠交換・戸車交換 など）。質問がその作業のことなら別の作業とみなさない */
+const OTHER_WORK = /ウラ返|裏返|枠交換|戸車|修理|補修/;
+function otherWork(label: string, nq: string): boolean {
+  const m = label.match(OTHER_WORK);
+  if (!m) return false;
+  const word = m[0].replace(/^裏返$/, "ウラ返");
+  return !(nq.includes(word) || (word === "ウラ返" && /裏返/.test(nq)) || (word === "枠交換" && /枠/.test(nq)));
+}
+
 /** 列のない表（ヘリ）の行の金額（extra に入っている） */
 const rowAmount = (row: PriceRow) => row.extra.map(amount).find((x) => Number.isFinite(x));
 const rowName = (row: PriceRow) => row.label.replace(/\s+/g, " ").trim();
@@ -189,6 +198,9 @@ export function quantityReference(question: string, history: ChatMessage[], tabl
   const heri = tables.find((t) => /^ヘリ$/.test(t.title));
   // 諸経費込みの合計の範囲は、品目が 1 つのときだけ（複数の品目の組み合わせの合計は AI が計算表から足す）
   const ranges: string[] = [];
+  // 標準の目安（畳は「合計の例」があるので、畳を含む質問では作らない）
+  const standards: Standard[] = [];
+  let hasTatami = false;
   for (const f of found) {
     if (f.n < 2) continue;
     // 数量のすぐ前（なければすぐ後）に出た品目の数量とみなす（「網戸2枚と障子3枚」）
@@ -204,17 +216,22 @@ export function quantityReference(question: string, history: ChatMessage[], tabl
         used.add(key);
         const cols = pickColumns(t, nq);
         const unitWord = f.unit === "帖" ? "畳" : f.unit;
-        // 畳の「ウラ返し」は表替え・新調の種類ではない別の作業なので、聞かれたときだけ
-        const rows = isTatamiTable(t) && !/ウラ返|裏返/.test(nq) ? t.rows.filter((r) => !/ウラ返|裏返/.test(r.label)) : t.rows;
+        // 畳の「ウラ返し」・襖の「枠交換」などは、張替え・表替えの種類ではない別の作業なので、聞かれたときだけ
+        // （安い順に並べると先頭に来て、張替えの料金と取り違えないように）
+        const rows = t.rows.filter((r) => !otherWork(r.label, nq));
         const lines = cheapestFirst(rows, t, cols)
           .map((r) => rowLine(r, t, cols, f.n, unitWord))
           .filter((x): x is string => Boolean(x));
         if (!lines.length) continue;
         const unit = tableUnit(t);
-        if (isTatamiTable(t)) lines.push(...tatamiExamples(t, cols, f.n, nq, heri, expenses, sheetText));
-        else if (expenses && t !== heri) {
+        if (isTatamiTable(t)) {
+          lines.push(...tatamiExamples(t, cols, f.n, nq, heri, expenses, sheetText));
+          hasTatami = true;
+        } else if (t !== heri) {
           const all = t.rows.flatMap((r) => unitPrices(r, t, cols));
-          if (all.length) ranges.push(`・諸経費込みの合計（${t.title}だけの場合）：${yen(Math.min(...all) * f.n + expenses)}〜${yen(Math.max(...all) * f.n + expenses)}`);
+          if (expenses && all.length) ranges.push(`・諸経費込みの合計（${t.title}だけの場合）：${yen(Math.min(...all) * f.n + expenses)}〜${yen(Math.max(...all) * f.n + expenses)}`);
+          const std = standardPart(t, cols, nq);
+          if (std) standards.push({ ...std, title: t.title, n: f.n, unitWord });
         }
         blocks.push(`■ ${t.title}${unit ? `（${unit}の単価）` : ""} × ${f.n}${unitWord}（安い順）\n${lines.join("\n")}`);
       }
@@ -224,9 +241,50 @@ export function quantityReference(question: string, history: ChatMessage[], tabl
   return [
     "## 数量の計算表（システムが料金表の単価×数量で計算した金額。質問の品目・作業・種類に合う行だけを使い、合計はこの数字のとおりに伝える）",
     ...blocks,
+    ...(hasTatami ? [] : standardLines(standards, expenses)),
     ...(ranges.length === 1 ? ranges : []),
     expenses ? `・諸経費：工事全体に一式 ${yen(expenses)}（数量によらない）` : "",
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+interface Standard {
+  title: string;
+  name: string;
+  col: string;
+  unit: number;
+  n: number;
+  unitWord: string;
+}
+
+/**
+ * 標準の目安（「網戸4枚でいくら？」のような漠然とした質問用）：張替えなどの基本の作業で、いちばん安い種類を、
+ * 最初の列（網戸・障子は「大」、襖は「片面」＝一般的な大きさ・作業）で。質問で列（中・両面 など）や新調を言われていれば、それに合わせる
+ */
+function standardPart(t: PriceTable, cols: number[], nq: string): { name: string; col: string; unit: number } | null {
+  if (!t.columns.length) return null;
+  const col = cols[0] ?? 0;
+  const wantNew = /新調|新しく|作り替|作りかえ|丸ごと/.test(nq);
+  const pool = t.rows.filter((r) => /新調/.test(r.label) === wantNew && !OTHER_WORK.test(r.label));
+  const best = (pool.length ? pool : t.rows)
+    .map((r) => ({ r, v: amount((r.values[col] ?? "").trim()) }))
+    .filter((x) => Number.isFinite(x.v))
+    .sort((a, b) => a.v - b.v)[0];
+  return best ? { name: rowName(best.r), col: t.columns[col], unit: best.v } : null;
+}
+
+/** 標準の目安の行（品目が 1 つなら諸経費込みの合計、複数なら品目ごとの金額と、諸経費を一式で 1 回足した合計） */
+function standardLines(list: Standard[], expenses: number | null): string[] {
+  if (!list.length) return [];
+  const exp = expenses ? `＋諸経費 ${yen(expenses)}` : "";
+  const total = list.reduce((s, x) => s + x.unit * x.n, 0) + (expenses ?? 0);
+  if (list.length === 1) {
+    const x = list[0];
+    return [`・標準の目安（${x.name}・${x.col}×${x.n}${x.unitWord}${expenses ? "・諸経費込み" : ""}）：${yen(x.unit)}×${x.n}＝${yen(x.unit * x.n)}${exp}＝${yen(total)}`];
+  }
+  return [
+    ...list.map((x) => `・標準の目安（${x.title}：${x.name}・${x.col}）：${yen(x.unit)}×${x.n}${x.unitWord}＝${yen(x.unit * x.n)}`),
+    `・標準の目安の合計（諸経費は工事全体で1回）：${list.map((x) => yen(x.unit * x.n)).join("＋")}${exp}＝${yen(total)}`,
+  ];
 }

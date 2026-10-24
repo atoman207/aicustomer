@@ -135,6 +135,8 @@ export default function ConsultConsole({
   const voiceSourcesRef = useRef<string[]>([]);
   const logTimerRef = useRef<number | undefined>(undefined);
   const logDirtyRef = useRef(false);
+  /** 確認画面を開く（文字の相談の聞き取りで、すべて伺えたら自動で開く） */
+  const openEstimateRef = useRef<() => void>(() => undefined);
 
   messagesRef.current = messages;
   sessionRef.current = sessionId;
@@ -315,9 +317,12 @@ export default function ConsultConsole({
       }
       // 見積依頼の聞き取りの状態（お客様が確認画面で直した項目はそのまま）
       const intakeHeader = res.headers.get("X-Intake");
+      let openWhenDone = false;
       if (intakeHeader) {
         try {
           const next = sanitizeIntake(JSON.parse(decodeURIComponent(intakeHeader)));
+          // すべて伺えたら、伺った内容が入った確認画面を自動で開く（お客様は確認して送信するだけ）
+          openWhenDone = next.ready === true && !intakeRef.current.ready;
           setIntake((prev) => ({ ...next, draft: keepTouched(next.draft, prev.draft, prev.touched), touched: prev.touched, aiFilled: prev.aiFilled }));
         } catch {
           // 状態が読めなければ前のまま
@@ -338,6 +343,7 @@ export default function ConsultConsole({
           x.id === pendingId ? { ...x, content: acc || "申し訳ありません、うまくお答えできませんでした。言い方を変えてもう一度お試しください。", pending: false, sources, mode: m, kind, at: Date.now() } : x,
         ),
       );
+      if (openWhenDone) window.setTimeout(() => openEstimateRef.current(), 600);
     } catch (e) {
       const timeout = (e as Error).name === "AbortError";
       setMessages((prev) =>
@@ -488,6 +494,8 @@ export default function ConsultConsole({
       setDraftLoading(false);
     }
   }
+
+  openEstimateRef.current = () => void openEstimate();
 
   /** 確認画面での入力・修正（閉じて開き直しても残す） */
   function onFormChange(edits: EstimateFormEdits) {

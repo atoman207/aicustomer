@@ -58,18 +58,19 @@ export async function greetingFor(channel: Channel): Promise<string> {
 
 /** HP の声の相談：伺った内容は画面の確認画面に表示し、お客様が確認して送信する */
 const FORM_READY_REPLY =
-  "ありがとうございます。伺った内容を確認画面に表示しました。内容をご確認のうえ、修正があれば直して、送信ボタンを押してください。訪問の日程は、担当者よりお電話でご相談のうえ確定いたします。";
+  "ありがとうございます。お名前・ご住所・お電話番号・訪問のご希望日をまとめて確認画面に表示しましたので、内容をご確認ください。修正があれば直して、送信ボタンを押してください。訪問の日程は、担当者よりお電話でご相談のうえ確定いたします。";
 const FORM_REMIND_REPLY = "画面の確認画面で「この内容で送信する」を押していただくと、受付が完了します。修正したい項目は、画面の「修正」から直せます。";
 
 function draftComplete(d: IntakeDraft): boolean {
   return Boolean(d.name && d.address && d.phone && d.dates.length > 0);
 }
 
+/** 足りない項目を 1 つ伺う（お名前 → ご住所 → ご希望日 → お電話番号の順。文字の相談と同じ） */
 function missingPrompt(d: IntakeDraft): string {
   if (!d.name) return "恐れ入ります、お名前をフルネームでお聞かせください。";
-  if (!d.address) return "恐れ入ります、ご住所を市区町村から番地までお聞かせください。";
-  if (!d.phone) return "恐れ入ります、折り返しご連絡できるお電話番号をお聞かせください。";
-  return "恐れ入ります、訪問のご希望日時を、日にちと午前・午後でお聞かせください。";
+  if (!d.address) return "恐れ入ります、訪問先のご住所を市区町村から番地までお聞かせください。";
+  if (!d.dates.length) return "恐れ入ります、訪問のご希望日を、日にちと午前・午後でお聞かせください。第3希望までお伺いできます。";
+  return "恐れ入ります、ご連絡先のお電話番号をお聞かせください。";
 }
 
 function summaryFromMessages(session: AgentSession): string {

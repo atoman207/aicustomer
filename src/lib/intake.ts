@@ -509,13 +509,33 @@ export function wantsEstimate(text: string): boolean {
   return ESTIMATE_REQUEST.test(s);
 }
 
+/**
+ * AI の回答の終わりが、無料の訪問見積もりの提案か（「よろしければ、ご都合のよい日にお伺いしましょうか？」
+ * 「訪問のご相談をしましょうか？」「ご希望でしたら、お見積りに伺います」など。言い方は AI によって変わる）
+ */
+const OFFER_TOPIC = /見積|訪問|お伺い|伺い|伺います|伺う/;
+const OFFER_ASK = /しましょうか|いたしましょうか|いかがでしょうか|いかがですか|しませんか|よろしいでしょうか|ご希望でしたら|ご希望であれば|お申し付け/;
+/** 提案へのお返事が「お願いします」「はい、ぜひ」など（質問・お断り・迷いを含まない短い返事） */
+const ACCEPT = /^(?:はい|ええ|うん|ぜひ|是非|お願い|おねがい|よろしく|それで|そうして|来て|頼みます|頼む|いいですね|いいですよ|ok|オッケー)/i;
+const NOT_ACCEPT = /(?:いいえ|いや(?![しす])|結構|けっこう|まだ|今は|やめ|考え|検討|迷|大丈夫です|いらない|不要|[?？]|ですか|ますか)/;
+
+/** AI の無料見積りの提案に、お客様が「お願いします」と答えたか */
+export function acceptsOffer(text: string, prevAi: string): boolean {
+  const s = text.normalize("NFKC").trim().replace(/[。、!！]+/g, "");
+  // 提案は最後の文（とその前の文）に入っている：お見積り・訪問のことで、問いかけ（？）か「ご希望でしたら」などで終わる
+  const sentences = prevAi.normalize("NFKC").trim().split(/(?<=[。？?！!])\s*/).filter(Boolean);
+  const lastOne = sentences[sentences.length - 1] ?? "";
+  const tail = sentences.slice(-2).join("");
+  // 最後の問いかけがお見積り・訪問のこと（「何年ほどお使いでしょうか？」への「はい」は提案への返事ではない）
+  const offered = (OFFER_TOPIC.test(lastOne) && /[?？]\s*$/.test(lastOne)) || (OFFER_TOPIC.test(tail) && OFFER_ASK.test(tail));
+  if (!s || s.length > 30 || !offered) return false;
+  return ACCEPT.test(s) && !NOT_ACCEPT.test(s);
+}
+
 // ---------------- AI が話す文（文字の相談） ----------------
 
-const ASK_LINE: Record<Exclude<IntakeField, "dates">, string> = {
-  name: "・お名前（フルネーム）",
-  address: "・ご住所（番地まで）",
-  phone: "・お電話番号（日中つながる番号）",
-};
+/** 伺う順（一畳屋様のご要望 2026-10-24：お名前 → ご住所 → ご希望日 → お電話番号。1つずつ） */
+const ASK_ORDER: IntakeField[] = ["name", "address", "dates", "phone"];
 
 /**
  * まだ伺う項目。ご住所が「熊本市東区」のように番地までないときは、1 回だけ番地を伺う
@@ -528,50 +548,53 @@ export function intakeNeeds(draft: IntakeDraft, lastAsked: IntakeField[] = [], p
   return INTAKE_FIELDS.filter((f) => need.includes(f));
 }
 
-/** 次に伺う内容（needs の項目だけ。お名前・ご住所・お電話番号はまとめて、ご希望日時はそのあと） */
+/**
+ * 次に伺う内容（needs の項目のうち 1 つだけ。お名前 → ご住所 → ご希望日 → お電話番号の順）。
+ * 受付担当者が話すように、答えを短く受け止めてから次を伺う（「山田様ですね。続いて、訪問先のご住所をお願いします」）。
+ * start：伺い始め（offered＝AI の「お伺いしましょうか？」に「お願いします」と答えた）。callName：「◯◯様ですね」の呼び方（姓）
+ */
 export function intakeQuestion(
   draft: IntakeDraft,
-  opts: { needs?: IntakeField[]; start?: boolean; got?: IntakeField[]; past?: string[]; today?: Ymd } = {},
+  opts: { needs?: IntakeField[]; start?: boolean; offered?: boolean; got?: IntakeField[]; past?: string[]; today?: Ymd; callName?: string } = {},
 ): { text: string; asked: IntakeField[] } {
   const missing = opts.needs ?? missingFields(draft);
-  const contact = missing.filter((f): f is Exclude<IntakeField, "dates"> => f !== "dates");
-  const thanks = opts.start
-    ? "かしこまりました。無料お見積り（担当者が現地を確認してお見積りを作成します）のご依頼を承ります。\n"
-    : opts.got?.length
-      ? "ありがとうございます。"
-      : "";
-  if (contact.length >= 2) {
-    return {
-      text: `${thanks}お見積りに伺うため、次の内容を教えてください。\n${contact.map((f) => ASK_LINE[f]).join("\n")}\nまとめて1つのメッセージで送っていただいてかまいません。`,
-      asked: contact,
-    };
-  }
-  if (contact.length === 1) {
-    const f = contact[0];
+  const f = ASK_ORDER.find((x) => missing.includes(x)) ?? missing[0] ?? "dates";
+  const last = missing.length === 1;
+  const ack = opts.start
+    ? opts.offered
+      ? "ありがとうございます。それでは、"
+      : "かしこまりました。無料でお見積りに伺います（担当者が現地を確認して、お見積りをお出しします）。それでは、"
+    : opts.got?.includes("name") && draft.name
+      ? `${opts.callName || draft.name}様ですね。`
+      : opts.got?.length
+        ? "ありがとうございます。"
+        : "";
+  const then = opts.start || !ack ? "" : last ? "最後に、" : "続いて、";
+  if (f === "name") return { text: `${ack}お名前を教えていただけますか？`, asked: ["name"] };
+  if (f === "address") {
     const line =
-      f === "name"
-        ? "お名前（フルネーム）を教えてください。"
-        : f === "address"
-          ? draft.address && !addressComplete(draft.address)
-            ? `ご住所を、「${draft.address}」のあとの番地まで教えてください（わからなければ「わからない」でもかまいません）。`
-            : "ご住所を番地まで教えてください。"
-          : draft.phone
-            ? "恐れ入ります、お電話番号を市外局番から教えてください（例：090-1234-5678）。"
-            : "折り返しご連絡するお電話番号を教えてください。";
-    return { text: `${thanks}${opts.start ? "" : "続いて、"}${line}`, asked: [f] };
+      draft.address && !addressComplete(draft.address)
+        ? `恐れ入ります、ご住所を「${draft.address}」のあとの番地まで教えていただけますか？（わからなければ「わからない」でもかまいません）`
+        : `${then}訪問先のご住所をお願いします。`;
+    return { text: `${ack}${line}`, asked: ["address"] };
+  }
+  if (f === "phone") {
+    const line = draft.phone ? "恐れ入ります、お電話番号を市外局番から教えていただけますか？（例：090-1234-5678）" : `${then}ご連絡先のお電話番号をお願いします。`;
+    return { text: `${ack}${line}`, asked: ["phone"] };
   }
   const [a, b] = exampleDays(opts.today);
   const pastNote = opts.past?.length ? `恐れ入ります、${opts.past.join("・")}はすでに過ぎているようです。` : "";
   return {
-    text: `${thanks}${pastNote}${opts.start || pastNote ? "" : "最後に、"}お見積り（訪問）のご希望日時を、第3希望まで教えてください。\n例：「${a} 午前、${b} 午後」\n※日程は確定ではありません。担当者よりお電話でご相談のうえ決めさせていただきます。ご希望がなければ「指定なし」でもかまいません。`,
+    text: `${ack}${pastNote}訪問のご希望日はございますか？第3希望までお伺いできます。\n（例：「${a} 午前、${b} 午後」。ご希望がなければ「指定なし」でもかまいません）`,
     asked: ["dates"],
   };
 }
 
-/** すべて伺えたときの案内（確認画面のボタンへ） */
-export function intakeReadyText(draft: IntakeDraft): string {
+/** すべて伺えたときの案内（伺った内容が入った確認画面を開く。job＝「網戸4枚の張替え」など、ご依頼の工事） */
+export function intakeReadyText(draft: IntakeDraft, job?: string | null): string {
+  const what = job?.trim() ? `${job.trim().replace(/(?:の)?(?:お見積り|お見積もり|見積)$/, "")}のお見積りですね。` : "";
   const more = draft.dates.length < 3 && draft.dates[0] !== "指定なし" ? "第2・第3希望があれば、確認画面で追加できます。\n" : "";
-  return `ありがとうございます。伺った内容で、お見積り依頼の確認画面をご用意しました。\n下の「内容を確認して送信」ボタンを押して、ご確認のうえ送信してください（修正もできます）。\n${more}※訪問の日程は確定ではありません。担当者よりお電話でご相談のうえ決定いたします。`;
+  return `ありがとうございます。${what}お名前・ご住所・お電話番号・訪問のご希望日をまとめましたので、内容をご確認ください。\nよろしければ、確認画面の送信ボタンを押してください（修正もできます）。\n${more}※訪問の日程は確定ではありません。担当者よりお電話でご相談のうえ決定いたします。`;
 }
 
 export const INTAKE_CANCEL_TEXT =

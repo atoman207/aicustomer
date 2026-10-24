@@ -4,13 +4,14 @@
 //   ・intakeTurn：文字の相談の聞き取りの 1 ターン
 //       読み取り → 途中の質問には回答 → 足りない項目だけ伺う → そろったら「内容を確認して送信」ボタン（確認画面）へ
 //       伺う文は決まった文（AI が日程を約束したり、確定したりしないように）
-import { learnAnswer, planAnswer, type AnswerSource } from "./answer";
+import { composeAnswer, planAnswer, type AnswerSource } from "./answer";
 import { env } from "./env";
 import { logError } from "./errorlog";
 import { japanNow } from "./hours";
 import {
   CANCEL_RE,
   FIELD_LABEL,
+  acceptsOffer,
   INTAKE_CANCEL_TEXT,
   QUESTION_RE,
   addressComplete,
@@ -30,17 +31,19 @@ import {
   type IntakeField,
   type IntakeState,
 } from "./intake";
-import { chatCompletion, chatCompletionJson } from "./openai";
-import { INTAKE_JSON_SCHEMA, buildChatSystemPrompt, buildIntakeExtractPrompt } from "./prompts";
+import { chatCompletionJson } from "./openai";
+import { INTAKE_JSON_SCHEMA, buildIntakeExtractPrompt } from "./prompts";
 import type { ChatMessage, IntakeDraft } from "./types";
 import { isLikelyPhone, truncate } from "./utils";
 
 interface AiIntake {
   name: string | null;
+  family_name: string | null;
   address: string | null;
   phone: string | null;
   dates: string[];
   summary: string | null;
+  job: string | null;
   latest_is_question: boolean;
   cancel: boolean;
 }
@@ -82,6 +85,10 @@ export interface ReadDraftResult {
   cancel: boolean;
   /** 過ぎた日付（ご希望日に入れず、伺い直す） */
   past: string[];
+  /** 「◯◯様ですね」の呼び方（姓。OpenAI で読み取れたときだけ） */
+  callName?: string;
+  /** ご依頼の工事（「網戸4枚の張替え」など。OpenAI で読み取れたときだけ） */
+  job?: string;
 }
 
 /**
@@ -111,7 +118,8 @@ export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opt
       dates: [...new Set(dates)].slice(0, 3).length ? [...new Set(dates)].slice(0, 3) : base.dates,
       summary: keep ?? (ai.summary?.trim() || fallback.summary),
     };
-    return { draft: out, mode: "openai", question: ai.latest_is_question, cancel: ai.cancel, past };
+    const callName = ai.family_name?.trim().replace(/(?:様|さま)$/, "") || undefined;
+    return { draft: out, mode: "openai", question: ai.latest_is_question, cancel: ai.cancel, past, callName, job: ai.job?.trim() || undefined };
   } catch (e) {
     await logError("openai", "見積依頼の聞き取り（会話からの読み取り）", e);
     return { draft: fallback, mode: "rules", question: false, cancel: false, past: [] };
@@ -124,11 +132,11 @@ function consultHistory(history: ChatMessage[]): ChatMessage[] {
   return history.filter((m) =>
     m.role === "user"
       ? !wantsEstimate(m.content) && extractIntake(m.content, [], today).found.length === 0
-      : !/お伺いするために|伺うため、|ご希望日時|お見積りのご依頼|確認画面|番地まで|お電話番号を/.test(m.content),
+      : !/お伺いするために|伺うため、|ご希望日時|ご希望日はございますか|お見積りのご依頼|確認画面|内容をご確認|番地まで|お電話番号を|お電話番号をお願い|お名前を教えて|ご住所をお願い|様ですね/.test(m.content),
   );
 }
 
-/** 聞き取りの途中のご質問に答える（料金表など AI を使わずに答えられるものはそのまま） */
+/** 聞き取りの途中のご質問に答える（ふだんの相談と同じ回答のモデル・同じ指示で。同じ質問は学習済みの回答） */
 async function answerQuestion(question: string, fullHistory: ChatMessage[], company: string): Promise<{ text: string; sources: AnswerSource[] }> {
   const history = consultHistory(fullHistory);
   const plan = await planAnswer(question, history, { channel: "web_text" });
@@ -138,16 +146,8 @@ async function answerQuestion(question: string, fullHistory: ChatMessage[], comp
       .filter((m) => m.role === "user" || m.role === "assistant")
       .slice(-6)
       .map((m) => ({ role: m.role as "user" | "assistant", content: truncate(m.content, 500) }));
-    const text = await chatCompletion({
-      messages: [{ role: "system", content: buildChatSystemPrompt(company, plan.context, "web_text") }, ...recent, { role: "user", content: question }],
-      temperature: 0.3,
-      maxTokens: 500,
-      purpose: "chat",
-    });
-    if (text.trim()) {
-      await learnAnswer(plan, text);
-      return { text: text.trim(), sources: plan.sources };
-    }
+    const text = await composeAnswer(plan, company, [...recent, { role: "user", content: question }], "chat");
+    if (text.trim()) return { text: text.trim(), sources: plan.sources };
   } catch (e) {
     await logError("openai", "文字の相談（見積依頼の聞き取り中のご質問）", e);
   }
@@ -155,9 +155,12 @@ async function answerQuestion(question: string, fullHistory: ChatMessage[], comp
   return { text: top ? `「${top.entry.title.replace(/^.*｜/, "")}」についてご案内します。\n${truncate(top.entry.content, 600)}` : "", sources: plan.sources };
 }
 
-/** このターンを聞き取りとして扱うか（聞き取り中・見積のご依頼・確認画面の準備後の訂正） */
-export function intakeApplies(text: string, state: IntakeState): boolean {
-  if (state.active || wantsEstimate(text)) return true;
+/**
+ * このターンを聞き取りとして扱うか（聞き取り中・見積のご依頼・AI の「お伺いしましょうか？」への「お願いします」・
+ * 確認画面の準備後の訂正）。prevAi は直前の AI の発言
+ */
+export function intakeApplies(text: string, state: IntakeState, prevAi = ""): boolean {
+  if (state.active || wantsEstimate(text) || acceptsOffer(text, prevAi)) return true;
   if (!state.ready) return false;
   const x = extractIntake(text, [], todayJst());
   return x.found.length > 0 && !QUESTION_RE.test(x.leftover);
@@ -187,8 +190,10 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
   const starting = !state.active;
   const asked: IntakeField[] = state.active ? (state.asked?.length ? state.asked : askedFromText(prevAi)) : [];
 
+  // AI の「お伺いしましょうか？」に「お願いします」と答えて、伺い始める
+  const offered = starting && !wantsEstimate(last) && acceptsOffer(last, prevAi);
   // 確認画面の準備後の訂正（「電話番号は080-…でした」など）
-  if (!state.active && state.ready && !wantsEstimate(last)) {
+  if (!state.active && state.ready && !wantsEstimate(last) && !offered) {
     const x = extractIntake(last, [], today);
     const draft = mergeDraft(state.draft, x.draft);
     const changed = filledNow(state.draft, draft);
@@ -217,13 +222,18 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
   let cancel = !starting && x.found.length === 0 && CANCEL_RE.test(last);
   let mode: "openai" | "rules" = "rules";
   let past = x.past;
+  let callName: string | undefined;
+  let job: string | undefined;
   if (env.hasOpenAI) {
     const r = await readDraft(messages, draft, { keepSummary: state.summaryEdited });
     if (r.mode === "openai") {
       draft = { ...r.draft, address: address && r.draft.address && r.draft.address.length < address.length ? address : r.draft.address };
-      question = r.question;
+      // 「お願いします」だけの返事は質問ではない
+      question = offered ? false : r.question;
       cancel = !starting && r.cancel;
       past = [...new Set([...past, ...r.past])];
+      callName = r.callName;
+      job = r.job;
       mode = "openai";
     }
   }
@@ -249,7 +259,7 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
   const needs = intakeNeeds(draft, asked, state.draft);
   if (needs.length === 0) {
     if (!draft.summary) draft = { ...draft, summary: extractFromConversation(messages, today).summary || undefined };
-    const ready = intakeReadyText(draft);
+    const ready = intakeReadyText(draft, job);
     return {
       reply: answer ? `${answer}\n\n${ready}` : ready,
       state: { ...carry, active: false, ready: true, asked: [], draft, summaryAt: messages.length },
@@ -257,7 +267,7 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
       sources,
     };
   }
-  const q = intakeQuestion(draft, { needs, start: starting, got: filledNow(state.draft, draft), past, today });
+  const q = intakeQuestion(draft, { needs, start: starting, offered, got: filledNow(state.draft, draft), past, today, callName });
   const reply = !answer ? q.text : starting ? `${answer}\n\n${q.text}` : `${answer}\n\n（お見積りのご依頼の続きです）\n${q.text.replace(/^ありがとうございます。/, "")}`;
   return {
     reply,
