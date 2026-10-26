@@ -1,5 +1,6 @@
 // OpenAI REST API の薄いラッパー（SDK非依存・サーバー専用）
 import { env } from "./env";
+import { TRANSCRIBE_HINT } from "./transcribe";
 import { recordTokens } from "./usage";
 
 const base = () => env.openaiBaseUrl;
@@ -315,14 +316,19 @@ export interface RealtimeSecret {
  */
 export function realtimeTurnDetection() {
   return env.realtimeTurn === "semantic"
-    ? ({ type: "semantic_vad", eagerness: "auto", create_response: false, interrupt_response: false } as const)
+    ? ({ type: "semantic_vad", eagerness: env.realtimeEagerness, create_response: false, interrupt_response: false } as const)
     : ({ type: "server_vad", threshold: 0.6, prefix_padding_ms: 300, silence_duration_ms: 650, create_response: false, interrupt_response: false } as const);
 }
 
-/** 文字起こしの設定（新しいモデルは languages で言語を指定する） */
+/**
+ * 文字起こしの設定（新しいモデルは languages で言語を指定する）。熊本の地名を手がかり（prompt）に渡す：
+ * 2026-10-26 の試験（50〜70代の方の話し方・熊本の住所）で gpt-transcribe の正しい文字起こしが 19 → 22/28 に。
+ * 雑音・物音・電子音・無音で手がかりの文を返すことはなかった（返した場合も isPromptEcho で会話から除く）。OPENAI_TRANSCRIBE_HINT=0 で渡さない
+ */
 function transcriptionConfig() {
   const model = env.transcribeModel;
-  return /^gpt-(live-)?transcribe$/.test(model) ? { model, languages: ["ja"] } : { model, language: "ja" };
+  const prompt = env.transcribeHint ? { prompt: TRANSCRIBE_HINT } : {};
+  return /^gpt-(live-)?transcribe$/.test(model) ? { model, languages: ["ja"], ...prompt } : { model, language: "ja", ...prompt };
 }
 
 
@@ -349,8 +355,7 @@ export async function createRealtimeSecret(opts: {
         ...(/^gpt-realtime-2/.test(model) ? { reasoning: { effort: env.realtimeReasoning } } : {}),
         audio: {
           input: {
-            // 文字起こし：言葉の手がかり（prompt）は渡さない（雑音のときに手がかりの文をそのまま返し、
-            //   お客様が言っていない言葉が会話に入ることがあるため。雑音のある試験で誤りも増えた）
+            // 文字起こし：熊本の地名を手がかりに渡す（transcriptionConfig。以前の品名の手がかりは、雑音のときにその文をそのまま返したので使わない）
             transcription: transcriptionConfig(),
             // AI の声が途中で切れないように：割り込み（AI の発話を止める）と応答の開始はブラウザが判断する
             //   （voice-gate.ts：AI が話している間の短い音＝相づち・咳・雑音・スピーカーの回り込みでは止めない）

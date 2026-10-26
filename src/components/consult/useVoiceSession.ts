@@ -93,7 +93,11 @@ function reportError(where: string, message: string) {
   void fetch("/api/errors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "realtime", where, message }) }).catch(() => undefined);
 }
 
-/** 伺い済みの内容（声を始めるときに AI へ渡し、聞き直さないようにする） */
+/**
+ * 伺い済みの内容（声を始めるときに AI へ渡し、聞き直さないようにする）。
+ * お客様がいま違う内容をおっしゃったら、そちらに置き換える（以前に伺った住所を AI が言い張らないように：
+ * 2026-10-26 一畳屋様のご指摘「坪井と伝えても水前寺ですねと返され、訂正しても直らない」）
+ */
 function knownInfo(d: IntakeDraft): string {
   const parts = [
     d.name ? `${FIELD_LABEL.name}：${d.name}` : "",
@@ -101,7 +105,9 @@ function knownInfo(d: IntakeDraft): string {
     d.phone ? `${FIELD_LABEL.phone}：${d.phone}` : "",
     d.dates.length ? `${FIELD_LABEL.dates}：${d.dates.join("、")}` : "",
   ].filter(Boolean);
-  return parts.length ? `\n見積依頼のために伺い済みの内容（聞き直さない）：${parts.join("／")}` : "";
+  return parts.length
+    ? `\n見積依頼のために以前に伺った内容（同じことは聞き直さない。お客様がいま違う内容をおっしゃったら、必ずそちらに置き換え、以前の内容は使わない）：${parts.join("／")}`
+    : "";
 }
 
 export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {

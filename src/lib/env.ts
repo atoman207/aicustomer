@@ -67,9 +67,21 @@ export const env = {
   get transcribeModel() {
     return str("OPENAI_TRANSCRIBE_MODEL", "gpt-transcribe");
   },
+  /** 声の相談の文字起こしに、熊本の地名の手がかりを渡すか（0 で渡さない。places.ts） */
+  get transcribeHint() {
+    return str("OPENAI_TRANSCRIBE_HINT", "1") !== "0";
+  },
   /** 声の相談の話し終わりの判定：semantic（話の内容から判断・既定）／server（無音の長さで判断） */
   get realtimeTurn(): "semantic" | "server" {
     return str("OPENAI_REALTIME_TURN", "semantic") === "server" ? "server" : "semantic";
+  },
+  /**
+   * 話し終わりの判定をどれだけ急ぐか（semantic のとき。low＝お客様が話し終わるまで長めに待つ・既定）。
+   * 一畳屋様のお客様は 50 代以上の方が多く、「えーっと」「あのー」と考えながら話す途中で AI が話し始めないように（2026-10-26）
+   */
+  get realtimeEagerness(): "low" | "medium" | "high" | "auto" {
+    const v = str("OPENAI_REALTIME_EAGERNESS", "low");
+    return v === "medium" || v === "high" || v === "auto" ? v : "low";
   },
   /**
    * 声の相談の AI の声。2026-10-22 に女性の声（marin・sage・coral・shimmer）を同じ文 × 6 回で比べ、
@@ -78,10 +90,13 @@ export const env = {
   get realtimeVoice() {
     return str("OPENAI_REALTIME_VOICE", "sage");
   },
-  /** 声の相談の話す速さ（1＝標準。sage は標準だと少しゆっくりなので、ふつうの会話の速さになる 1.1） */
+  /**
+   * 声の相談の話す速さ（1＝標準・既定）。50 代以上のお客様が聞き取りやすく、金額も聞き違えにくい標準の速さ
+   * （以前の既定 1.1 は、ふつうの会話より少し速い）
+   */
   get realtimeSpeed() {
-    const n = Number(str("OPENAI_REALTIME_SPEED", "1.1"));
-    return Number.isFinite(n) ? Math.min(1.5, Math.max(0.25, n)) : 1.1;
+    const n = Number(str("OPENAI_REALTIME_SPEED", "1"));
+    return Number.isFinite(n) ? Math.min(1.5, Math.max(0.25, n)) : 1;
   },
   /**
    * 声の相談のモデルが話す前に考える深さ（gpt-realtime-2 系だけ。minimal＝ほとんど考えずにすぐ話す・low・medium・high）。

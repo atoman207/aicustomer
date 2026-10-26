@@ -38,6 +38,7 @@ import { BUSINESS } from "@/lib/company";
 import { CONSULT_EVENT, type ConsultCommand } from "@/lib/consult-events";
 import { clearConversation, loadConversation, saveConversation, type StoredMessage } from "@/lib/conversation-store";
 import { emptyDraft, keepTouched, missingFields, sanitizeIntake, type IntakeState } from "@/lib/intake";
+import { yenDigits } from "@/lib/jnum";
 import type { ChatMessage, EstimateRequest } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
@@ -177,7 +178,9 @@ export default function ConsultConsole({
         const copy = [...prev];
         const cur = copy[idx];
         const base = cur.content === "…" ? "" : cur.content;
-        copy[idx] = { ...cur, content: append ? base + text : text, pending: !final };
+        const next = append ? base + text : text;
+        // 声の AI は金額をひらがなの読み（いちまんさんぜんにひゃく円）で話すので、画面には数字（13,200円）で出す
+        copy[idx] = { ...cur, content: role === "assistant" ? yenDigits(next) : next, pending: !final };
         return copy;
       });
       if (final) {

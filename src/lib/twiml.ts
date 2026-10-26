@@ -1,5 +1,6 @@
 // Twilio 用 TwiML 生成と署名検証（SDK 非依存）
 import crypto from "crypto";
+import { speakableYen } from "./jnum";
 
 export function escapeXml(s: string): string {
   return s
@@ -15,7 +16,8 @@ export function twimlResponse(inner: string): string {
 }
 
 export function say(text: string, voice: string): string {
-  return `<Say voice="${escapeXml(voice)}" language="ja-JP">${escapeXml(text)}</Say>`;
+  // 金額はひらがなの読みにしてから読み上げる（桁の読み違えをしないように）
+  return `<Say voice="${escapeXml(voice)}" language="ja-JP">${escapeXml(speakableYen(text))}</Say>`;
 }
 
 const SPEECH_HINTS =

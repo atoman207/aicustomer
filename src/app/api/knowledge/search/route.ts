@@ -1,6 +1,7 @@
 import { composeAnswer, planAnswer } from "@/lib/answer";
 import { logError } from "@/lib/errorlog";
 import { error, json, rateLimited, readJson } from "@/lib/http";
+import { speakableYen } from "@/lib/jnum";
 import { getSettings } from "@/lib/store";
 import { truncate } from "@/lib/utils";
 
@@ -32,18 +33,21 @@ export async function POST(req: Request) {
       await logError("openai", "声の相談（資料からの回答）", e);
     }
   }
+  // 声の AI に渡す金額は万の位で区切る（「13,200円」→「1万3200円」。3桁区切りのままだと「13万2千円」と読み違えることがある。jnum.ts）
+  const voice = body?.style !== "text";
+  const speak = (s: string) => (voice ? speakableYen(s) : s);
   return json({
     ok: true,
     mode: plan.mode,
     kind: plan.kind,
     source: plan.snapshot.source,
-    answer,
+    answer: answer ? speak(answer) : answer,
     hits: plan.hits.slice(0, k).map((h) => ({
       id: h.entry.id,
       from: "スプレッドシート",
       category: h.entry.category,
       title: h.entry.title,
-      content: truncate(h.entry.content, 700),
+      content: speak(truncate(h.entry.content, 700)),
       score: Math.round(h.score * 100) / 100,
     })),
     sources: plan.sources,

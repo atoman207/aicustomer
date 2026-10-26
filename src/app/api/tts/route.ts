@@ -1,6 +1,7 @@
 import { env } from "@/lib/env";
 import { logError } from "@/lib/errorlog";
 import { error, rateLimited, readJson } from "@/lib/http";
+import { speakableYen } from "@/lib/jnum";
 import { synthesizeSpeech } from "@/lib/openai";
 
 export const runtime = "nodejs";
@@ -20,7 +21,8 @@ export async function POST(req: Request) {
   if (!text) return error("text が必要です");
   if (!env.hasOpenAI) return new Response(null, { status: 204, headers: { "X-Mode": "demo" } });
   try {
-    const audio = await synthesizeSpeech(text, { instructions: TTS_INSTRUCTIONS, format: "mp3" });
+    // 金額はひらがなの読みにしてから読み上げる（「13,200円」を「13万2千円」と読み違えないように）
+    const audio = await synthesizeSpeech(speakableYen(text), { instructions: TTS_INSTRUCTIONS, format: "mp3" });
     return new Response(audio, {
       status: 200,
       headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store", "X-Mode": "openai" },
