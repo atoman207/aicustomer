@@ -110,7 +110,8 @@ export function parseYenReading(s: string): number | null {
 const MAN_AMOUNT = /(\d{1,4})万(\d{1,3},\d{3}|\d{1,4})?\s*円/g;
 /** 区切りのない 4〜7 桁の金額（「1650円」）。3桁区切りに直す */
 const PLAIN_AMOUNT = /(?<![\d,.万])(\d{4,7})(?=\s*円)/g;
-const READ_AMOUNT = /([いちにさんよごろくなはっしきゅうじひゃくびぴせぜまん]+)\s*(?:円|えん)/g;
+/** ひらがなの金額（「いちまんさんぜんにひゃく円」。声の AI は「いちまん、さんぜん、にひゃくえん」と区切って書くこともある） */
+const READ_AMOUNT = /([いちにさんよごろくなはっしきゅうじひゃくびぴせぜまん]+(?:[、,\s]+[いちにさんよごろくなはっしきゅうじひゃくびぴせぜまん]+)*)\s*(?:円|えん)/g;
 
 /** 画面に出す文：「1万3200円」「いちまんさんぜんにひゃく円」を「13,200円」に戻す（文字の相談と同じ書き方） */
 export function yenDigits(text: string): string {
@@ -124,7 +125,7 @@ export function yenDigits(text: string): string {
     .replace(READ_AMOUNT, (m, k: string) => {
       // 位（まん・せん・ひゃく・じゅう）のない読み（「ごえん」＝ご縁 など）は金額とみなさない
       if (!/まん|せん|ぜん|ひゃく|びゃく|ぴゃく|じゅう/.test(k)) return m;
-      const n = parseYenReading(k);
+      const n = parseYenReading(k.replace(/[、,\s]+/g, ""));
       return n ? `${n.toLocaleString("ja-JP")}円` : m;
     });
 }

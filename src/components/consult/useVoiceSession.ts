@@ -57,10 +57,37 @@ export interface VoiceHost {
 
 interface SessionInfo {
   mode: VoiceMode;
+  /** live＝GPT-Live（既定）・realtime＝Realtime API */
+  engine?: "live" | "realtime";
   reason?: string;
   clientSecret?: string;
   model?: string;
   api?: "ga" | "beta";
+}
+
+/** GPT-Live のデータチャンネルのイベント（使うものだけ） */
+interface LiveEvent {
+  type: string;
+  delta?: string;
+  error?: { message?: string; code?: string };
+  event?: { type?: string; item?: { type?: string; call_id?: string; name?: string; arguments?: string } };
+}
+
+/** お客様が話している間の、AI の相づちだけの発言（会話の吹き出しには残さない） */
+const BACKCHANNEL = /^(はい|ええ|うん|なるほど|そうですね|そうなんですね)[、。！!…\s]*$/;
+/** AI が「確認画面を表示した」と話した（表示の依頼がなかったときは、アプリが確認画面を開く） */
+const SAID_FORM_SHOWN = /画面.{0,12}(確認|ご覧)|確認画面/;
+/** この時間、どちらの発言の文字も届かなければ、吹き出しを区切る */
+const LIVE_SETTLE_MS = 1500;
+/** 文の終わり（ここで切れた AI の吹き出しには、続きを足さない） */
+const SENTENCE_END = /[。？！?!」]\s*$/;
+
+/** GPT-Live の文字起こしから、声でない音の印（[hum] など）を除く（届き途中の「[hu」も隠す） */
+function liveCaption(text: string): string {
+  return text
+    .replace(/\[[^\]\n]{0,24}\]/g, "")
+    .replace(/\[[^\]\n]{0,24}$/, "")
+    .replace(/[ \t]{2,}/g, " ");
 }
 
 interface RtEvent {
@@ -158,6 +185,20 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
   const lastBargeRef = useRef(-1e9);
   // 話している途中の発言（確定したら会話に残す・文字にならなかったら消す）
   const userItemsRef = useRef<Set<string>>(new Set());
+  // GPT-Live：どの仕組みで話しているか・いまの吹き出し・あいさつ・終了の知らせ
+  const engineRef = useRef<"live" | "realtime">("realtime");
+  const liveTurnRef = useRef<{
+    user: { id: string; last: number } | null;
+    ai: { id: string; last: number; text: string; overUser: boolean; closeOnGap?: boolean } | null;
+  }>({ user: null, ai: null });
+  const liveSettleRef = useRef<number | undefined>(undefined);
+  const userSpeakingTimerRef = useRef<number | undefined>(undefined);
+  const liveGreetingRef = useRef("");
+  const liveStartedRef = useRef<(() => void) | null>(null);
+  const liveClosedRef = useRef<(() => void) | null>(null);
+  const lastProposeRef = useRef(-1e9);
+  const lastUserRef = useRef<{ id: string; endedAt: number } | null>(null);
+  const lastAiRef = useRef<{ id: string; text: string; endedAt: number } | null>(null);
 
   useEffect(() => {
     warmUpVoices();
@@ -222,6 +263,19 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
 
   /** 声を終える（会話はそのまま。文字で続けられる） */
   async function end(settle = true) {
+    // GPT-Live：話し途中の吹き出しを確定し、終了を伝えて（使った時間の確定のため）少し待つ
+    if (engineRef.current === "live") {
+      window.clearTimeout(liveSettleRef.current);
+      finishLiveUser();
+      finishLiveAi();
+      if (dcRef.current?.readyState === "open") {
+        const closed = new Promise<void>((resolve) => {
+          liveClosedRef.current = resolve;
+        });
+        sendEvent({ type: "session.close", event_id: uid() });
+        await Promise.race([closed, new Promise((r) => setTimeout(r, 2500))]);
+      }
+    }
     liveRef.current = false;
     pendingRef.current = null;
     stopGate();
@@ -540,6 +594,220 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     setError("音声の接続が切れました。もう一度マイクのボタンを押すと、これまでの会話の続きからお話しできます。");
   }
 
+  // ---------------- GPT-Live（WebRTC。聞きながら話せる声のモデル） ----------------
+  // 割り込み・相づち・話し終わりの判断は GPT-Live がするので、マイクは関所を通さずにそのまま送る。
+  // 事実と見積依頼の確認画面は、委任先のモデルが search_knowledge・propose_estimate_request を呼び、ブラウザが実行する
+
+  /** お客様の発言の吹き出しを確定する（すぐに続きを話したら、同じ吹き出しに戻す：lastUserRef） */
+  function finishLiveUser() {
+    const t = liveTurnRef.current;
+    const u = t.user;
+    if (!u) return;
+    t.user = null;
+    userItemsRef.current.delete(u.id);
+    lastUserRef.current = { id: u.id, endedAt: performance.now() };
+    hostRef.current.upsert(u.id, "user", "", true, true);
+  }
+
+  /** AI の発言の吹き出しを確定する（お客様が話している間の相づちだけなら残さない） */
+  function finishLiveAi() {
+    const t = liveTurnRef.current;
+    const a = t.ai;
+    if (!a) return;
+    t.ai = null;
+    const shown = liveCaption(a.text).trim();
+    if (!shown || (a.overUser && BACKCHANNEL.test(shown))) {
+      hostRef.current.remove(a.id);
+      return;
+    }
+    lastAiRef.current = { id: a.id, text: a.text, endedAt: performance.now() };
+    hostRef.current.upsert(a.id, "assistant", "", true, true);
+    // 「画面の内容をご確認ください」と話したのに、確認画面の表示の依頼がなかった：会話から読み取って確認画面を開く
+    if (SAID_FORM_SHOWN.test(a.text) && !hostRef.current.getIntake().ready && performance.now() - lastProposeRef.current > 8000) {
+      hostRef.current.openEstimate();
+    }
+    hostRef.current.onSettled();
+  }
+
+  /** 文字起こしの断片を、話した人ごとの吹き出しに足す（相手が話し始めたら、前の吹き出しを確定する） */
+  function onLiveTranscript(role: "user" | "assistant", delta: string) {
+    if (!delta) return;
+    const t = liveTurnRef.current;
+    const h = hostRef.current;
+    const now = performance.now();
+    if (role === "user") {
+      setUserSpeaking(true);
+      window.clearTimeout(userSpeakingTimerRef.current);
+      userSpeakingTimerRef.current = window.setTimeout(() => setUserSpeaking(false), 700);
+      if (t.ai && now - t.ai.last > 600) finishLiveAi();
+      if (!t.user) {
+        // 言葉の間（「わかりました。……ありがとうございます」）で区切れただけで、AI が話していなければ、前の吹き出しに続ける
+        const prev = lastUserRef.current;
+        if (prev && now - prev.endedAt < 4000) {
+          t.user = { id: prev.id, last: now };
+          userItemsRef.current.add(prev.id);
+          h.upsert(prev.id, "user", delta, false, true);
+        } else {
+          t.user = { id: uid(), last: now };
+          userItemsRef.current.add(t.user.id);
+          h.upsert(t.user.id, "user", delta.replace(/^[\s、。,.]+/, ""), false);
+        }
+        lastUserRef.current = null;
+      } else {
+        t.user.last = now;
+        h.upsert(t.user.id, "user", delta, false, true);
+      }
+    } else {
+      if (t.user && now - t.user.last > 600) finishLiveUser();
+      // AI が話し始めたら、お客様の次の発言は新しい吹き出しにする
+      if (!t.user) lastUserRef.current = null;
+      // 文字の入力の前から話していた内容（あいさつなど）を話し終えたら、答えは新しい吹き出しにする
+      if (t.ai?.closeOnGap && now - t.ai.last > 700) {
+        finishLiveAi();
+        lastAiRef.current = null;
+      }
+      if (!t.ai) {
+        // 文の途中で、お客様の相づち（「はい」）に区切られただけなら、前の吹き出しに続ける
+        const prev = lastAiRef.current;
+        t.ai =
+          prev && now - prev.endedAt < 3000 && !SENTENCE_END.test(liveCaption(prev.text))
+            ? { id: prev.id, last: now, text: prev.text + delta, overUser: Boolean(t.user) }
+            : { id: uid(), last: now, text: delta, overUser: Boolean(t.user) };
+        lastAiRef.current = null;
+      } else {
+        t.ai.last = now;
+        t.ai.text += delta;
+      }
+      h.upsert(t.ai.id, "assistant", liveCaption(t.ai.text), false);
+    }
+    window.clearTimeout(liveSettleRef.current);
+    liveSettleRef.current = window.setTimeout(() => {
+      finishLiveUser();
+      finishLiveAi();
+    }, LIVE_SETTLE_MS);
+  }
+
+  /** 委任先のモデルが関数を呼んだ：実行して結果を返し、続きを依頼する */
+  async function onLiveBackendEvent(inner: LiveEvent["event"]) {
+    if (inner?.type !== "response.output_item.done" || inner.item?.type !== "function_call") return;
+    const it = inner.item;
+    if (!it.call_id || !it.name || handledCalls.current.has(it.call_id)) return;
+    handledCalls.current.add(it.call_id);
+    if (it.name === "propose_estimate_request") lastProposeRef.current = performance.now();
+    const output = await toolOutput(it.name, it.arguments ?? "{}");
+    sendEvent({ type: "response.item.create", event_id: uid(), item: { type: "function_call_output", call_id: it.call_id, output } });
+    sendEvent({ type: "response.create", event_id: uid() });
+  }
+
+  function handleLiveEvent(ev: LiveEvent) {
+    switch (ev.type) {
+      case "session.started":
+        liveRef.current = true;
+        setStatus("live");
+        setStartedAt(Date.now());
+        setListening(true);
+        liveStartedRef.current?.();
+        // あいさつ（または「続きを伺います」）：開始時の指示と同じ内容を、もう一度伝える（GPT-Live の決まったやり方）
+        if (liveGreetingRef.current) sendEvent({ type: "session.commentary.append", event_id: uid(), delegation_id: null, content: liveGreetingRef.current });
+        break;
+      case "session.input_transcript.delta":
+        onLiveTranscript("user", ev.delta ?? "");
+        break;
+      case "session.output_transcript.delta":
+        onLiveTranscript("assistant", ev.delta ?? "");
+        break;
+      case "response.event":
+        void onLiveBackendEvent(ev.event);
+        break;
+      case "session.closed":
+        liveClosedRef.current?.();
+        break;
+      case "error": {
+        const code = ev.error?.code ?? "";
+        reportError("声の相談（GPT-Live との通信）", `${code ? `${code}: ` : ""}${ev.error?.message ?? ""}`);
+        // 委任先の設定の確かめ・追加の指示の失敗などは会話を続けられるので、お客様には出さない
+        if (/fatal|session_expired|unauthorized|invalid_api_key/i.test(code)) setError(friendlyError(ev.error?.message));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  async function startLive() {
+    const prior = hostRef.current.getConversation();
+    liveTurnRef.current = { user: null, ai: null };
+    lastUserRef.current = null;
+    lastAiRef.current = null;
+    lastProposeRef.current = -1e9;
+    const pc = new RTCPeerConnection();
+    pcRef.current = pc;
+    pc.ontrack = (e) => {
+      if (audioRef.current) {
+        audioRef.current.srcObject = e.streams[0];
+        audioRef.current.play().catch(() => undefined);
+      }
+      remoteStreamRef.current = e.streams[0];
+    };
+    const ms = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    streamRef.current = ms;
+    for (const track of ms.getAudioTracks()) {
+      track.enabled = !mutedRef.current;
+      pc.addTrack(track, ms);
+    }
+    // AI が話しているか（画面の表示）は、受信した音声の音量で見る
+    watchPlayback(pc);
+    const dc = pc.createDataChannel("oai-events");
+    dcRef.current = dc;
+    dc.onmessage = (e) => {
+      try {
+        handleLiveEvent(JSON.parse(e.data as string) as LiveEvent);
+      } catch {
+        // 解析できないイベントは無視
+      }
+    };
+    const started = new Promise<void>((resolve, reject) => {
+      const t = window.setTimeout(() => reject(new Error("音声接続がタイムアウトしました")), 20000);
+      liveStartedRef.current = () => {
+        window.clearTimeout(t);
+        liveStartedRef.current = null;
+        resolve();
+      };
+    });
+    const dropped = () => {
+      if (liveRef.current && !userEndedRef.current) void handleDrop();
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed" || pc.connectionState === "closed") dropped();
+    };
+    dc.onclose = dropped;
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    // 接続の候補（ICE）が集まるまで待ってから申し込む（GPT-Live の決まったやり方）
+    if (pc.iceGatheringState !== "complete") {
+      await new Promise<void>((resolve) => {
+        const t = window.setTimeout(resolve, 5000);
+        const on = () => {
+          if (pc.iceGatheringState !== "complete") return;
+          window.clearTimeout(t);
+          pc.removeEventListener("icegatheringstatechange", on);
+          resolve();
+        };
+        pc.addEventListener("icegatheringstatechange", on);
+      });
+    }
+    const res = await fetch("/api/live/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sdp: pc.localDescription?.sdp ?? offer.sdp, history: prior.map((m) => ({ role: m.role, content: m.content })), draft: hostRef.current.getIntake().draft }),
+    });
+    const j = (await res.json().catch(() => ({}))) as { ok?: boolean; transport?: { sdp?: string }; greeting?: string; error?: string };
+    if (!res.ok || !j.transport?.sdp) throw new Error(j.error ?? `GPT-Live の接続に失敗しました（HTTP ${res.status}）`);
+    liveGreetingRef.current = j.greeting ?? "";
+    await pc.setRemoteDescription({ type: "answer", sdp: j.transport.sdp });
+    await started;
+  }
+
   // ---------------- 簡易音声モード（ブラウザの音声認識・読み上げ） ----------------
 
   async function say(text: string) {
@@ -683,24 +951,43 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     ignoredItemsRef.current = new Set();
     recFatalRef.current = false;
     setStatus("connecting");
+    const micDenied = (e: unknown) => /NotAllowedError|Permission|denied|許可/i.test((e as Error).message) || (e as DOMException).name === "NotAllowedError";
+    const deny = async () => {
+      await end(false);
+      setStatus("idle");
+      setError("マイクの使用が許可されませんでした。ブラウザの設定でマイクを許可してから、もう一度お試しください（文字での入力はそのまま使えます）。");
+    };
     try {
       const res = await fetch("/api/realtime/session", { method: "POST" });
-      const info = (await res.json()) as SessionInfo;
+      let info = (await res.json()) as SessionInfo;
       setReason(info.reason ?? "");
+      // GPT-Live（既定）。つながらなければ Realtime API、それも使えなければ簡易音声モード
+      if (info.mode === "openai" && info.engine === "live") {
+        modeRef.current = "openai";
+        setMode("openai");
+        engineRef.current = "live";
+        try {
+          await startLive();
+          return;
+        } catch (e) {
+          if (micDenied(e)) return await deny();
+          reportError("声の相談の接続（GPT-Live から Realtime API に切り替え）", (e as Error).message);
+          await end(false);
+          engineRef.current = "realtime";
+          setStatus("connecting");
+          info = (await (await fetch("/api/realtime/session?engine=realtime", { method: "POST" })).json()) as SessionInfo;
+        }
+      }
       if (info.mode === "openai") {
         modeRef.current = "openai";
         setMode("openai");
+        engineRef.current = "realtime";
         try {
           await startRealtime(info);
           return;
         } catch (e) {
           const msg = (e as Error).message;
-          if (/NotAllowedError|Permission|denied|許可/i.test(msg) || (e as DOMException).name === "NotAllowedError") {
-            await end(false);
-            setStatus("idle");
-            setError("マイクの使用が許可されませんでした。ブラウザの設定でマイクを許可してから、もう一度お試しください（文字での入力はそのまま使えます）。");
-            return;
-          }
+          if (micDenied(e)) return await deny();
           setReason(`Realtime 接続に失敗したため簡易音声モードに切り替えました：${msg}`);
           reportError("声の相談の接続（簡易音声モードに切り替え）", msg);
           await end(false);
@@ -729,11 +1016,29 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       t.enabled = !next;
     });
     gateRef.current?.setMuted(next);
+    if (modeRef.current === "openai" && engineRef.current === "live") sendEvent({ type: next ? "session.input_audio.mute" : "session.input_audio.unmute", event_id: uid() });
   }
 
   /** 声で話している間に文字で入力した内容（会話には呼び出し側が入れる） */
   function sendText(text: string) {
     if (!liveRef.current) return;
+    if (modeRef.current === "openai" && engineRef.current === "live") {
+      // GPT-Live：文字の入力は委任先のモデルにそのまま渡し（入力どおりの文字で調べ・確認画面に使い、その結果を AI が話す）、
+      // 声のモデルにも知らせる（知らせないと、文字で入力されたお名前などを声で聞き直す）
+      const t = liveTurnRef.current;
+      finishLiveUser();
+      lastUserRef.current = null;
+      if (t.ai) {
+        // 話し途中（あいさつの途中など）なら、話し終えてから区切る
+        if (performance.now() - t.ai.last > 700) finishLiveAi();
+        else t.ai.closeOnGap = true;
+      }
+      lastAiRef.current = null;
+      sendEvent({ type: "session.thinking.append", event_id: uid(), delegation_id: null, content: `お客様が画面の入力欄に文字で入力しました（書かれたとおりで正確）：「${text}」` });
+      sendEvent({ type: "response.item.create", event_id: uid(), item: { type: "message", role: "user", content: [{ type: "input_text", text }] } });
+      sendEvent({ type: "response.create", event_id: uid() });
+      return;
+    }
     if (modeRef.current === "openai") sendUserText(text);
     else void handleDemoUserText(text, true);
   }
@@ -744,7 +1049,8 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
    */
   function notify(instruction: string, spoken: string) {
     if (!liveRef.current) return;
-    if (modeRef.current === "openai") sendUserText(`（システム通知）${instruction}`);
+    if (modeRef.current === "openai" && engineRef.current === "live") sendEvent({ type: "session.instructions.append", event_id: uid(), delegation_id: null, content: instruction });
+    else if (modeRef.current === "openai") sendUserText(`（システム通知）${instruction}`);
     else
       void (async () => {
         recRef.current?.abort();

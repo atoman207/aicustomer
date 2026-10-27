@@ -100,8 +100,8 @@ function chatBody(o: ChatOptions, stream: boolean): Record<string, unknown> {
   const body: Record<string, unknown> = { model, messages: o.messages, stream };
   if (stream) body.stream_options = { include_usage: true };
   if (isReasoningModel(model)) {
-    // 推論の分も出力のトークンに数えられるので、上限は多めに
-    const effort = reasoningEffortFor(model, o.reasoningEffort);
+    // 推論の分も出力のトークンに数えられるので、上限は多めに。gpt-6 系で考える深さの指定がなければ low（既定の深さは遅い）
+    const effort = reasoningEffortFor(model, o.reasoningEffort ?? (/^gpt-6/.test(model) ? "low" : undefined));
     body.max_completion_tokens = Math.max(o.maxTokens ?? 1500, 1500) + (effort && effort !== "none" ? 4000 : 0);
     if (effort) body.reasoning_effort = effort;
   } else {
@@ -398,6 +398,51 @@ export async function createRealtimeSecret(opts: {
   } catch {
     throw gaError;
   }
+}
+
+export interface LiveSessionResult {
+  session: { id: string };
+  transport: { type: "webrtc"; sdp: string };
+}
+
+/**
+ * GPT-Live の声のセッションを作る（WebRTC。ブラウザの接続の申し込み sdp に、OpenAI の答えの sdp を返す）。
+ * API キーはサーバーだけで使う。音声の形式は WebRTC が決めるので audio.format は渡さない
+ */
+export async function createLiveSession(opts: {
+  sdp: string;
+  instructions: string;
+  input: { type: "message"; role: "developer" | "user" | "assistant"; content: { type: "input_text" | "output_text"; text: string }[] }[];
+  backendInstructions: string;
+  tools: unknown[];
+}): Promise<LiveSessionResult> {
+  const res = await post(
+    "/live/sessions",
+    {
+      session: {
+        model: env.liveModel,
+        instructions: opts.instructions,
+        input: opts.input,
+        audio: { output: { voice: env.liveVoice } },
+        delegation: {
+          type: "responses",
+          responses: {
+            model: env.liveBackendModel,
+            instructions: opts.backendInstructions,
+            tools: opts.tools,
+            tool_choice: "auto",
+            parallel_tool_calls: false,
+            reasoning: { effort: env.liveBackendReasoning },
+          },
+        },
+      },
+      transport: { type: "webrtc", sdp: opts.sdp },
+    },
+    undefined,
+    20_000,
+  );
+  void recordTokens("live_session", {});
+  return (await res.json()) as LiveSessionResult;
 }
 
 export async function verifyOpenAI(): Promise<{ ok: boolean; detail: string }> {

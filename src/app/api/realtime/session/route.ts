@@ -55,6 +55,13 @@ export async function POST(req: Request) {
   if (!env.hasOpenAI) {
     return json({ ok: true, mode: "demo", reason: "OPENAI_API_KEY が未設定のため、ブラウザ音声認識によるデモモードで動作します" });
   }
+  // GPT-Live（既定）：ブラウザが接続の申し込みを作って /api/live/session に送る。資料はここで読み込んでおく（最初の質問を速く）。
+  // ?engine=realtime は GPT-Live につながらなかったときの代わり（Realtime API）
+  const forceRealtime = new URL(req.url).searchParams.get("engine") === "realtime";
+  if (env.voiceEngine === "live" && !forceRealtime) {
+    const snapshot = await getKnowledge().catch(() => null);
+    return json({ ok: true, mode: "openai", engine: "live", model: env.liveModel, voice: env.liveVoice, knowledgeSource: snapshot?.source });
+  }
   try {
     const [settings, snapshot] = await Promise.all([getSettings(), getKnowledge()]);
     // ナレッジ全文は渡さず、事実は search_knowledge で確認させる（毎回の応答で読み込まれる指示を短く保つ）
@@ -63,6 +70,7 @@ export async function POST(req: Request) {
     return json({
       ok: true,
       mode: "openai",
+      engine: "realtime",
       clientSecret: secret.value,
       expiresAt: secret.expiresAt,
       model: secret.model,

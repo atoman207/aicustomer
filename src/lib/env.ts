@@ -7,6 +7,8 @@ const ANSWER_DEFAULT = "gpt-6-astra";
 const LEGACY_ANSWER_MODELS = ["gpt-4.1", "gpt-5.6-sol"];
 /** 以前の既定（.env.example にあった値）。設定がこのままなら新しい既定を使う */
 const LEGACY_REALTIME_MODELS = ["gpt-realtime"];
+const CHAT_DEFAULT = "gpt-6.1-terra";
+const LEGACY_CHAT_MODELS = ["gpt-4.1-mini", "gpt-4o-mini"];
 
 function str(name: string, fallback = ""): string {
   const v = process.env[name];
@@ -24,8 +26,23 @@ export const env = {
   get openaiBaseUrl() {
     return str("OPENAI_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
   },
+  /**
+   * そのほかの AI の処理（電話・LINE の受付の補助・接続の確認など）のモデル。以前の既定（gpt-4.1-mini）のままなら、
+   * 新しい既定（gpt-6.1-terra：2026-10 時点の新しい中位のモデル・速く安い）を使う
+   */
   get chatModel() {
-    return str("OPENAI_CHAT_MODEL", "gpt-4.1-mini");
+    const v = str("OPENAI_CHAT_MODEL", CHAT_DEFAULT);
+    return LEGACY_CHAT_MODELS.includes(v) ? CHAT_DEFAULT : v;
+  },
+  /**
+   * 見積依頼の聞き取り（会話からお名前・ご住所・お電話番号・ご希望日・ご相談内容の要約を読み取る）のモデルと考える深さ。
+   * 声の相談の長い会話・聞き違い・訂正・復唱から正しく読み取れるように、新しいモデルを使う（intake-eval で比較）
+   */
+  get intakeModel() {
+    return str("OPENAI_INTAKE_MODEL", "gpt-6.1-terra");
+  },
+  get intakeReasoning() {
+    return str("OPENAI_INTAKE_REASONING", "low");
   },
   /**
    * 文字の相談で、資料の全文を読んで答えるモデル。2026-10-23 の比較（NotebookLM と同じ水準の答え方を求める 32 問・
@@ -56,7 +73,30 @@ export const env = {
     return str("OPENAI_ANSWER_FALLBACK_MODEL", "gpt-5.6-sol");
   },
   /**
-   * 声の相談のモデル。以前の既定（.env.example の gpt-realtime）のままなら新しい既定に置き換える
+   * 声の相談の仕組み：live（既定）＝GPT-Live（gpt-live-1。ChatGPT の音声会話と同じ、聞きながら話せるモデル）／
+   * realtime＝Realtime API（gpt-realtime-2.1）。2026-10-27 の試験（50〜70代の方の話し方で一畳屋様の例の会話を通す）で、
+   * GPT-Live は聞き取り（お名前・ご住所・お電話番号）・訂正・金額・間の取り方がより自然で正確だった
+   */
+  get voiceEngine(): "live" | "realtime" {
+    return str("OPENAI_VOICE_ENGINE", "live") === "realtime" ? "realtime" : "live";
+  },
+  get liveModel() {
+    return str("OPENAI_LIVE_MODEL", "gpt-live-1");
+  },
+  /** GPT-Live の声（harema＝日本語の女性の声・自然な録音から作られた声） */
+  get liveVoice() {
+    return str("OPENAI_LIVE_VOICE", "harema");
+  },
+  /** GPT-Live の委任先のモデル（事実は search_knowledge＝文字の相談と同じ資料の全文から答える AI に任せるので、速さを優先） */
+  get liveBackendModel() {
+    return str("OPENAI_LIVE_BACKEND_MODEL", "gpt-6.1-terra");
+  },
+  get liveBackendReasoning() {
+    return str("OPENAI_LIVE_BACKEND_REASONING", "low");
+  },
+  /**
+   * 声の相談のモデル（OPENAI_VOICE_ENGINE=realtime のとき・GPT-Live につながらないときの代わり）。
+   * 以前の既定（.env.example の gpt-realtime）のままなら新しい既定に置き換える
    * （聞き取り・数字や英字の認識・雑音や割り込みの扱いが改善された版。前のモデルに固定したいときは日付つきの名前を指定）
    */
   get realtimeModel() {
@@ -112,8 +152,9 @@ export const env = {
   get ttsVoice() {
     return str("OPENAI_TTS_VOICE", "sage");
   },
+  /** 意味の近さの検索（ANSWER_CONTEXT=search のときだけ使う）。いちばん新しい・精度の高い text-embedding-3-large */
   get embeddingModel() {
-    return str("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small");
+    return str("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large");
   },
 
   /** 会社名。旧デモ名（熊本たたみ工房）が環境変数に残っていても一畳屋を使う */

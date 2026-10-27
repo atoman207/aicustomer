@@ -48,13 +48,19 @@ interface AiIntake {
   cancel: boolean;
 }
 
-/** OpenAI に渡す会話（お客様の発言は長めに、AI の長い回答は短く） */
+/**
+ * OpenAI に渡す会話。ご相談内容（要約）は会話の最初のほうにあり、お名前・ご連絡先と訂正は最後のほうにあるので、
+ * 長い会話は最初の 10 件と最後の 50 件を渡す（以前は最後の 20 件だけで、声の相談の長い会話では最初の
+ * ご相談（外壁塗装など）が抜け、要約が訪問の日程の話だけになった：2026-10-27 一畳屋様のご指摘）。
+ * AI の発言には、お客様の言葉を復唱して確かめた内容（お電話番号など）が入るので、短くしすぎない
+ */
 function transcript(messages: ChatMessage[]): string {
-  return messages
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .slice(-20)
-    .map((m) => `${m.role === "user" ? "お客様" : "AI"}：${truncate(m.content.replace(/\s+/g, " "), m.role === "user" ? 400 : 160)}`)
-    .join("\n");
+  const list = messages.filter((m) => m.role === "user" || m.role === "assistant");
+  const HEAD = 10;
+  const TAIL = 50;
+  const line = (m: ChatMessage) => `${m.role === "user" ? "お客様" : "AI"}：${truncate(m.content.replace(/\s+/g, " "), m.role === "user" ? 600 : 500)}`;
+  if (list.length <= HEAD + TAIL) return list.map(line).join("\n");
+  return [...list.slice(0, HEAD).map(line), `（…途中の ${list.length - HEAD - TAIL} 件は省略…）`, ...list.slice(-TAIL).map(line)].join("\n");
 }
 
 async function readWithAi(messages: ChatMessage[], draft: IntakeDraft): Promise<AiIntake> {
@@ -65,13 +71,16 @@ async function readWithAi(messages: ChatMessage[], draft: IntakeDraft): Promise<
     dates: draft.dates,
   };
   return chatCompletionJson<AiIntake>({
+    model: env.intakeModel,
+    reasoningEffort: env.intakeReasoning,
     messages: [
       { role: "system", content: buildIntakeExtractPrompt(japanNow().display) },
       { role: "user", content: `【これまでに読み取った内容】\n${JSON.stringify(known)}\n\n【会話】\n${transcript(messages)}` },
     ],
     jsonSchema: INTAKE_JSON_SCHEMA,
     temperature: 0,
-    maxTokens: 500,
+    maxTokens: 800,
+    timeoutMs: 30_000,
     purpose: "intake",
   });
 }

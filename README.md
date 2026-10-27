@@ -11,7 +11,7 @@
 | 機能 | お客様の入口 | 技術 |
 | --- | --- | --- |
 | ① 文字でAI相談 | トップページの相談の画面（`/chat` も同じ画面） | OpenAI Chat Completions（ストリーミング）。資料の全文＋根拠の引用（`OPENAI_ANSWER_MODEL`） |
-| ② 声でAI相談 | 同じ画面のマイクのボタン（以前の `/voice` は `/chat?voice=1` へ） | OpenAI Realtime API（WebRTC・`gpt-realtime-2.1`・文字起こし `gpt-transcribe`・semantic VAD）＋ function calling。話した内容・AI の答えも同じ会話に文字で残る。マイクの関所（`voice-gate.ts`）：AI の声が流れている間は相づち・物音で AI を止めず、はっきり話し続けたら AI を止めて**話し始めから**送る（訂正「いや、8畳でした」も頭から届く） |
+| ② 声でAI相談 | 同じ画面のマイクのボタン（以前の `/voice` は `/chat?voice=1` へ） | OpenAI GPT-Live（WebRTC・`gpt-live-1`＝ChatGPT の音声会話と同じ、聞きながら話せるモデル。つながらないときは Realtime API の `gpt-realtime-2.1`）＋ function calling。話した内容・AI の答えも同じ会話に文字で残る。マイクの関所（`voice-gate.ts`）：AI の声が流れている間は相づち・物音で AI を止めず、はっきり話し続けたら AI を止めて**話し始めから**送る（訂正「いや、8畳でした」も頭から届く） |
 | ③ AI電話受付 | 電話ボタン（`tel:0120158108`）→ Twilio Webhook | Twilio `<Gather input="speech">` ＋ 構造化出力エージェント。スタッフ用のテスト画面 `/phone`（ブラウザ上の通話シミュレーター） |
 | LINE 見積受付 | `/api/line/webhook` | LINE Messaging API（③と同じ受付エージェント） |
 | 管理画面 | `/admin` | 受付一覧・会話履歴・AI／人間切替・営業時間・ナレッジ・接続状況 |
@@ -104,7 +104,11 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | `OPENAI_API_KEY` | **必須** | 未設定時はデモモード |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` / `GOOGLE_PRIVATE_KEY` / `KNOWLEDGE_SHEET_ID` / `KNOWLEDGE_SHEET_GID` | **必須** | 回答の情報源の Googleスプレッドシート（サービスアカウントを編集者として共有）。受付も同じスプレッドシートの「受付一覧」タブに記録 |
 | `ADMIN_PASSWORD` | **公開 URL では必須** | 管理画面の保護（未設定時は誰でも閲覧可） |
-| `OPENAI_CHAT_MODEL` | | 既定 `gpt-4.1-mini`（見積の聞き取り・要約・電話・LINE の受付。回答のモデルが混み合っている・使えないときの回答） |
+| `OPENAI_CHAT_MODEL` | | 既定 `gpt-6.1-terra`（電話・LINE の受付の補助・接続の確認など。以前の既定 `gpt-4.1-mini` のままなら新しい既定を使います） |
+| `OPENAI_INTAKE_MODEL` / `OPENAI_INTAKE_REASONING` | | 既定 `gpt-6.1-terra` / `low`（見積依頼の聞き取り＝会話からお名前・ご住所・お電話番号・ご希望日・ご相談内容の要約を読み取る） |
+| `OPENAI_VOICE_ENGINE` | | 既定 `live`（声の相談の仕組み：`live`＝GPT-Live・`realtime`＝Realtime API） |
+| `OPENAI_LIVE_MODEL` / `OPENAI_LIVE_VOICE` | | 既定 `gpt-live-1` / `harema`（GPT-Live のモデルと声。harema＝日本語の女性の声） |
+| `OPENAI_LIVE_BACKEND_MODEL` / `OPENAI_LIVE_BACKEND_REASONING` | | 既定 `gpt-6.1-terra` / `low`（GPT-Live の委任先：資料の確認＝search_knowledge と見積依頼の確認画面を任せるモデル） |
 | `OPENAI_ANSWER_MODEL` / `OPENAI_ANSWER_REASONING` | | 既定 `gpt-6-astra` / `low`（文字の相談で、資料の全文を読んでお客様の質問に答えるモデルと考える深さ。以前の既定 `gpt-5.6-sol`・`gpt-4.1` のままなら `gpt-6-astra` を使います。§3.5） |
 | `OPENAI_VOICE_ANSWER_MODEL` / `OPENAI_VOICE_ANSWER_REASONING` | | 既定 `gpt-6.1-sol` / `low`（声の相談の回答。待ち時間を短く） |
 | `OPENAI_ANSWER_FALLBACK_MODEL` | | 既定 `gpt-5.6-sol`（回答のモデルが混み合って使えないときに答え直すモデル） |
@@ -116,7 +120,8 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | `OPENAI_REALTIME_MODEL` / `OPENAI_REALTIME_VOICE` | | 既定 `gpt-realtime-2.1` / `sage`（音声相談。20代の女性の明るく澄んだ声。以前の既定 `gpt-realtime` のままなら `gpt-realtime-2.1` を使います） |
 | `OPENAI_REALTIME_SPEED` / `OPENAI_REALTIME_REASONING` | | 既定 `1` / `minimal`（声の話す速さ＝標準・話す前に考える深さ。深いほど話の途中の無言が長くなる） |
 | `OPENAI_TTS_MODEL` / `OPENAI_TTS_VOICE` | | 既定 `gpt-4o-mini-tts` / `sage`（電話シミュレーター・簡易音声モードの読み上げ。声の相談と同じ声） |
-| `OPENAI_EMBEDDING_MODEL` | | 既定 `text-embedding-3-small`（ナレッジ検索） |
+| `OPENAI_EMBEDDING_MODEL` | | 既定 `text-embedding-3-large`（ナレッジ検索。`ANSWER_CONTEXT=search` のときだけ使う） |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | | 会話の履歴・学習済みの回答・受付の保存先（Vercel の Storage で Upstash Redis を接続すると自動で入ります。未設定だと再デプロイ・スリープで消えます） |
 | `GAS_WEBHOOK_URL` | ナレッジ連携 A | `gas/Code.gs` をデプロイした URL（読み書き両対応・推奨。シートを公開せずに読める） |
 | `KNOWLEDGE_SHEET_CSV_URL` | ナレッジ連携 C | シートの共有リンク（回答に使うタブを開いた URL＝`#gid=…` 付き）または「ウェブに公開」の URL（読み取り専用。タブの内容が外部から見られる状態になる） |
 | `KNOWLEDGE_SHEET_NAME` | | 既定 `ＡＩ相談ソース`（スプレッドシート接続時に回答根拠にする **1 シート**の名前） |
@@ -194,6 +199,16 @@ git add database && git commit -m "保存版の更新" && git push
 - `ANSWER_CONTEXT=search` にすると以前の方式（関係する部分だけ・料金は料金表から直接）に戻せます。資料が 15 万字を超えた場合も自動で以前の方式になります。
 
 **声と話し方**：AI の声は `sage`（20代の女性の明るく澄んだ声。marin・sage・coral・shimmer を同じ文 × 6 回で比べ、声の高さ・聞き取りやすさ・文の途中の途切れの少なさで最もよかった声）を標準の速さで（50代以上のお客様が聞き取りやすく、金額も聞き違えにくい。以前は 1.1 倍）。日本語を母語とする人の自然な発音・読み方（「一畳屋＝いちじょうや」「表替え＝おもてがえ」「6畳＝ろくじょう」など）を指示しています（指示がないと「一畳屋」を読み間違えることがありました）。AI が話しているかは、受信した AI の音声の音で判定します（`gpt-realtime-2.1` は「再生が終わった」の知らせを届けないことがあるため）。
+
+**声の相談は GPT-Live（2026-10-27〜）**：一畳屋様のご要望「ChatGPT の音声会話（GPT-Live-1.1）か、その一つ前の世代に近い自然さ」に合わせ、声の相談を `gpt-live-1`（ChatGPT の音声会話と同じ仕組みの、聞きながら話せるモデル。GPT-Live-1.1 はまだ API で使えないため、その一つ前の世代）に切り替えました（`OPENAI_VOICE_ENGINE=live`）。
+- 声の AI（GPT-Live）は話し方・相づち・割り込み・話し終わりの判断・聞き取りを受け持ち、事実と見積依頼の確認画面は委任先のモデル（`gpt-6.1-terra`）が `search_knowledge`（文字の相談と同じ、スプレッドシートの全文から答える AI）と `propose_estimate_request` を呼んで行います（`src/app/api/live/session`・`useVoiceSession.ts` の GPT-Live の部分・`prompts.ts` の `buildLiveInstructions`）。声は日本語の `harema`。
+- 試験（50〜70代の方の話し方の読み上げ音声で、一畳屋様の例の会話を声で通す `live-scenario`）：網戸 4 枚の目安（1万6500円）→ ベランダの大きな網戸 → 訪問見積の提案 →「お願いします」→ お名前 → ご住所 → 番地の訂正 → ご希望日 → お電話番号 → 確認画面、まで自然に進み、確認画面にはお名前・ご住所（訂正後）・お電話番号・ご希望日・ご相談内容が正しく入りました。外壁塗装の相談＋お名前の訂正（山田→山下）＋お電話番号の訂正（3333→3334）＋「来週の水曜」の会話でも、確認画面の内容と要約（「築20年の2階建て住宅で、ひびが入ってきた外壁の塗装…」）が正しく入りました。返事までの間は約 1〜2 秒。聞き取りに自信がないときは、推測せずに聞き返します。
+- 声で話している間に入力欄に文字で入力した内容は、委任先のモデルにそのまま渡し（`response.item.create`。入力どおりの文字で調べ・確認画面に使う）、声の AI にも知らせます（`session.thinking.append`。知らせないと、文字で入力されたお名前などを声で聞き直す）。文字でお名前・ご住所・ご希望日・お電話番号がそろえば、復唱せずに確認画面を表示します。
+- 字幕：GPT-Live の文字起こしの、声でない音の印（`[hum]` など）は出しません。AI の文の途中にお客様の「はい」が入っても、AI の吹き出しは 1 つのままにします。
+- 「画面の内容をご確認ください」と話したのに確認画面の表示の依頼がなかったときは、アプリが会話から読み取って確認画面を開きます。GPT-Live につながらないときは Realtime API（`gpt-realtime-2.1`）、それも使えないときは簡易音声モードで続けます。
+- 料金：GPT-Live は 1 分あたり 0.05 ドル（約 7.5 円・秒単位）＋委任先・回答のモデルのトークン。
+
+**ご相談内容の要約（2026-10-27。一畳屋様のご指摘：外壁塗装の相談が要約に入らず、訪問日程の話だけになった）**：原因は、会話から読み取るときに最後の 20 件だけを渡していたこと（声の相談は発言が細かく分かれるため、最初のご相談が抜けた）。会話の最初の 10 件と最後の 50 件を渡し、要約は「ご相談の工事の種類を必ず最初に・受付のやりとりは書かない」とし、声の聞き違いは AI の復唱にお客様が同意した内容を使うようにしました。モデルは `gpt-6.1-terra`（`OPENAI_INTAKE_MODEL`）。試験（外壁塗装の長い声の会話・住所／お名前／お電話番号の訂正・「来週の火曜」など 24 項目）で 23/24 正しく（残りは聞き取れたお名前をかなのまま入れたもの）。
 
 **声の聞き取り**：声の相談は `gpt-realtime-2.1`（Realtime API の最新のモデル）で話し、お客様の声の文字起こし（画面の文字・見積の自動入力に使う）は `gpt-transcribe` に熊本の地名の手がかり（`src/lib/places.ts`：営業範囲と熊本市のよく出る町名）を渡しています。話し終わりは内容から判断する semantic VAD を `eagerness: low` で（「えーっと」「あのー」と考えている間は待つ。`OPENAI_REALTIME_TURN=server` で無音の長さによる判定に戻せます）。
 
