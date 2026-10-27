@@ -10,7 +10,7 @@ import { ANSWER_MARKER, buildChatSystemPrompt, splitEvidence, usesEvidence } fro
 import { getConversation, getSettings, upsertConversation } from "@/lib/store";
 import { isPromptEcho } from "@/lib/transcribe";
 import type { Channel, ChatMessage } from "@/lib/types";
-import { truncate, uid } from "@/lib/utils";
+import { headTail, truncate, uid } from "@/lib/utils";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,12 +36,14 @@ export async function POST(req: Request) {
   if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return error("messages が必要です");
   const sessionId = (body.sessionId ?? "").toString().slice(0, 80) || uid();
   const channel: Channel = body.channel === "web_voice" ? "web_voice" : "web_text";
-  const messages = body.messages
-    .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-    // 声の相談の雑音で、文字起こしが手がかりの文をなぞっただけの行（お客様の発言ではない）は使わない
-    .filter((m) => !(m.role === "user" && isPromptEcho(m.content)))
-    .slice(-20)
-    .map((m) => ({ role: m.role, content: m.content.slice(0, 4000), at: m.at }));
+  // 見積依頼の聞き取り（ご相談内容の要約）は、最初のご相談から読む。回答は直近 20 件
+  const conversation = headTail(
+    body.messages
+      .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+      // 声の相談の雑音で、文字起こしが手がかりの文をなぞっただけの行（お客様の発言ではない）は使わない
+      .filter((m) => !(m.role === "user" && isPromptEcho(m.content))),
+  ).map((m) => ({ role: m.role, content: m.content.slice(0, 4000), at: m.at }));
+  const messages = conversation.slice(-20);
   const last = [...messages].reverse().find((m) => m.role === "user");
   if (!last) return error("ユーザーメッセージがありません");
 
@@ -92,7 +94,7 @@ export async function POST(req: Request) {
 
   // 見積依頼の聞き取り（お名前・ご住所・お電話番号・ご希望日時を伺い、そろったら確認画面へ）。状態は X-Intake で返す
   if (useIntake || !plan) {
-    const [turn, snapshot] = await Promise.all([intakeTurn(messages, intake, { company: settings.companyName }), getKnowledge()]);
+    const [turn, snapshot] = await Promise.all([intakeTurn(conversation, intake, { company: settings.companyName }), getKnowledge()]);
     await persist(turn.reply, `intake-${turn.mode}`, snapshot.source, "intake");
     return new Response(turn.reply, {
       headers: { ...headers(turn.sources, snapshot.source, "intake", "intake"), "X-Intake": encodeURIComponent(JSON.stringify(turn.state)) },

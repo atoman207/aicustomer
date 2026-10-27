@@ -79,6 +79,14 @@ export function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
+/**
+ * 長い会話は最初の head 件と最後の tail 件にする。ご相談の中心（外壁塗装など）は会話の最初のほうに、
+ * お名前・ご連絡先と訂正は最後のほうにあるため（最後の数十件だけだと、要約から最初のご相談が抜ける）
+ */
+export function headTail<T>(list: T[], head = 10, tail = 50): T[] {
+  return list.length <= head + tail ? list : [...list.slice(0, head), ...list.slice(-tail)];
+}
+
 export function cosine(a: number[], b: number[]): number {
   let dot = 0;
   let na = 0;

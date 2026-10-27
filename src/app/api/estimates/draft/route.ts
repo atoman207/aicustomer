@@ -2,6 +2,7 @@ import { error, json, rateLimited, readJson } from "@/lib/http";
 import { missingFields, sanitizeDraft } from "@/lib/intake";
 import { readDraft } from "@/lib/intake-ai";
 import type { ChatMessage } from "@/lib/types";
+import { headTail } from "@/lib/utils";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,10 +17,11 @@ export async function POST(req: Request) {
   if (limited) return limited;
   const body = await readJson<{ messages?: ChatMessage[]; draft?: unknown; keepSummary?: boolean }>(req);
   if (!body || !Array.isArray(body.messages)) return error("messages が必要です");
-  const messages = body.messages
-    .filter((m) => (m?.role === "user" || m?.role === "assistant") && typeof m.content === "string" && m.content.trim())
-    .slice(-40)
-    .map((m) => ({ role: m.role, content: m.content.slice(0, 2000) }));
+  // 長い会話も、最初のご相談（要約の中心）と最後の聞き取り・訂正の両方を読む
+  const messages = headTail(body.messages.filter((m) => (m?.role === "user" || m?.role === "assistant") && typeof m.content === "string" && m.content.trim())).map((m) => ({
+    role: m.role,
+    content: m.content.slice(0, 2000),
+  }));
   const r = await readDraft(messages, sanitizeDraft(body.draft), { keepSummary: body.keepSummary === true });
   return json({ ok: true, draft: r.draft, missing: missingFields(r.draft), mode: r.mode });
 }

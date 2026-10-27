@@ -13,8 +13,9 @@ import { getKnowledge } from "./knowledge";
 import { canRetryWithChatModel, chatCompletionJson } from "./openai";
 import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt, isFullDocumentContext } from "./prompts";
 import { getSession, getSettings, saveSession, upsertConversation } from "./store";
+import { summarizeConversation } from "./summarize";
 import type { AgentSession, AgentStage, AgentTurnResult, Channel, IntakeDraft, SearchHit } from "./types";
-import { domesticPhone, fillTemplate, readDigits, truncate, uid } from "./utils";
+import { domesticPhone, fillTemplate, headTail, readDigits, truncate, uid } from "./utils";
 
 const CHANNEL_WHERE: Record<string, string> = { phone: "AI電話", line: "LINE", web_voice: "声の相談", web_text: "文字の相談" };
 
@@ -231,12 +232,14 @@ export async function runTurn(
 
   if (!viaForm && result.stage === "completed" && !session.estimateId) {
     if (draftComplete(result.draft)) {
+      // ご相談内容は会話の全体（最初のご相談から）でまとめ直す（聞き取り中の AI は直近 12 件しか見ていないため）
+      const whole = await summarizeConversation(session.messages);
       const estimate = await createEstimate({
         channel: session.channel,
         name: result.draft.name ?? "",
         address: result.draft.address ?? "",
         phone: result.draft.phone ?? "",
-        summary: result.draft.summary || summaryFromMessages(session),
+        summary: (whole.mode === "openai" && whole.summary) || result.draft.summary || summaryFromMessages(session),
         preferredDates: result.draft.dates,
         sessionId: session.id,
         confirmedByCustomer: true,
@@ -244,6 +247,12 @@ export async function runTurn(
       session.estimateId = estimate.id;
       result.estimate = estimate;
       if (session.channel !== "phone") result.reply = `${result.reply}\n受付番号：${estimate.id}`;
+      // 電話：受付を記録したら、お礼を伝えて通話を終える（AI が終了を判断しなかったときも、無言のまま待たせない）。
+      // AI がほかのご用件を伺っている（質問で終わる）ときは、お答えを待つ
+      else if (!/[?？]\s*$/.test(result.reply)) {
+        if (!/ありがとうございました/.test(result.reply)) result.reply = `${result.reply}\nお電話ありがとうございました。`;
+        result.done = true;
+      }
     } else {
       result.stage = "collecting";
       result.reply = missingPrompt(result.draft);
@@ -254,7 +263,8 @@ export async function runTurn(
   session.stage = result.stage;
   session.draft = result.draft;
   session.messages.push({ role: "assistant", content: result.reply, at: new Date().toISOString() });
-  if (session.messages.length > 60) session.messages = session.messages.slice(-60);
+  // 長い会話も最初のご相談は残す（要約に使う）
+  session.messages = headTail(session.messages);
   session.updatedAt = new Date().toISOString();
   await saveSession(session);
   await upsertConversation({
