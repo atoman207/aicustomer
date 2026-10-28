@@ -11,6 +11,7 @@ import {
   MessageSquareText,
   PhoneCall,
   RefreshCw,
+  Send,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BRAND } from "@/lib/brand";
@@ -24,6 +25,7 @@ import type {
   PhoneMode,
 } from "@/lib/types";
 import { autofillLabel } from "@/lib/intake";
+import { lineShareText, lineShareUrl } from "@/lib/line-share";
 import { CHANNEL_LABEL, ESTIMATE_STATUS_LABEL as STATUS_LABEL, RECEPTION_HEADER } from "@/lib/types";
 import { formatJst, truncate } from "@/lib/utils";
 
@@ -245,6 +247,68 @@ function StatusSelect({ e, onStatus, className }: { e: EstimateRequest; onStatus
   );
 }
 
+/** 文字をクリップボードへ（使えないブラウザ・http では選択してコピー） */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    return ok;
+  }
+}
+
+/**
+ * 受付を LINE で担当店舗・営業担当に引き継ぐ（スプレッドシートの「LINE共有」メニューと同じ文）。
+ * スマホ：LINE を開いて送り先を選ぶだけ（LINE の共有のリンク。パソコン版の LINE では使えない）／パソコン：文をコピーして LINE に貼り付け
+ */
+function LineShareButton({ e, className }: { e: EstimateRequest; className: string }) {
+  const [phone, setPhone] = useState(false);
+  const [done, setDone] = useState("");
+  useEffect(() => {
+    setPhone(/iPhone|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+  }, []);
+  const label = `${e.name} さんの受付を LINE で共有`;
+  if (phone) {
+    return (
+      <a href={lineShareUrl(lineShareText(e))} target="_blank" rel="noopener noreferrer" className={`btn-secondary ${className}`} aria-label={label} data-line-share={e.id}>
+        <Send className="h-3.5 w-3.5" />
+        LINE共有
+      </a>
+    );
+  }
+  async function copy() {
+    setDone((await copyText(lineShareText(e))) ? "コピー済み" : "コピー不可");
+    setTimeout(() => setDone(""), 2500);
+  }
+  return (
+    <button
+      type="button"
+      className={`btn-secondary ${className}`}
+      onClick={copy}
+      aria-label={label}
+      title="LINE に貼り付ける文をコピー（LINE のトークに貼り付けて送信）"
+      data-line-share={e.id}
+    >
+      {done === "コピー済み" ? <CheckCircle2 className="h-3.5 w-3.5 text-tatami-500" /> : <Send className="h-3.5 w-3.5" />}
+      {done || "LINE共有"}
+    </button>
+  );
+}
+
 /** スマホ用：受付 1 件のカード（タップで詳細。電話番号はそのまま発信できる） */
 function ReceptionCard({ e, open, onToggle, onStatus }: { e: EstimateRequest; open: boolean; onToggle: () => void; onStatus: (s: EstimateStatus) => void }) {
   return (
@@ -272,8 +336,9 @@ function ReceptionCard({ e, open, onToggle, onStatus }: { e: EstimateRequest; op
           </p>
         ) : null}
       </div>
-      <div className="mt-2">
-        <StatusSelect e={e} onStatus={onStatus} className="w-full py-1.5 text-sm" />
+      <div className="mt-2 flex items-center gap-2">
+        <StatusSelect e={e} onStatus={onStatus} className="min-w-0 flex-1 py-1.5 text-sm" />
+        <LineShareButton e={e} className="shrink-0 px-3 py-1.5 text-sm" />
       </div>
       {open ? (
         <div className="mt-2 space-y-1 rounded-xl bg-washi-50 px-3 py-2 text-xs text-sumi-600">
@@ -307,8 +372,11 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
   return (
     <>
       <tr className="cursor-pointer hover:bg-washi-50" onClick={onToggle}>
-        <td className="whitespace-nowrap" onClick={(ev) => ev.stopPropagation()}>
-          <StatusSelect e={e} onStatus={onStatus} className="w-[6.5rem] py-1 sm:text-xs" />
+        <td onClick={(ev) => ev.stopPropagation()}>
+          <div className="flex w-[6.5rem] flex-col gap-1.5">
+            <StatusSelect e={e} onStatus={onStatus} className="py-1 sm:text-xs" />
+            <LineShareButton e={e} className="w-full whitespace-nowrap px-2 py-1 text-xs" />
+          </div>
         </td>
         <td className="whitespace-nowrap">{formatJst(e.receivedAt)}</td>
         <td className="whitespace-nowrap">
