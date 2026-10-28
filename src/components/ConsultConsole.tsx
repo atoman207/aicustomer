@@ -37,7 +37,7 @@ import { Modal } from "./ui";
 import { BUSINESS } from "@/lib/company";
 import { CONSULT_EVENT, type ConsultCommand } from "@/lib/consult-events";
 import { clearConversation, loadConversation, saveConversation, type StoredMessage } from "@/lib/conversation-store";
-import { emptyDraft, keepTouched, missingFields, sanitizeIntake, type IntakeState } from "@/lib/intake";
+import { emptyDraft, keepTouched, missingFields, sanitizeIntake, unsureFromTalk, type IntakeField, type IntakeState } from "@/lib/intake";
 import { yenDigits } from "@/lib/jnum";
 import type { ChatMessage, EstimateRequest } from "@/lib/types";
 import { uid } from "@/lib/utils";
@@ -477,6 +477,9 @@ export default function ConsultConsole({
     const history = toHistory(messagesRef.current);
     const cur = intakeRef.current;
     if (!history.some((m) => m.role === "user")) return;
+    // AI が「ご住所の『修正』ボタンから入力を」とお願いした項目は、確認画面で「要確認」にする（お客様が直した項目は除く）
+    const said = unsureFromTalk(history).filter((f) => !cur.touched?.includes(f) && !cur.unsure?.includes(f));
+    if (said.length) setIntake((prev) => ({ ...prev, unsure: [...new Set([...(prev.unsure ?? []), ...said])] }));
     const fresh = Boolean(cur.draft.summary) && (cur.summaryAt ?? -1) >= history.length - 1;
     if (missingFields(cur.draft).length === 0 && fresh) return;
     setDraftLoading(true);
@@ -486,10 +489,14 @@ export default function ConsultConsole({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: history, draft: cur.draft, keepSummary: cur.touched?.includes("summary") }),
       });
-      const j = (await res.json()) as { ok: boolean; draft?: IntakeState["draft"] };
+      const j = (await res.json()) as { ok: boolean; draft?: IntakeState["draft"]; unsure?: IntakeField[] };
       if (j.ok && j.draft) {
         const read = j.draft;
-        setIntake((prev) => ({ ...prev, draft: keepTouched(read, prev.draft, prev.touched), summaryAt: history.length }));
+        // ご住所の町名が熊本県・大牟田市の一覧になく直せなかった：確認画面で「修正」をお願いする（声の AI が伝えた項目と合わせる）
+        setIntake((prev) => {
+          const unsure = [...new Set([...(prev.unsure ?? []), ...(j.unsure ?? [])])].filter((f) => !prev.touched?.includes(f));
+          return { ...prev, draft: keepTouched(read, prev.draft, prev.touched), summaryAt: history.length, unsure };
+        });
       }
     } catch {
       // 読み取れなかった項目は、お客様に確認画面で入力していただく
@@ -502,7 +509,15 @@ export default function ConsultConsole({
 
   /** 確認画面での入力・修正（閉じて開き直しても残す） */
   function onFormChange(edits: EstimateFormEdits) {
-    setIntake((prev) => ({ ...prev, draft: edits.draft, touched: edits.touched, aiFilled: edits.aiFilled, summaryEdited: edits.touched.includes("summary") }));
+    setIntake((prev) => ({
+      ...prev,
+      draft: edits.draft,
+      touched: edits.touched,
+      aiFilled: edits.aiFilled,
+      summaryEdited: edits.touched.includes("summary"),
+      // お客様が直した項目は「要確認」から外す
+      unsure: prev.unsure?.filter((f) => !edits.touched.includes(f)),
+    }));
   }
 
   function onSubmitted(est: EstimateRequest) {
@@ -912,6 +927,7 @@ export default function ConsultConsole({
           initial={intake.draft}
           touched={intake.touched}
           aiFilled={intake.aiFilled}
+          unsure={intake.unsure}
           loading={draftLoading}
           lineUrl={lineUrl}
           onSubmitted={onSubmitted}

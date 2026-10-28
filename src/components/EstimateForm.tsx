@@ -35,6 +35,8 @@ interface Props {
   /** 前に開いたときの入力・修正 */
   touched?: DraftField[];
   aiFilled?: DraftField[];
+  /** 正しく聞き取れなかった項目（「修正」から入力していただくよう、欄に案内を出す。一畳屋様のご要望 2026-10-28） */
+  unsure?: DraftField[];
   /** 会話から読み取っている途中（AI の要約を含む） */
   loading?: boolean;
   lineUrl?: string;
@@ -72,6 +74,7 @@ export default function EstimateForm({
   initial,
   touched: touchedIn,
   aiFilled: aiFilledIn,
+  unsure: unsureIn,
   loading = false,
   lineUrl,
   onSubmitted,
@@ -243,11 +246,22 @@ export default function EstimateForm({
   const missing = FIELDS.filter((f) => isEmpty(f));
   const filledCount = FIELDS.filter((f) => aiFilled.has(f) && !isEmpty(f)).length;
   const firstError = FIELDS.find((f) => errors[f]);
+  // 正しく聞き取れなかった項目（お客様がまだ直していない・入力欄を開いていないもの）
+  const unsure = FIELDS.filter((f) => unsureIn?.includes(f) && !touched.has(f) && !isEmpty(f));
+  const unsureLabels = unsure.map((f) => FIELD_LABEL[f]).join("・");
 
   const banner = loading ? (
     <p className="flex items-center gap-2 rounded-xl bg-ai-50 px-4 py-3 text-sm text-ai-700" data-intake-banner="loading">
       <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
       AIとの会話から、お名前・ご連絡先・ご希望日時・ご相談内容を読み取っています…
+    </p>
+  ) : unsure.length > 0 ? (
+    <p className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-900" data-intake-banner="unsure">
+      <PencilLine className="mt-0.5 h-4 w-4 shrink-0" />
+      <span>
+        恐れ入りますが、<b>{unsureLabels}</b>は正確に聞き取れなかった可能性があります。{unsure.map((f) => `${FIELD_LABEL[f]}の「修正」`).join("・")}ボタンを押して、正確な内容をご入力ください。
+        <span className="block text-xs text-amber-800/80">ほかの項目は、会話で伺った内容を入力済みです。ご確認のうえ送信してください。</span>
+      </span>
     </p>
   ) : filledCount > 0 && missing.length === 0 ? (
     <p className="flex items-start gap-2 rounded-xl border border-ichi-green/25 bg-ichi-cream px-4 py-3 text-sm leading-relaxed text-ichi-theme" data-intake-banner="complete">
@@ -274,9 +288,17 @@ export default function EstimateForm({
   const showInput = (f: DraftField) => !pending(f) && (editing.has(f) || Boolean(errors[f]));
 
   const field = (f: DraftField, input: ReactNode, display?: ReactNode) => {
-    const fromAi = aiFilled.has(f) && !touched.has(f) && !isEmpty(f);
+    const check = unsure.includes(f);
+    const fromAi = aiFilled.has(f) && !touched.has(f) && !isEmpty(f) && !check;
     return (
-      <div key={f} className="px-4 py-3" data-field={f} data-mode={pending(f) ? "pending" : showInput(f) ? "input" : "view"} ref={firstError === f ? firstInputRef : undefined}>
+      <div
+        key={f}
+        className={`px-4 py-3 ${check ? "bg-amber-50" : ""}`}
+        data-field={f}
+        data-mode={pending(f) ? "pending" : showInput(f) ? "input" : "view"}
+        data-unsure={check || undefined}
+        ref={firstError === f ? firstInputRef : undefined}
+      >
         <div className="flex items-center justify-between gap-2">
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-bold text-sumi-500">
             {FIELD_LABEL[f]}
@@ -287,11 +309,16 @@ export default function EstimateForm({
                 AIが会話から入力
               </span>
             ) : null}
+            {check ? <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-900">要確認</span> : null}
           </p>
           {!showInput(f) && !pending(f) ? (
             <button
               type="button"
-              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sumi-200 px-2.5 py-1 text-xs font-bold text-sumi-600 transition hover:border-ichi-green hover:text-ichi-green"
+              className={
+                check
+                  ? "inline-flex shrink-0 items-center gap-1 rounded-full bg-ichi-red px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:opacity-90"
+                  : "inline-flex shrink-0 items-center gap-1 rounded-full border border-sumi-200 px-2.5 py-1 text-xs font-bold text-sumi-600 transition hover:border-ichi-green hover:text-ichi-green"
+              }
               onClick={() => setEditing((prev) => new Set(prev).add(f))}
               aria-label={`${FIELD_LABEL[f]}を修正する`}
             >
@@ -307,6 +334,11 @@ export default function EstimateForm({
         ) : (
           <div className="mt-1 whitespace-pre-wrap text-[15px] leading-relaxed text-sumi-800">{display ?? value[f]}</div>
         )}
+        {check && !showInput(f) ? (
+          <p className="mt-1 text-xs font-bold leading-relaxed text-amber-800">
+            AIが正確に聞き取れなかった可能性があります。お手数ですが「修正」を押して、正確な{FIELD_LABEL[f]}をご入力ください。
+          </p>
+        ) : null}
         {errors[f] ? <p className="mt-1 text-xs font-bold text-shu-600">{errors[f]}</p> : null}
       </div>
     );

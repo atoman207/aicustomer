@@ -4,7 +4,7 @@ import { japanNow } from "@/lib/hours";
 import { json, rateLimited } from "@/lib/http";
 import { getKnowledge } from "@/lib/knowledge";
 import { createRealtimeSecret } from "@/lib/openai";
-import { buildRealtimeInstructions } from "@/lib/prompts";
+import { REALTIME_CHECK_ADDRESS_TOOL, REALTIME_UNSURE_FIELDS_PARAM, buildRealtimeInstructions } from "@/lib/prompts";
 import { getSettings } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -42,10 +42,12 @@ const REALTIME_TOOLS = [
         phone: { type: "string", description: "お電話番号（数字とハイフン）" },
         preferred_dates: { type: "array", items: { type: "string" }, description: "訪問のご希望日時 第1〜第3希望（例: 10月28日 午前）。「来週の火曜」などは日付にする" },
         summary: { type: "string", description: "ご相談内容の要約（1〜2文。お名前・電話番号などは入れない）" },
+        unsure_fields: REALTIME_UNSURE_FIELDS_PARAM,
       },
       required: [],
     },
   },
+  REALTIME_CHECK_ADDRESS_TOOL,
 ];
 
 /** HP上の音声相談（Realtime API / WebRTC）用の一時キーを発行 */
@@ -65,7 +67,7 @@ export async function POST(req: Request) {
   try {
     const [settings, snapshot] = await Promise.all([getSettings(), getKnowledge()]);
     // ナレッジ全文は渡さず、事実は search_knowledge で確認させる（毎回の応答で読み込まれる指示を短く保つ）
-    const instructions = buildRealtimeInstructions(settings.companyName, japanNow().display);
+    const instructions = buildRealtimeInstructions(settings.companyName, japanNow().display, snapshot.staffNotes?.text);
     const secret = await createRealtimeSecret({ instructions, tools: REALTIME_TOOLS });
     return json({
       ok: true,

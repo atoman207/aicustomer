@@ -3,6 +3,7 @@ import { logError } from "@/lib/errorlog";
 import { japanNow } from "@/lib/hours";
 import { error, json, rateLimited, readJson } from "@/lib/http";
 import { FIELD_LABEL, normalizeDraft } from "@/lib/intake";
+import { getKnowledge } from "@/lib/knowledge";
 import { createLiveSession } from "@/lib/openai";
 import { LIVE_BACKEND_TOOLS, LIVE_GREETING, buildLiveBackendInstructions, buildLiveInstructions } from "@/lib/prompts";
 import { getSettings } from "@/lib/store";
@@ -64,12 +65,14 @@ export async function POST(req: Request) {
     .filter(Boolean)
     .join("\n");
   try {
-    const settings = await getSettings();
+    // スタッフの修正点・要望（スプレッドシートの「修正点など」）も指示に入れる（読めなければ入れずに続ける）
+    const [settings, snapshot] = await Promise.all([getSettings(), getKnowledge().catch(() => null)]);
     const today = japanNow().display;
+    const notes = snapshot?.staffNotes?.text;
     const result = await createLiveSession({
       sdp,
-      instructions: buildLiveInstructions(settings.companyName, today),
-      backendInstructions: buildLiveBackendInstructions(settings.companyName, today),
+      instructions: buildLiveInstructions(settings.companyName, today, notes),
+      backendInstructions: buildLiveBackendInstructions(settings.companyName, today, notes),
       tools: LIVE_BACKEND_TOOLS,
       // 会話の続き → 最後に「どう話し始めるか」の指示（developer）
       input: [...prior, { type: "message", role: "developer", content: [{ type: "input_text", text: developer }] }],

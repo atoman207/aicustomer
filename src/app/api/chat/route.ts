@@ -109,7 +109,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const system = buildChatSystemPrompt(settings.companyName, plan.context, channel);
+    const system = buildChatSystemPrompt(settings.companyName, plan.context, channel, plan.snapshot.staffNotes?.text);
     const history = recentHistory(messages);
     const { model, effort } = answerModelFor(plan);
     // 同じ質問（AI に渡す内容とお客様の質問がまったく同じ）には、前に AI が作った回答をそのまま返す（AI を使わない）。

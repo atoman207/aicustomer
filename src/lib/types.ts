@@ -56,6 +56,21 @@ export interface KnowledgeSnapshot {
   websiteUsed: boolean;
   /** Googleスプレッドシートの接続状況（connected＝今回シートから読めた） */
   sheet?: { configured: boolean; connected: boolean; via: "gas" | "csv" | "env" | null; url: string };
+  /** 一畳屋のスタッフが「修正点など」のタブに書いた、AI の応対への修正点・要望（AI の指示に入れる） */
+  staffNotes?: StaffNotes;
+}
+
+export interface StaffNotes {
+  /** タブの名前 */
+  tab: string;
+  /** AI の指示に入れる文（1 行 1 項目。長いときは新しい行＝下の行を残す） */
+  text: string;
+  /** 項目の数 */
+  lines: number;
+  /** 長すぎて古い項目を省いた */
+  truncated: boolean;
+  /** 読めなかった理由（タブがない・共有されていない など） */
+  error?: string;
 }
 
 export interface SearchHit {

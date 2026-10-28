@@ -3,10 +3,10 @@
 // 管理画面「AIの学習状況・情報源」：AI の回答情報源（Googleスプレッドシート・ホームページ）と接続先の設定、回答テスト、
 // AI の利用状況（OpenAI を使わずに答えた割合・トークン数）、学習済みの回答、答えられなかった質問
 // （情報を変えるときはスプレッドシートを直す。管理画面からの追加・アップロードはなし）
-import { BookOpenCheck, Database, Globe, Link2, Loader2, RefreshCw, Save, Search, Sparkles, Trash2, Zap } from "lucide-react";
+import { BookOpenCheck, Database, Globe, Link2, Loader2, PencilLine, RefreshCw, Save, Search, Sparkles, Trash2, Zap } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "./ui";
-import type { KnowledgeEntry, KnowledgeOrigin, KnowledgeSource, KnowledgeStats } from "@/lib/types";
+import type { KnowledgeEntry, KnowledgeOrigin, KnowledgeSource, KnowledgeStats, StaffNotes } from "@/lib/types";
 import { parseSheetLink, sheetLinkLabel } from "@/lib/sheet-link";
 import { formatJst, truncate } from "@/lib/utils";
 
@@ -33,6 +33,7 @@ interface KnowledgeResp {
   websiteUsed?: boolean;
   remoteConfigured: boolean;
   sheet?: { configured: boolean; connected: boolean; via: "gas" | "csv" | "env" | null; url: string };
+  staffNotes?: StaffNotes | null;
 }
 
 interface Usage {
@@ -388,6 +389,24 @@ function SourcesCard({
               ) : null}
             </span>
           </div>
+          {/* ③ スタッフからの修正点・要望（「修正点など」のタブ） */}
+          {data.staffNotes ? (
+            <div className="rounded-xl border border-washi-300 bg-white px-3 py-3 text-sm" data-staff-notes={data.staffNotes.error && !data.staffNotes.text ? "error" : "ok"}>
+              <div className="flex flex-wrap items-center gap-2">
+                <PencilLine className="h-4 w-4 shrink-0 text-ai-600" />
+                <span className="font-semibold text-sumi-800">③ スタッフからの修正点・要望（シート「{data.staffNotes.tab}」）</span>
+                <Badge tone={data.staffNotes.text ? "green" : "amber"}>{data.staffNotes.text ? `${data.staffNotes.lines} 件をAIに反映中` : "未反映"}</Badge>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-sumi-600">
+                このタブに書いた修正点・要望は、文字・声・電話のAIの指示に入ります（書き足すと約1分で反映。1行に1項目、下が新しいもの）。料金などの事実は、これまでどおり①のシートだけが根拠です。
+              </p>
+              {data.staffNotes.text ? (
+                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-washi-50 px-2.5 py-2 font-sans text-xs leading-relaxed text-sumi-700">{data.staffNotes.text}</pre>
+              ) : null}
+              {data.staffNotes.truncated ? <p className="mt-1 text-[11px] text-amber-700">長いため、古い項目（上の行）の一部は省いています。</p> : null}
+              {data.staffNotes.error ? <p className="mt-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs leading-relaxed text-amber-800">{data.staffNotes.error}</p> : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
       {data ? <p className="mt-3 text-[11px] text-sumi-400">最終読込 {formatJst(data.fetchedAt, true)}</p> : null}

@@ -34,6 +34,11 @@ export interface IntakeState {
   touched?: DraftField[];
   /** AI が会話から入れた項目（受付の記録に残す） */
   aiFilled?: DraftField[];
+  /**
+   * 正しく聞き取れなかった項目（2 回聞き直しても違った・ご住所の町名が熊本県・大牟田市の一覧になかった）。
+   * 確認画面で「修正」から入力していただくよう案内する（一畳屋様のご要望 2026-10-28）
+   */
+  unsure?: IntakeField[];
 }
 
 const DRAFT_FIELDS: DraftField[] = ["name", "address", "phone", "dates", "summary"];
@@ -64,6 +69,7 @@ export function sanitizeDraft(raw: unknown): IntakeDraft {
 export function sanitizeIntake(raw: unknown): IntakeState {
   const s = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const asked = Array.isArray(s.asked) ? s.asked.filter((f): f is IntakeField => INTAKE_FIELDS.includes(f as IntakeField)) : [];
+  const unsure = intakeFields(s.unsure);
   return {
     active: s.active === true,
     draft: sanitizeDraft(s.draft),
@@ -73,7 +79,28 @@ export function sanitizeIntake(raw: unknown): IntakeState {
     summaryEdited: s.summaryEdited === true,
     touched: fieldList(s.touched),
     aiFilled: fieldList(s.aiFilled),
+    ...(unsure.length ? { unsure } : {}),
   };
+}
+
+/**
+ * AI が「ご住所の『修正』ボタンを押して、正確なご住所をご入力いただけますでしょうか」とお願いした項目
+ * （2 回聞き直しても聞き取れなかった項目。AI が確認画面の表示を頼まずに案内したときも、確認画面でその欄に案内を出すため）
+ */
+const UNSURE_SAID: [IntakeField, RegExp][] = [
+  ["name", /お名前の[『「]?修正/],
+  ["address", /ご?住所の[『「]?修正/],
+  ["phone", /(?:お電話番号|電話番号)の[『「]?修正/],
+  ["dates", /ご?希望日(?:時)?の[『「]?修正/],
+];
+export function unsureFromTalk(messages: { role: string; content: string }[]): IntakeField[] {
+  const said = messages.filter((m) => m.role === "assistant").map((m) => m.content).join("\n");
+  return UNSURE_SAID.filter(([, re]) => re.test(said)).map(([f]) => f);
+}
+
+/** 項目の名前の一覧（name・address・phone・dates）だけを取り出す（AI の関数の引数・ブラウザから届いた状態） */
+export function intakeFields(v: unknown): IntakeField[] {
+  return Array.isArray(v) ? [...new Set(v.filter((f): f is IntakeField => INTAKE_FIELDS.includes(f as IntakeField)))] : [];
 }
 
 /** 読み取り直した下書きに、お客様が確認画面で入力・修正した項目を戻す */

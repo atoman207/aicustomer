@@ -450,7 +450,7 @@ export async function composeAnswer(
   const evidence = usesEvidence(plan.context);
   const voice = plan.style === "voice";
   const { model, effort } = answerModelFor(plan);
-  const system = buildChatSystemPrompt(company, plan.context, plan.channel);
+  const system = buildChatSystemPrompt(company, plan.context, plan.channel, plan.snapshot.staffNotes?.text);
   const key = learnedKeyFor(plan, { model, effort, system }, messages);
   const learned = await learnedReply(plan, key);
   if (learned) return learned.answer;

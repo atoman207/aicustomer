@@ -227,6 +227,14 @@ export const env = {
     const n = Number(str("ANSWER_CACHE_DAYS", "30"));
     return Number.isFinite(n) && n > 0 ? Math.min(n, 365) : 30;
   },
+  /**
+   * 一畳屋のスタッフが AI の応対への修正点・要望を書くタブ（回答用と同じスプレッドシート）。
+   * 書いた内容は資料と同じく約 1 分で AI の指示に反映する。「off」で使わない
+   */
+  get staffNotesTab() {
+    const v = str("STAFF_NOTES_TAB", "修正点など");
+    return v.toLowerCase() === "off" ? "" : v;
+  },
   get knowledgeCacheSeconds() {
     const n = Number(str("KNOWLEDGE_CACHE_SECONDS", "60"));
     return Number.isFinite(n) && n >= 5 ? n : 60;

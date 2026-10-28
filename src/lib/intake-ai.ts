@@ -4,8 +4,10 @@
 //   ・intakeTurn：文字の相談の聞き取りの 1 ターン
 //       読み取り → 途中の質問には回答 → 足りない項目だけ伺う → そろったら「内容を確認して送信」ボタン（確認画面）へ
 //       伺う文は決まった文（AI が日程を約束したり、確定したりしないように）
+import { fixAddress } from "./address-ai";
 import { composeAnswer, planAnswer, type AnswerSource } from "./answer";
 import { env } from "./env";
+import { lookupAddress } from "./gazetteer";
 import { logError } from "./errorlog";
 import { japanNow } from "./hours";
 import {
@@ -98,6 +100,10 @@ export interface ReadDraftResult {
   callName?: string;
   /** ご依頼の工事（「網戸4枚の張替え」など。OpenAI で読み取れたときだけ） */
   job?: string;
+  /** 確かめられなかった項目（ご住所の町名が熊本県・大牟田市の一覧になく、直せなかった）。確認画面で「修正」をお願いする */
+  unsure?: IntakeField[];
+  /** ご住所の町名を一覧の町名に直したとき、直す前のご住所 */
+  addressFixedFrom?: string;
 }
 
 /**
@@ -112,7 +118,11 @@ export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opt
   // OpenAI なし：ご相談内容は、聞き取りの答えを除いたお客様の発言から（声の相談の簡易な要約より正確なため）
   const fallback: IntakeDraft = { ...base, summary: keep ?? (rules.summary || draft.summary || undefined) };
   const hasUser = messages.some((m) => m.role === "user" && m.content.trim());
-  if (!env.hasOpenAI || !hasUser) return { draft: fallback, mode: "rules", question: false, cancel: false, past: [] };
+  if (!env.hasOpenAI || !hasUser) {
+    // OpenAI なし：ご住所の町名が熊本県・大牟田市の一覧になければ、確認画面で「修正」をお願いする
+    const unknownTown = fallback.address ? lookupAddress(fallback.address).status === "town_unknown" : false;
+    return { draft: fallback, mode: "rules", question: false, cancel: false, past: [], ...(unknownTown ? { unsure: ["address" as IntakeField] } : {}) };
+  }
   try {
     const ai = await readWithAi(messages, base);
     const phone = ai.phone?.trim() ? formatPhone(ai.phone) : "";
@@ -127,8 +137,21 @@ export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opt
       dates: [...new Set(dates)].slice(0, 3).length ? [...new Set(dates)].slice(0, 3) : base.dates,
       summary: keep ?? (ai.summary?.trim() || fallback.summary),
     };
+    // ご住所の町名の聞き違い（「岱明町」→「大名町」）を、熊本県・大牟田市の町名の一覧で直す
+    const fixed = await fixAddress(out.address, messages);
+    if (fixed) out.address = fixed.address;
     const callName = ai.family_name?.trim().replace(/(?:様|さま)$/, "") || undefined;
-    return { draft: out, mode: "openai", question: ai.latest_is_question, cancel: ai.cancel, past, callName, job: ai.job?.trim() || undefined };
+    return {
+      draft: out,
+      mode: "openai",
+      question: ai.latest_is_question,
+      cancel: ai.cancel,
+      past,
+      callName,
+      job: ai.job?.trim() || undefined,
+      ...(fixed?.unsure ? { unsure: ["address" as IntakeField] } : {}),
+      ...(fixed?.from ? { addressFixedFrom: fixed.from } : {}),
+    };
   } catch (e) {
     await logError("openai", "見積依頼の聞き取り（会話からの読み取り）", e);
     return { draft: fallback, mode: "rules", question: false, cancel: false, past: [] };
@@ -233,10 +256,14 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
   let past = x.past;
   let callName: string | undefined;
   let job: string | undefined;
+  let unsure = state.unsure;
   if (env.hasOpenAI) {
     const r = await readDraft(messages, draft, { keepSummary: state.summaryEdited });
     if (r.mode === "openai") {
-      draft = { ...r.draft, address: address && r.draft.address && r.draft.address.length < address.length ? address : r.draft.address };
+      // AI の読んだご住所が短い（番地が抜けた）ときは規則で読んだご住所。ただし町名を直したご住所はそのまま
+      const keepRules = Boolean(address && r.draft.address && r.draft.address.length < address.length && !r.addressFixedFrom);
+      draft = { ...r.draft, address: keepRules ? address : r.draft.address };
+      unsure = r.unsure;
       // 「お願いします」だけの返事は質問ではない
       question = offered ? false : r.question;
       cancel = !starting && r.cancel;
@@ -248,7 +275,7 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
   }
   // 確認画面でお客様が直した項目は、会話からの読み取りで上書きしない
   draft = keepTouched(draft, state.draft, state.touched);
-  const carry = { summaryEdited: state.summaryEdited, touched: state.touched, aiFilled: state.aiFilled };
+  const carry = { summaryEdited: state.summaryEdited, touched: state.touched, aiFilled: state.aiFilled, ...(unsure?.length ? { unsure } : {}) };
 
   // 2. 見積のご依頼をやめる
   if (cancel) {

@@ -23,5 +23,5 @@ export async function POST(req: Request) {
     content: m.content.slice(0, 2000),
   }));
   const r = await readDraft(messages, sanitizeDraft(body.draft), { keepSummary: body.keepSummary === true });
-  return json({ ok: true, draft: r.draft, missing: missingFields(r.draft), mode: r.mode });
+  return json({ ok: true, draft: r.draft, missing: missingFields(r.draft), mode: r.mode, unsure: r.unsure ?? [] });
 }

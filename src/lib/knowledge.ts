@@ -11,13 +11,13 @@ import manualJson from "../../database/manual.json";
 import rulesJson from "../../database/manual-rules.json";
 import { env } from "./env";
 import { logError } from "./errorlog";
-import { gasRequest, sheetsReadTab } from "./google";
+import { gasRequest, sheetsReadTab, sheetsReadTabByName } from "./google";
 import { kvConfigured, kvGet, kvSet } from "./kv";
 import { DEFAULT_MANUAL_RULES, gridToManual, type ManualRules, type PriceTable } from "./manual";
 import { labelTokens, normPrice } from "./price";
 import { parseSheetLink, type SheetLink } from "./sheet-link";
 import { getSettings } from "./store";
-import type { KnowledgeEntry, KnowledgeSnapshot, KnowledgeSource } from "./types";
+import type { KnowledgeEntry, KnowledgeSnapshot, KnowledgeSource, StaffNotes } from "./types";
 
 interface Cache {
   snapshot: KnowledgeSnapshot;
@@ -400,6 +400,46 @@ export async function getKnowledge(force = false): Promise<KnowledgeSnapshot> {
   return refreshKnowledge(false);
 }
 
+/** AI の指示に入れるスタッフの修正点・要望の長さの上限（超えたら古い＝上の項目から省く） */
+const STAFF_NOTES_MAX = 4000;
+
+/** 「修正点など」のタブの内容 → 1 行 1 項目（行の中のセルはつなげる。先頭の「・」などはそろえる） */
+export function staffNotesFromRows(tab: string, rows: string[][]): StaffNotes {
+  const items = rows
+    .map((r) => r.map((c) => (c ?? "").toString().trim()).filter(Boolean).join(" "))
+    .map((s) => s.replace(/^[・\-*●○◯]\s*/, "").trim())
+    .filter(Boolean);
+  const kept: string[] = [];
+  let size = 0;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const line = `・${items[i]}`.slice(0, STAFF_NOTES_MAX);
+    if (kept.length && size + line.length > STAFF_NOTES_MAX) break;
+    kept.unshift(line);
+    size += line.length + 1;
+  }
+  return { tab, text: kept.join("\n"), lines: items.length, truncated: kept.length < items.length };
+}
+
+/**
+ * 一畳屋のスタッフが「修正点など」のタブに書いた、AI の応対への修正点・要望（回答用と同じスプレッドシート。
+ * 一畳屋様のご要望 2026-10-28：書き足した内容を AI が覚えて、そのとおりに対応する）。読めなかったときは前に読んだ内容を使う
+ */
+async function loadStaffNotes(sheetUrl: string): Promise<StaffNotes | undefined> {
+  const tab = env.staffNotesTab;
+  if (!tab || !env.hasServiceAccount) return undefined;
+  const link = parseSheetLink(sheetUrl);
+  const sheetId = (link?.kind === "csv" && link.sheetId) || env.knowledgeSheetId;
+  if (!sheetId) return undefined;
+  const previous = g.__knowledgeCache?.snapshot.staffNotes;
+  try {
+    const rows = await sheetsReadTabByName(sheetId, tab);
+    if (!rows) return { tab, text: "", lines: 0, truncated: false, error: `スプレッドシートに「${tab}」のタブがありません` };
+    return staffNotesFromRows(tab, rows);
+  } catch (e) {
+    return previous?.text ? { ...previous, error: (e as Error).message } : { tab, text: "", lines: 0, truncated: false, error: (e as Error).message };
+  }
+}
+
 /** スプレッドシート（読めなければ保存版）とホームページから資料を作る */
 async function buildKnowledge(): Promise<KnowledgeSnapshot> {
   const now = Date.now();
@@ -407,7 +447,7 @@ async function buildKnowledge(): Promise<KnowledgeSnapshot> {
   // 1. Googleスプレッドシート（読めなければ同じシートの保存版 database/manual.json）
   const sheetUrl = (await getSettings().catch(() => null))?.knowledgeSheetUrl ?? "";
   const sheetConfigured = remoteKnowledgeConfigured(sheetUrl);
-  const remote = sheetConfigured ? await loadRemote(errors, sheetUrl) : null;
+  const [remote, staffNotes] = await Promise.all([sheetConfigured ? loadRemote(errors, sheetUrl) : null, loadStaffNotes(sheetUrl)]);
   const manual = remote ?? bundledManual();
 
   // 2. ホームページは回答に使わない（回答の根拠は指定のスプレッドシートだけ。一畳屋様のご要望 2026-10-22・10-23）
@@ -453,6 +493,7 @@ async function buildKnowledge(): Promise<KnowledgeSnapshot> {
       via: settingsLink && settingsLink.kind !== "invalid" ? settingsLink.kind : sheetConfigured ? "env" : null,
       url: sheetUrl,
     },
+    ...(staffNotes ? { staffNotes } : {}),
   };
   if (errors.length) void logError("sheet", "スプレッドシートの読み込み", errors.join(" / "));
   return snapshot;
@@ -483,5 +524,6 @@ export function describeKnowledge(s: KnowledgeSnapshot) {
     websiteUsed: s.websiteUsed,
     remoteConfigured: s.sheet?.configured ?? false,
     sheet: s.sheet,
+    staffNotes: s.staffNotes ?? null,
   };
 }

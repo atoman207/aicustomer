@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
     "learn:site": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/learn-website.mjs",
-    "knowledge:build": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve.mjs scripts/build-knowledge.mjs"
+    "knowledge:build": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve.mjs scripts/build-knowledge.mjs",
+    "places:build": "node scripts/build-places.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.577.0",

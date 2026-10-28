@@ -2,6 +2,7 @@
 //   ・相談中の質問は回答エンジン（answer.ts）で答え、学習済みのナレッジで答えられるものは OpenAI を使わない
 //     （OpenAI で答えるときは資料の全文を渡し、根拠の引用＝evidence を先に作らせる）
 //   ・見積受付の聞き取り・復唱は OpenAI（構造化出力）で行い、そのときはナレッジを渡さない（トークン節約）
+import { fixAddress } from "./address-ai";
 import { learnAnswer, planAnswer } from "./answer";
 import { env } from "./env";
 import { logError } from "./errorlog";
@@ -114,7 +115,9 @@ function fillAnsweredField(session: AgentSession, draft: IntakeDraft): IntakeDra
 /** OpenAI による 1 ターン（参考情報は相談中の質問に関係するものだけ。受付の聞き取り中は渡さない） */
 async function openaiTurn(session: AgentSession, company: string, context: string, hits: SearchHit[]): Promise<AgentTurnResult> {
   const now = japanNow();
-  let system = buildAgentSystemPrompt(company, context, session.channel, now.display);
+  // スタッフの修正点・要望（スプレッドシートの「修正点など」）も指示に入れる
+  const notes = (await getKnowledge().catch(() => null))?.staffNotes?.text;
+  let system = buildAgentSystemPrompt(company, context, session.channel, now.display, notes);
   system += `\n\n# 現在の受付状態\nstage=${session.stage}\ndraft=${JSON.stringify(session.draft)}`;
   if (session.channel === "phone") {
     const caller = domesticPhone(session.meta?.callerNumber);
@@ -233,11 +236,12 @@ export async function runTurn(
   if (!viaForm && result.stage === "completed" && !session.estimateId) {
     if (draftComplete(result.draft)) {
       // ご相談内容は会話の全体（最初のご相談から）でまとめ直す（聞き取り中の AI は直近 12 件しか見ていないため）
-      const whole = await summarizeConversation(session.messages);
+      // ご住所の町名の聞き違い（「岱明町」→「大名町」）は、熊本県・大牟田市の町名の一覧で直す
+      const [whole, fixed] = await Promise.all([summarizeConversation(session.messages), fixAddress(result.draft.address, session.messages)]);
       const estimate = await createEstimate({
         channel: session.channel,
         name: result.draft.name ?? "",
-        address: result.draft.address ?? "",
+        address: fixed?.address ?? result.draft.address ?? "",
         phone: result.draft.phone ?? "",
         summary: (whole.mode === "openai" && whole.summary) || result.draft.summary || summaryFromMessages(session),
         preferredDates: result.draft.dates,

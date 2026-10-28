@@ -7,7 +7,7 @@
 //   ・AI の声が途中で切れないように、マイクは関所（voice-gate.ts）を通して送る
 import { useEffect, useRef, useState } from "react";
 import { transcriptForAi, type StoredMessage } from "@/lib/conversation-store";
-import { FIELD_LABEL, keepTouched, mergeDraft, missingFields, normalizeDraft, type IntakeState } from "@/lib/intake";
+import { FIELD_LABEL, intakeFields, keepTouched, mergeDraft, missingFields, normalizeDraft, type IntakeState } from "@/lib/intake";
 import {
   createRecognizer,
   isFatalRecognitionError,
@@ -106,6 +106,10 @@ interface ToolArgs {
   phone?: string;
   preferred_dates?: string[];
   summary?: string;
+  /** 2 回聞き直しても正しく聞き取れなかった項目（確認画面の「修正」から入力していただく） */
+  unsure_fields?: string[];
+  /** check_address：お客様が発音した町名の読み */
+  town_reading?: string | null;
 }
 
 /** 英語の技術的なエラー文はお客様向けの言葉に置き換える */
@@ -341,19 +345,37 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
         return JSON.stringify({ error: (e as Error).message });
       }
     }
+    if (name === "check_address") {
+      // ご住所の町名が熊本県・大牟田市の町名の一覧にあるか（なければ、その市区町村の町名を読みの近い順に）
+      try {
+        const res = await fetch("/api/address/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ address: args.address ?? "", town_reading: args.town_reading ?? null }),
+        });
+        return JSON.stringify(await res.json());
+      } catch (e) {
+        return JSON.stringify({ error: (e as Error).message, note: "確かめられなかったので、聞き取ったご住所のまま復唱してください" });
+      }
+    }
     if (name === "propose_estimate_request") {
       // AI が伺った内容を下書きに入れて確認画面を開く（足りない項目・ご相談内容の要約は会話全体から読み取って補う）
       const heard = normalizeDraft({ name: args.name, address: args.address, phone: args.phone, dates: args.preferred_dates, summary: args.summary });
       const cur = hostRef.current.getIntake();
-      const next: IntakeState = { ...cur, active: false, ready: true, draft: keepTouched(mergeDraft(cur.draft, heard), cur.draft, cur.touched) };
+      // 2 回聞き直しても聞き取れなかった項目：確認画面で「修正」から入力していただく（お客様がもう直した項目は除く）
+      const unsure = intakeFields(args.unsure_fields).filter((f) => !cur.touched?.includes(f));
+      const next: IntakeState = { ...cur, active: false, ready: true, draft: keepTouched(mergeDraft(cur.draft, heard), cur.draft, cur.touched), unsure };
       hostRef.current.setIntake(next);
       hostRef.current.openEstimate();
       const missing = missingFields(next.draft).map((f) => FIELD_LABEL[f]);
+      const fix = unsure.length
+        ? `${unsure.map((f) => FIELD_LABEL[f]).join("・")}は正確に聞き取れなかったため、画面の${unsure.map((f) => `${FIELD_LABEL[f]}の「修正」ボタン`).join("・")}を押して、正確な内容を入力していただくよう、お願いしてください。`
+        : "";
       return JSON.stringify({
         ok: true,
         message: missing.length
-          ? `画面に確認画面を表示しました。${missing.join("・")}はまだ伺えていないので、お客様に伺うか、画面で入力していただくよう短く案内してください。`
-          : "画面に確認画面を表示しました。お客様に、内容を確認して（修正があれば直して）送信ボタンを押すよう短く案内してください。日程は確定ではなく、担当者よりお電話でご相談して決めることも伝えてください。",
+          ? `画面に確認画面を表示しました。${missing.join("・")}はまだ伺えていないので、お客様に伺うか、画面で入力していただくよう短く案内してください。${fix}`
+          : `画面に確認画面を表示しました。${fix}お客様に、内容を確認して（修正があれば直して）送信ボタンを押すよう短く案内してください。日程は確定ではなく、担当者よりお電話でご相談して決めることも伝えてください。`,
       });
     }
     return JSON.stringify({ error: `unknown tool: ${name}` });
