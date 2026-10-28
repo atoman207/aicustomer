@@ -315,7 +315,12 @@ function cellsIn(row: string[] | undefined, c0: number, c1: number): Cell[] {
   return out;
 }
 
-const isMeta = (s: string) => /^\d{4}[./]\d{1,2}[./]\d{1,2}$/.test(s.trim()) || /税込|税抜/.test(s);
+/**
+ * 表の見出しの横の注記（「2026.8.1」「【税込み 】」）。「税込」を含む長い文（「退去に伴う…8250円（へり込み・税込）」
+ * 「畳床（たたみどこ）…税込（ぜいこみ）…」の読み方の一覧など）は注記ではなく資料の文（2026-10-28 まで、
+ * この 3 行が注記とみなされて資料から抜けていた）
+ */
+const isMeta = (s: string) => /^\d{4}[./]\d{1,2}[./]\d{1,2}$/.test(s.trim()) || (s.trim().length <= 12 && /税込|税抜/.test(s));
 const stripBrackets = (s: string) => tidy(s.replace(/[【】]/g, " "));
 
 function parseBand(rows: string[][], start: number, c0: number, c1: number, rules: CompiledRules, excluded: string[]): PriceTable[] {
