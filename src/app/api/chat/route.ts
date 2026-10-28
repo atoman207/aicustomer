@@ -5,6 +5,7 @@ import { sanitizeIntake } from "@/lib/intake";
 import { intakeApplies, intakeTurn } from "@/lib/intake-ai";
 import { env } from "@/lib/env";
 import { getKnowledge } from "@/lib/knowledge";
+import { OFFER_LINE, OFFER_NOW, hasOffer, offerDue } from "@/lib/offer";
 import { canRetryWithChatModel, streamChatCompletion } from "@/lib/openai";
 import { ANSWER_MARKER, buildChatSystemPrompt, splitEvidence, usesEvidence } from "@/lib/prompts";
 import { getConversation, getSettings, upsertConversation } from "@/lib/store";
@@ -102,14 +103,18 @@ export async function POST(req: Request) {
   }
   const planHeaders = (p: AnswerPlan, mode: string) => headers(p.sources, p.snapshot.source, p.kind, mode);
 
+  // 2回目以降の答え・条件がわかった答えで、まだ提案していなければ、無料の訪問見積もりを提案する（offer.ts）
+  const offer = offerDue(messages.slice(0, -1), last.content, intake.active || intake.ready);
+
   // OpenAI を使わずに答えられる質問（料金表・会社情報・学習済み・定型文・該当なし・デモ）
   if (plan.mode !== "openai") {
-    await persist(plan.reply, plan.mode, plan.snapshot.source, plan.kind);
-    return new Response(plan.reply, { headers: planHeaders(plan, plan.mode) });
+    const reply = offer && plan.kind === "price" && !hasOffer(plan.reply) && !/[?？]\s*$/.test(plan.reply) ? `${plan.reply}\n\n${OFFER_LINE}` : plan.reply;
+    await persist(reply, plan.mode, plan.snapshot.source, plan.kind);
+    return new Response(reply, { headers: planHeaders(plan, plan.mode) });
   }
 
   try {
-    const system = buildChatSystemPrompt(settings.companyName, plan.context, channel, plan.snapshot.staffNotes?.text);
+    const system = `${buildChatSystemPrompt(settings.companyName, plan.context, channel, plan.snapshot.staffNotes?.text)}${offer ? `\n\n${OFFER_NOW}` : ""}`;
     const history = recentHistory(messages);
     const { model, effort } = answerModelFor(plan);
     // 同じ質問（AI に渡す内容とお客様の質問がまったく同じ）には、前に AI が作った回答をそのまま返す（AI を使わない）。

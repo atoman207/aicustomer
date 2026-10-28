@@ -87,6 +87,13 @@ async function readWithAi(messages: ChatMessage[], draft: IntakeDraft): Promise<
   });
 }
 
+/** ご住所の町名の部分を、お客様が文字で入力していた（声の相談の途中で入力欄に書いた）：書かれたとおりに使う */
+function typedAddress(messages: ChatMessage[], address: string | undefined): boolean {
+  const head = address ? lookupAddress(address).head : "";
+  if (!head) return false;
+  return messages.some((m) => m.role === "user" && m.via === "text" && m.content.normalize("NFKC").replace(/\s+/g, "").includes(head));
+}
+
 export interface ReadDraftResult {
   draft: IntakeDraft;
   mode: "openai" | "rules";
@@ -109,8 +116,9 @@ export interface ReadDraftResult {
 /**
  * 会話から下書きを作る。draft はこれまでに読み取った内容（文字の相談の聞き取り・声の相談の AI が渡した内容）。
  * keepSummary：お客様が確認画面でご相談内容を書き直した場合は、その文をそのまま使う。
+ * spoken：ご住所を声で伺った（声の聞き違いの町名を直す。文字で入力されたご住所は書かれたとおり）
  */
-export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opts: { keepSummary?: boolean } = {}): Promise<ReadDraftResult> {
+export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opts: { keepSummary?: boolean; spoken?: boolean } = {}): Promise<ReadDraftResult> {
   const today = todayJst();
   const rules = extractFromConversation(messages, today);
   const base = mergeDraft(rules.draft, draft);
@@ -119,8 +127,8 @@ export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opt
   const fallback: IntakeDraft = { ...base, summary: keep ?? (rules.summary || draft.summary || undefined) };
   const hasUser = messages.some((m) => m.role === "user" && m.content.trim());
   if (!env.hasOpenAI || !hasUser) {
-    // OpenAI なし：ご住所の町名が熊本県・大牟田市の一覧になければ、確認画面で「修正」をお願いする
-    const unknownTown = fallback.address ? lookupAddress(fallback.address).status === "town_unknown" : false;
+    // OpenAI なし：声で伺ったご住所の町名が熊本県・大牟田市の一覧になければ、確認画面で「修正」をお願いする
+    const unknownTown = opts.spoken && fallback.address ? lookupAddress(fallback.address).status === "town_unknown" : false;
     return { draft: fallback, mode: "rules", question: false, cancel: false, past: [], ...(unknownTown ? { unsure: ["address" as IntakeField] } : {}) };
   }
   try {
@@ -137,8 +145,8 @@ export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opt
       dates: [...new Set(dates)].slice(0, 3).length ? [...new Set(dates)].slice(0, 3) : base.dates,
       summary: keep ?? (ai.summary?.trim() || fallback.summary),
     };
-    // ご住所の町名の聞き違い（「岱明町」→「大名町」）を、熊本県・大牟田市の町名の一覧で直す
-    const fixed = await fixAddress(out.address, messages);
+    // 声で伺ったご住所の町名の聞き違い（「岱明町」→「大名町」）を、熊本県・大牟田市の町名の一覧で直す
+    const fixed = await fixAddress(out.address, messages, { spoken: opts.spoken === true && !typedAddress(messages, out.address) });
     if (fixed) out.address = fixed.address;
     const callName = ai.family_name?.trim().replace(/(?:様|さま)$/, "") || undefined;
     return {

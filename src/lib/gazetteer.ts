@@ -54,7 +54,7 @@ function distance(a: string, b: string): number {
 }
 
 /** 読みの近さ（0〜1）。聞いた読みが町名の先頭だけ（「たいめい」）でも近いとみなす */
-function kanaSimilarity(heard: string, kana: string): number {
+export function kanaSimilarity(heard: string, kana: string): number {
   const a = kanaKey(heard);
   const b = kanaKey(kana);
   if (!a || !b) return 0;
@@ -83,7 +83,10 @@ const CITY_KEYS: CityKey[] = (() => {
   for (const c of PLACE_CITIES) {
     add(c.name, c);
     if (c.county) add(`${c.city}${c.ward}`, c);
-    if (c.ward) add(c.city, c); // 「熊本市坪井」：区を言わなかった
+    if (c.ward) {
+      add(c.city, c); // 「熊本市坪井」：区を言わなかった
+      add(c.ward, c); // 「中央区坪井」：市を言わなかった
+    }
   }
   return [...map.entries()].map(([key, cities]) => ({ key, cities })).sort((a, b) => b.key.length - a.key.length);
 })();
@@ -114,7 +117,14 @@ export interface AddressLookup {
   pref: string;
   /** 一覧になかったとき：読み・漢字の近い順の町名（その市区町村のもの。市区町村もわからなければ全体から） */
   candidates: AddressCandidate[];
+  /** 市区町村を直したとき（「玉名市中央区坪井」→ 熊本市中央区）：直した住所と、直す前の市区町村 */
+  corrected?: { address: string; fromCity: string };
+  /** 町名が一覧になかったとき：その町名がある、ほかの市区町村（市区町村の聞き違いの手がかり） */
+  elsewhere?: AddressCandidate[];
 }
+
+/** 熊本市の区（「玉名市中央区」のように、ほかの市の後ろに区が付いたら、熊本市の区の聞き違い） */
+const KUMAMOTO_WARD = /^(中央|東|西|南|北)区/;
 
 /** 番地より前（町名の部分）。「3415の11」「3丁目」「1-2-3」「番地」から後ろは番地 */
 function splitHead(rest: string): [string, string] {
@@ -161,6 +171,17 @@ export function lookupAddress(address: string, reading = "", limit = 250): Addre
   const empty: AddressLookup = { status: "empty", cities: [], cityText: "", head: "", tail: "", pref, candidates: [] };
   if (!s) return empty;
   const ck = CITY_KEYS.find((k) => s.startsWith(k.key));
+  // 「玉名市中央区坪井」：熊本市のほかに区はないので、区の前の市は聞き違い（熊本市のその区の住所に直す）
+  const ward = ck && !ck.cities.some((c) => c.ward) ? s.slice(ck.key.length).match(KUMAMOTO_WARD) : null;
+  if (ck && ward) {
+    const address = `${pref}熊本市${s.slice(ck.key.length)}`;
+    return { ...lookupAddress(address, reading, limit), corrected: { address, fromCity: ck.key } };
+  }
+  // 「中央区坪井」：熊本市を足す（区だけの書き方は一覧の中で熊本市だけ）
+  if (ck && ck.key.length <= 3 && KUMAMOTO_WARD.test(ck.key)) {
+    const address = `${pref}熊本市${s}`;
+    return { ...lookupAddress(address, reading, limit), corrected: { address, fromCity: "" } };
+  }
   const rank = (list: AddressCandidate[], head: string) =>
     list
       .map((t) => ({ t, score: Math.max(reading ? kanaSimilarity(reading, t.kana) : 0, charSimilarity(head, norm(t.town)) * 0.9) }))
@@ -189,7 +210,18 @@ export function lookupAddress(address: string, reading = "", limit = 250): Addre
   const [head, tail] = splitHead(rest);
   // 町名なしで番地だけ（「合志市3415」）は確かめようがないのでそのまま
   if (!head) return { ...empty, status: "ok", cities: ck.cities, cityText: ck.key, tail };
-  return { ...empty, status: "town_unknown", cities: ck.cities, cityText: ck.key, head, tail, candidates: rank(list, head) };
+  const others = townsOf(PLACE_CITIES.filter((c) => !ck.cities.includes(c)));
+  const elsewhere = others.filter((t) => norm(t.town) === head).slice(0, 5);
+  return {
+    ...empty,
+    status: "town_unknown",
+    cities: ck.cities,
+    cityText: ck.key,
+    head,
+    tail,
+    candidates: rank(list, head),
+    ...(elsewhere.length ? { elsewhere } : {}),
+  };
 }
 
 /** 町名を一覧の町名に置き換えた住所（都道府県・市区町村・番地は入力のまま） */
@@ -214,23 +246,32 @@ export function formatCities(): string {
 export function checkAddress(address: string, reading = ""): Record<string, string> {
   const l = lookupAddress(address, reading);
   const city = l.cities.map((c) => `${c.name}（${c.kana}）`).join("・");
+  // 「玉名市中央区坪井」→「熊本市中央区坪井」のように、市区町村を直した
+  const fixedCity = l.corrected
+    ? `市区町村を「${l.cities.map((c) => c.name).join("・")}」に直しました（${l.corrected.fromCity ? `「${l.corrected.fromCity}」に区はなく、` : ""}区があるのは熊本市だけのため）。`
+    : "";
+  const shown = l.corrected?.address ?? address;
   if (l.status === "ok") {
     return {
       status: "ok",
-      address,
+      address: shown,
       ...(city ? { city } : {}),
       ...(l.town ? { town: `${l.town.town}（${l.town.kana}）` } : {}),
-      note: "町名は熊本県・大牟田市の町名の一覧にあります。この住所（町名の漢字と読み方）のとおりに復唱してください。",
+      note: `${fixedCity}町名は熊本県・大牟田市の町名の一覧にあります。この住所（町名の漢字と読み方）のとおりに復唱してください。`,
     };
   }
   if (l.status === "town_unknown") {
+    const other = l.elsewhere?.length
+      ? `なお「${l.head}」という町名は${l.elsewhere.map((t) => t.city).join("・")}にあります。市区町村の聞き違いかもしれないので、「${l.elsewhere[0].city}${l.elsewhere[0].town}でしょうか」とお客様に確かめてください。`
+      : "";
     return {
       status: "town_unknown",
-      address,
+      address: shown,
       city,
       heard_town: l.head,
       towns: formatTowns(l.candidates, l.cities.length > 1),
-      note: `「${l.head}」という町名は${l.cities.map((c) => c.name).join("・")}にありません（聞き違いの可能性が高い）。お客様の発音に合う町名を towns から1つ選び、町名をその漢字に置き換えた住所で復唱してください（番地は変えない）。合う町名がなければ、町名をもう一度伺ってください。`,
+      ...(l.elsewhere?.length ? { elsewhere: formatTowns(l.elsewhere, true) } : {}),
+      note: `${fixedCity}「${l.head}」という町名は${l.cities.map((c) => c.name).join("・")}の一覧にありません（聞き違いの可能性があります）。お客様の発音に合う町名を towns から1つ選び、町名をその漢字に置き換えた住所で復唱してください（番地は変えない）。${other}合う町名がなければ、町名をもう一度伺ってください。`,
     };
   }
   return {

@@ -4,6 +4,7 @@ import { error, json, rateLimited, readJson } from "@/lib/http";
 import { speakableYen } from "@/lib/jnum";
 import { getSettings } from "@/lib/store";
 import { truncate } from "@/lib/utils";
+import { speakableWords } from "@/lib/voice-words";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,9 +34,11 @@ export async function POST(req: Request) {
       await logError("openai", "声の相談（資料からの回答）", e);
     }
   }
-  // 声の AI に渡す金額は万の位で区切る（「13,200円」→「1万3200円」。3桁区切りのままだと「13万2千円」と読み違えることがある。jnum.ts）
+  // 声の AI に渡す金額は万の位で区切る（「13,200円」→「1万3200円」。3桁区切りのままだと「13万2千円」と読み違えることがある。jnum.ts）。
+  // 読み間違えやすい言葉（見積り・畳床・承る・スプレッドシートの読み方の一覧）はひらがなにする（voice-words.ts）
   const voice = body?.style !== "text";
-  const speak = (s: string) => (voice ? speakableYen(s) : s);
+  const readings = plan.snapshot.readings ?? [];
+  const speak = (s: string) => (voice ? speakableWords(speakableYen(s), readings) : s);
   return json({
     ok: true,
     mode: plan.mode,

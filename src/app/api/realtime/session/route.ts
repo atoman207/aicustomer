@@ -62,12 +62,13 @@ export async function POST(req: Request) {
   const forceRealtime = new URL(req.url).searchParams.get("engine") === "realtime";
   if (env.voiceEngine === "live" && !forceRealtime) {
     const snapshot = await getKnowledge().catch(() => null);
-    return json({ ok: true, mode: "openai", engine: "live", model: env.liveModel, voice: env.liveVoice, knowledgeSource: snapshot?.source });
+    // readings：スプレッドシートの読み方の一覧（声の AI がひらがなで書いた字幕を、画面では漢字に戻す）
+    return json({ ok: true, mode: "openai", engine: "live", model: env.liveModel, voice: env.liveVoice, knowledgeSource: snapshot?.source, readings: snapshot?.readings ?? [] });
   }
   try {
     const [settings, snapshot] = await Promise.all([getSettings(), getKnowledge()]);
     // ナレッジ全文は渡さず、事実は search_knowledge で確認させる（毎回の応答で読み込まれる指示を短く保つ）
-    const instructions = buildRealtimeInstructions(settings.companyName, japanNow().display, snapshot.staffNotes?.text);
+    const instructions = buildRealtimeInstructions(settings.companyName, japanNow().display, snapshot.staffNotes?.text, snapshot.readings ?? []);
     const secret = await createRealtimeSecret({ instructions, tools: REALTIME_TOOLS });
     return json({
       ok: true,
@@ -79,6 +80,7 @@ export async function POST(req: Request) {
       api: secret.api,
       voice: env.realtimeVoice,
       knowledgeSource: snapshot.source,
+      readings: snapshot.readings ?? [],
     });
   } catch (e) {
     await logError("realtime", "声の相談の接続（一時キーの発行）", e);

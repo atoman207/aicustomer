@@ -34,6 +34,8 @@ interface KnowledgeResp {
   remoteConfigured: boolean;
   sheet?: { configured: boolean; connected: boolean; via: "gas" | "csv" | "env" | null; url: string };
   staffNotes?: StaffNotes | null;
+  /** 声の AI の読み方（シートの読み方の一覧） */
+  readings?: [string, string][];
 }
 
 interface Usage {
@@ -407,6 +409,17 @@ function SourcesCard({
               {data.staffNotes.error ? <p className="mt-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs leading-relaxed text-amber-800">{data.staffNotes.error}</p> : null}
             </div>
           ) : null}
+          {/* 声のAIの読み方（シートの「畳床（たたみどこ）　七島（しっとう）…」の行） */}
+          <div className="rounded-xl border border-washi-300 bg-white px-3 py-3 text-sm" data-readings={data.readings?.length ?? 0}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-sumi-800">声のAIの読み方（シートの読み方の一覧）</span>
+              <Badge tone={data.readings?.length ? "green" : "amber"}>{data.readings?.length ? `${data.readings.length} 語を反映中` : "なし"}</Badge>
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-sumi-600">
+              シートに「畳床（たたみどこ）　七島（しっとう）」のように「言葉（よみ）」を1行に4つ以上並べると、声のAIはその言葉をこの読みで話します（約1分で反映。1文字の言葉は使いません）。「見積り」「承る」「畳床」「戸車」「表替え」などは、最初から正しい読みで話します。
+            </p>
+            {data.readings?.length ? <p className="mt-2 rounded-lg bg-washi-50 px-2.5 py-2 text-xs leading-relaxed text-sumi-700">{data.readings.map(([w, k]) => `${w}（${k}）`).join("　")}</p> : null}
+          </div>
         </div>
       ) : null}
       {data ? <p className="mt-3 text-[11px] text-sumi-400">最終読込 {formatJst(data.fetchedAt, true)}</p> : null}

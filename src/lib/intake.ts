@@ -98,6 +98,33 @@ export function unsureFromTalk(messages: { role: string; content: string }[]): I
   return UNSURE_SAID.filter(([, re]) => re.test(said)).map(([f]) => f);
 }
 
+// ---------------- 声の相談：確認画面を開くきっかけ ----------------
+// 一畳屋様のご指摘 2026-10-28：
+//   ・EST-20261028-RFED「見積日程を聞いている途中で確認画面に切り替わる」：AI の「ご住所は後ほど画面でご確認いただくとして」
+//     （これから先のこと）を、確認画面を表示したと受け取って開いていた → 表示した・いま表示する、と言ったときだけにする
+//   ・EST-20261028-QHOX「確認画面を出すといってフリーズ。再度出してと言ったら最初から聞き直された」
+//     → お客様が「画面を出して」とおっしゃったら、アプリがすぐに確認画面を開く
+
+const FORM_WORD = /確認画面|入力画面|画面/;
+/** 表示した・いま表示する（「確認画面を表示しました」「画面に表示しますね」「画面の内容をご確認ください」） */
+const FORM_SHOWN =
+  /(?:表示(?:し|いたし)(?:まし)?た|表示されて(?:い|お)ります|表示しています|表示(?:し|いたし)ますね|表示(?:し|いたし)ます(?:の|[。、]|$)|お出し(?:しまし|いたしまし)?た|出しました|お出し(?:し|いたし)ますね|出しますね|ご覧ください|ご確認ください|ご確認(?:のうえ|の上|いただき|いただけ))/;
+/** これから先のこと（「このあと表示される」「後ほど画面で」「最後に確認画面で」「そろったら」） */
+const FORM_LATER = /このあと|この後|後ほど|のちほど|あとで|後で|最後に|次に|表示される|出てくる|てから|そろったら|揃ったら|伺ったら|終わったら|として|際に|ときに|時に/;
+
+/** AI の発言が、確認画面を表示した（いま表示する）という案内か。文ごとに見て、これから先のことや問いかけの文は除く */
+export function saysFormShown(text: string): boolean {
+  return text
+    .normalize("NFKC")
+    .split(/(?<=[。？！?!])/)
+    .some((s) => FORM_WORD.test(s) && FORM_SHOWN.test(s) && !FORM_LATER.test(s) && !/[?？]\s*$/.test(s.trim()));
+}
+
+/** お客様が確認画面の表示を求めた（「画面を出して」「確認画面を見せてください」「入力画面を表示して」） */
+export function asksForForm(text: string): boolean {
+  return /(?:確認画面|入力画面|画面|フォーム).{0,6}(?:出して|だして|見せて|表示して|開いて|出ない|出てこない|出ません)/.test(text.normalize("NFKC"));
+}
+
 /** 項目の名前の一覧（name・address・phone・dates）だけを取り出す（AI の関数の引数・ブラウザから届いた状態） */
 export function intakeFields(v: unknown): IntakeField[] {
   return Array.isArray(v) ? [...new Set(v.filter((f): f is IntakeField => INTAKE_FIELDS.includes(f as IntakeField)))] : [];

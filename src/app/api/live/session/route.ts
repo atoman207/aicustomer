@@ -65,14 +65,15 @@ export async function POST(req: Request) {
     .filter(Boolean)
     .join("\n");
   try {
-    // スタッフの修正点・要望（スプレッドシートの「修正点など」）も指示に入れる（読めなければ入れずに続ける）
+    // スタッフの修正点・要望（スプレッドシートの「修正点など」）と読み方の一覧も指示に入れる（読めなければ入れずに続ける）
     const [settings, snapshot] = await Promise.all([getSettings(), getKnowledge().catch(() => null)]);
     const today = japanNow().display;
     const notes = snapshot?.staffNotes?.text;
+    const readings = snapshot?.readings ?? [];
     const result = await createLiveSession({
       sdp,
-      instructions: buildLiveInstructions(settings.companyName, today, notes),
-      backendInstructions: buildLiveBackendInstructions(settings.companyName, today, notes),
+      instructions: buildLiveInstructions(settings.companyName, today, notes, readings),
+      backendInstructions: buildLiveBackendInstructions(settings.companyName, today, notes, readings),
       tools: LIVE_BACKEND_TOOLS,
       // 会話の続き → 最後に「どう話し始めるか」の指示（developer）
       input: [...prior, { type: "message", role: "developer", content: [{ type: "input_text", text: developer }] }],

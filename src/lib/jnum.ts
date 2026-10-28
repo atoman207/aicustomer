@@ -113,9 +113,40 @@ const PLAIN_AMOUNT = /(?<![\d,.万])(\d{4,7})(?=\s*円)/g;
 /** ひらがなの金額（「いちまんさんぜんにひゃく円」。声の AI は「いちまん、さんぜん、にひゃくえん」と区切って書くこともある） */
 const READ_AMOUNT = /([いちにさんよごろくなはっしきゅうじひゃくびぴせぜまん]+(?:[、,\s]+[いちにさんよごろくなはっしきゅうじひゃくびぴせぜまん]+)*)\s*(?:円|えん)/g;
 
-/** 画面に出す文：「1万3200円」「いちまんさんぜんにひゃく円」を「13,200円」に戻す（文字の相談と同じ書き方） */
+/** 漢数字の金額（「四十一万、千四百円」。声の AI がひらがなの言葉の多い指示で話すと、字幕を漢数字で書くことがある） */
+const KANJI_AMOUNT = /([〇一二三四五六七八九十百千万]+(?:[、,]\s*[〇一二三四五六七八九十百千万]+)*)\s*円/g;
+const KANJI_DIGIT: Record<string, number> = { 〇: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+const KANJI_UNIT: Record<string, number> = { 十: 10, 百: 100, 千: 1000 };
+
+/** 漢数字（四十一万千四百）を数にする。読めなければ null */
+export function parseKanjiNumber(s: string): number | null {
+  let total = 0;
+  let section = 0;
+  let digit = -1;
+  for (const c of s) {
+    if (c in KANJI_DIGIT) {
+      if (digit >= 0) return null;
+      digit = KANJI_DIGIT[c];
+    } else if (c in KANJI_UNIT) {
+      section += (digit >= 0 ? digit : 1) * KANJI_UNIT[c];
+      digit = -1;
+    } else if (c === "万") {
+      total += (section + Math.max(digit, 0) || 1) * 10000;
+      section = 0;
+      digit = -1;
+    } else return null;
+  }
+  const n = total + section + Math.max(digit, 0);
+  return n > 0 ? n : null;
+}
+
+/** 画面に出す文：「1万3200円」「いちまんさんぜんにひゃく円」「四十一万、千四百円」を「13,200円」に戻す（文字の相談と同じ書き方） */
 export function yenDigits(text: string): string {
   return text
+    .replace(KANJI_AMOUNT, (m, k: string) => {
+      const n = parseKanjiNumber(k.replace(/[、,\s]+/g, ""));
+      return n ? `${n.toLocaleString("ja-JP")}円` : m;
+    })
     .replace(MAN_AMOUNT, (m, man: string, rest?: string) => {
       const r = rest ? Number(rest.replace(/,/g, "")) : 0;
       if (r >= 10000) return m;

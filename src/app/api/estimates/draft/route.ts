@@ -21,7 +21,10 @@ export async function POST(req: Request) {
   const messages = headTail(body.messages.filter((m) => (m?.role === "user" || m?.role === "assistant") && typeof m.content === "string" && m.content.trim())).map((m) => ({
     role: m.role,
     content: m.content.slice(0, 2000),
+    ...(m.via === "voice" || m.via === "text" ? { via: m.via } : {}),
   }));
-  const r = await readDraft(messages, sanitizeDraft(body.draft), { keepSummary: body.keepSummary === true });
+  // 声で伺ったご住所（お客様の発言に声のものがある）だけ、町名の聞き違いを直す。文字で入力されたご住所は書かれたとおり
+  const spoken = messages.some((m) => m.role === "user" && m.via === "voice");
+  const r = await readDraft(messages, sanitizeDraft(body.draft), { keepSummary: body.keepSummary === true, spoken });
   return json({ ok: true, draft: r.draft, missing: missingFields(r.draft), mode: r.mode, unsure: r.unsure ?? [] });
 }

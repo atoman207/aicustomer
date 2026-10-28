@@ -18,6 +18,7 @@ import { labelTokens, normPrice } from "./price";
 import { parseSheetLink, type SheetLink } from "./sheet-link";
 import { getSettings } from "./store";
 import type { KnowledgeEntry, KnowledgeSnapshot, KnowledgeSource, StaffNotes } from "./types";
+import { parseReadings } from "./voice-words";
 
 interface Cache {
   snapshot: KnowledgeSnapshot;
@@ -494,6 +495,8 @@ async function buildKnowledge(): Promise<KnowledgeSnapshot> {
       url: sheetUrl,
     },
     ...(staffNotes ? { staffNotes } : {}),
+    // 一畳屋様がスプレッドシート（資料・「修正点など」）に書いた読み方の一覧（声の AI の読み間違いを防ぐ）
+    readings: parseReadings([...manual.entries.map((e) => e.content), ...manual.excluded, staffNotes?.text ?? ""].join("\n")),
   };
   if (errors.length) void logError("sheet", "スプレッドシートの読み込み", errors.join(" / "));
   return snapshot;
@@ -525,5 +528,6 @@ export function describeKnowledge(s: KnowledgeSnapshot) {
     remoteConfigured: s.sheet?.configured ?? false,
     sheet: s.sheet,
     staffNotes: s.staffNotes ?? null,
+    readings: s.readings ?? [],
   };
 }

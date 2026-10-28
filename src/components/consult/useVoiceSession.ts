@@ -7,7 +7,8 @@
 //   ・AI の声が途中で切れないように、マイクは関所（voice-gate.ts）を通して送る
 import { useEffect, useRef, useState } from "react";
 import { transcriptForAi, type StoredMessage } from "@/lib/conversation-store";
-import { FIELD_LABEL, intakeFields, keepTouched, mergeDraft, missingFields, normalizeDraft, type IntakeState } from "@/lib/intake";
+import { FIELD_LABEL, asksForForm, intakeFields, keepTouched, mergeDraft, missingFields, normalizeDraft, saysFormShown, type IntakeState } from "@/lib/intake";
+import { OFFER_AFTER_ANSWER, offerDue } from "@/lib/offer";
 import {
   createRecognizer,
   isFatalRecognitionError,
@@ -53,6 +54,8 @@ export interface VoiceHost {
   onEstimate: (est: EstimateRequest) => void;
   /** 声の会話が一区切りしたとき（会話ログに保存する） */
   onSettled: () => void;
+  /** スプレッドシートの読み方の一覧（声の AI がひらがなで書いた字幕を、画面では漢字に戻す） */
+  onReadings?: (readings: [string, string][]) => void;
 }
 
 interface SessionInfo {
@@ -63,6 +66,8 @@ interface SessionInfo {
   clientSecret?: string;
   model?: string;
   api?: "ga" | "beta";
+  /** スプレッドシートの読み方の一覧（字幕を漢字に戻す） */
+  readings?: [string, string][];
 }
 
 /** GPT-Live のデータチャンネルのイベント（使うものだけ） */
@@ -75,12 +80,13 @@ interface LiveEvent {
 
 /** お客様が話している間の、AI の相づちだけの発言（会話の吹き出しには残さない） */
 const BACKCHANNEL = /^(はい|ええ|うん|なるほど|そうですね|そうなんですね)[、。！!…\s]*$/;
-/** AI が「確認画面を表示した」と話した（表示の依頼がなかったときは、アプリが確認画面を開く） */
-const SAID_FORM_SHOWN = /画面.{0,12}(確認|ご覧)|確認画面/;
 /** この時間、どちらの発言の文字も届かなければ、吹き出しを区切る */
 const LIVE_SETTLE_MS = 1500;
 /** 文の終わり（ここで切れた AI の吹き出しには、続きを足さない） */
 const SENTENCE_END = /[。？！?!」]\s*$/;
+/** アプリが確認画面を開いたときの、声の AI への知らせ（最初から聞き直さないように。一畳屋様のご指摘 2026-10-28 EST-20261028-QHOX） */
+const FORM_OPENED_NOTICE =
+  "お客様の画面に確認画面を表示しました（会話から読み取った内容が入っています。足りない項目は、お客様が画面で入力できます）。聞き直さずに、画面の内容を確認して、よろしければ送信ボタンを押していただくよう短く伝えてください。";
 
 /** GPT-Live の文字起こしから、声でない音の印（[hum] など）を除く（届き途中の「[hu」も隠す） */
 function liveCaption(text: string): string {
@@ -201,6 +207,8 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
   const liveStartedRef = useRef<(() => void) | null>(null);
   const liveClosedRef = useRef<(() => void) | null>(null);
   const lastProposeRef = useRef(-1e9);
+  // GPT-Live：お客様の発言の文字（「画面を出して」で確認画面を開くため）
+  const userTextRef = useRef<Map<string, string>>(new Map());
   const lastUserRef = useRef<{ id: string; endedAt: number } | null>(null);
   const lastAiRef = useRef<{ id: string; text: string; endedAt: number } | null>(null);
 
@@ -304,6 +312,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     // 話している途中で終えた発言（文字になっていない「…」）は消す
     userItemsRef.current.forEach((id) => hostRef.current.remove(id));
     userItemsRef.current.clear();
+    userTextRef.current.clear();
     setAiSpeaking(false);
     setListening(false);
     setUserSpeaking(false);
@@ -332,13 +341,17 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
         const j = (await res.json()) as { answer?: string; hits?: { title: string; content: string; from?: string }[]; sources?: { title: string }[] };
         const hits = j.hits ?? [];
         hostRef.current.onSources((j.sources?.length ? j.sources : hits).map((h) => h.title));
+        // 2回目以降の答え・条件がわかった答えで、まだ提案していなければ、答えのあとに無料の訪問見積もりを提案してもらう（offer.ts）
+        const intake = hostRef.current.getIntake();
+        const offer = offerDue(hostRef.current.getConversation(), args.query ?? "", intake.active || intake.ready) ? { after_answer: OFFER_AFTER_ANSWER } : {};
         // answer（資料の全体を確かめて作った回答・料金表の計算など）があればそれを話す。なければ関係する資料だけを渡す
         return JSON.stringify(
           j.answer
-            ? { answer: j.answer }
+            ? { answer: j.answer, ...offer }
             : {
                 results: hits.map((h) => ({ from: h.from, title: h.title, content: h.content })),
                 note: hits.length === 0 ? "該当する資料がありません。推測せず、担当者からの折り返しを案内してください。" : undefined,
+                ...(hits.length ? offer : {}),
               },
         );
       } catch (e) {
@@ -463,6 +476,8 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
         if (text) {
           userItemsRef.current.delete(ev.item_id);
           h.upsert(ev.item_id, "user", text, true);
+          // 「画面を出して」：AI の返事を待たずに、アプリが確認画面を開く
+          if (asksForForm(text)) openFormByApp();
         } else dropUserItem(ev.item_id);
         break;
       }
@@ -629,6 +644,20 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     userItemsRef.current.delete(u.id);
     lastUserRef.current = { id: u.id, endedAt: performance.now() };
     hostRef.current.upsert(u.id, "user", "", true, true);
+    // 「画面を出して」：AI の返事を待たずに、アプリが確認画面を開く
+    if (asksForForm(userTextRef.current.get(u.id) ?? "")) openFormByApp();
+  }
+
+  /**
+   * アプリが確認画面を開く（AI が「確認画面を表示しました」と話したのに表示の依頼がなかった・お客様が「画面を出して」とおっしゃった）。
+   * 会話から読み取った内容で開き、声の AI には表示したことを伝える（最初から聞き直さないように）
+   */
+  function openFormByApp() {
+    if (performance.now() - lastProposeRef.current < 8000) return;
+    lastProposeRef.current = performance.now();
+    hostRef.current.openEstimate();
+    if (engineRef.current === "live") sendEvent({ type: "session.instructions.append", event_id: uid(), delegation_id: null, content: FORM_OPENED_NOTICE });
+    else sendEvent({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: FORM_OPENED_NOTICE }] } });
   }
 
   /** AI の発言の吹き出しを確定する（お客様が話している間の相づちだけなら残さない） */
@@ -644,10 +673,9 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     }
     lastAiRef.current = { id: a.id, text: a.text, endedAt: performance.now() };
     hostRef.current.upsert(a.id, "assistant", "", true, true);
-    // 「画面の内容をご確認ください」と話したのに、確認画面の表示の依頼がなかった：会話から読み取って確認画面を開く
-    if (SAID_FORM_SHOWN.test(a.text) && !hostRef.current.getIntake().ready && performance.now() - lastProposeRef.current > 8000) {
-      hostRef.current.openEstimate();
-    }
+    // 「確認画面を表示しました」「画面に表示しますね」と話したのに、確認画面の表示の依頼がなかった：会話から読み取って確認画面を開く
+    // （「後ほど画面でご確認いただく」のような、これから先の話では開かない）
+    if (saysFormShown(liveCaption(a.text)) && !hostRef.current.getIntake().ready) openFormByApp();
     hostRef.current.onSettled();
   }
 
@@ -679,6 +707,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
         t.user.last = now;
         h.upsert(t.user.id, "user", delta, false, true);
       }
+      userTextRef.current.set(t.user.id, `${userTextRef.current.get(t.user.id) ?? ""}${delta}`);
     } else {
       if (t.user && now - t.user.last > 600) finishLiveUser();
       // AI が話し始めたら、お客様の次の発言は新しい吹き出しにする
@@ -711,6 +740,13 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
 
   /** 委任先のモデルが関数を呼んだ：実行して結果を返し、続きを依頼する */
   async function onLiveBackendEvent(inner: LiveEvent["event"]) {
+    // 委任先が確認画面の表示を始めた：引数（ご相談内容の要約など）を書き終えるのを待たずに、確認画面を開く
+    // （一畳屋様のご指摘 2026-10-28「確認画面を出すといってフリーズ」。会話で伺った内容はすぐに入り、要約などはあとから入る）
+    if (inner?.type === "response.output_item.added" && inner.item?.type === "function_call" && inner.item.name === "propose_estimate_request") {
+      lastProposeRef.current = performance.now();
+      hostRef.current.openEstimate();
+      return;
+    }
     if (inner?.type !== "response.output_item.done" || inner.item?.type !== "function_call") return;
     const it = inner.item;
     if (!it.call_id || !it.name || handledCalls.current.has(it.call_id)) return;
@@ -983,6 +1019,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       const res = await fetch("/api/realtime/session", { method: "POST" });
       let info = (await res.json()) as SessionInfo;
       setReason(info.reason ?? "");
+      hostRef.current.onReadings?.(info.readings ?? []);
       // GPT-Live（既定）。つながらなければ Realtime API、それも使えなければ簡易音声モード
       if (info.mode === "openai" && info.engine === "live") {
         modeRef.current = "openai";

@@ -58,6 +58,8 @@ export interface KnowledgeSnapshot {
   sheet?: { configured: boolean; connected: boolean; via: "gas" | "csv" | "env" | null; url: string };
   /** 一畳屋のスタッフが「修正点など」のタブに書いた、AI の応対への修正点・要望（AI の指示に入れる） */
   staffNotes?: StaffNotes;
+  /** スプレッドシートの読み方の一覧（「畳床（たたみどこ）　七島（しっとう）…」）。声の AI に渡す文をひらがなにする（voice-words.ts） */
+  readings?: [string, string][];
 }
 
 export interface StaffNotes {
@@ -127,6 +129,8 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   at?: string;
+  /** お客様の発言が声か文字か（確認画面の読み取り：声で伺ったご住所だけ、町名の聞き違いを直す） */
+  via?: "voice" | "text";
 }
 
 export interface ConversationLog {

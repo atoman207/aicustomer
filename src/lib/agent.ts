@@ -236,8 +236,8 @@ export async function runTurn(
   if (!viaForm && result.stage === "completed" && !session.estimateId) {
     if (draftComplete(result.draft)) {
       // ご相談内容は会話の全体（最初のご相談から）でまとめ直す（聞き取り中の AI は直近 12 件しか見ていないため）
-      // ご住所の町名の聞き違い（「岱明町」→「大名町」）は、熊本県・大牟田市の町名の一覧で直す
-      const [whole, fixed] = await Promise.all([summarizeConversation(session.messages), fixAddress(result.draft.address, session.messages)]);
+      // 電話で伺ったご住所の町名の聞き違い（「岱明町」→「大名町」）は、熊本県・大牟田市の町名の一覧で直す（LINE は文字のまま）
+      const [whole, fixed] = await Promise.all([summarizeConversation(session.messages), fixAddress(result.draft.address, session.messages, { spoken: session.channel === "phone" })]);
       const estimate = await createEstimate({
         channel: session.channel,
         name: result.draft.name ?? "",

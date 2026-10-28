@@ -41,6 +41,7 @@ import { emptyDraft, keepTouched, missingFields, sanitizeIntake, unsureFromTalk,
 import { yenDigits } from "@/lib/jnum";
 import type { ChatMessage, EstimateRequest } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { captionWords } from "@/lib/voice-words";
 
 interface UiMessage {
   id: string;
@@ -161,6 +162,8 @@ export default function ConsultConsole({
     }
   }, []);
   const voiceModeRef = useRef<string>(mode);
+  // スプレッドシートの読み方の一覧（声の AI がひらがなで書いた字幕を漢字に戻す。声を始めるときに届く）
+  const readingsRef = useRef<[string, string][]>([]);
 
   const host: VoiceHost = {
     company,
@@ -179,8 +182,9 @@ export default function ConsultConsole({
         const cur = copy[idx];
         const base = cur.content === "…" ? "" : cur.content;
         const next = append ? base + text : text;
-        // 声の AI は金額をひらがなの読み（いちまんさんぜんにひゃく円）で話すので、画面には数字（13,200円）で出す
-        copy[idx] = { ...cur, content: role === "assistant" ? yenDigits(next) : next, pending: !final };
+        // 声の AI は金額をひらがなの読み（いちまんさんぜんにひゃく円）で話すので、画面には数字（13,200円）で出す。
+        // 読み間違えないようにひらがなで渡した言葉（おみつもり・たたみどこ など）も、画面では漢字に戻す
+        copy[idx] = { ...cur, content: role === "assistant" ? captionWords(yenDigits(next), readingsRef.current) : next, pending: !final };
         return copy;
       });
       if (final) {
@@ -202,6 +206,9 @@ export default function ConsultConsole({
     onEstimate: (est) => setLastEstimate(est),
     onSettled: () => {
       if (logDirtyRef.current) void saveLog();
+    },
+    onReadings: (readings) => {
+      readingsRef.current = readings;
     },
   };
   const voice = useVoiceSession(host, mode);
@@ -484,10 +491,12 @@ export default function ConsultConsole({
     if (missingFields(cur.draft).length === 0 && fresh) return;
     setDraftLoading(true);
     try {
+      // 発言が声か文字か（声で伺ったご住所だけ、町名の聞き違いを直す。文字で入力されたご住所は書かれたとおり）
+      const withVia = settled(messagesRef.current).map((m) => ({ role: m.role, content: m.content, via: m.channel === "voice" ? "voice" : "text" }));
       const res = await fetch("/api/estimates/draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history, draft: cur.draft, keepSummary: cur.touched?.includes("summary") }),
+        body: JSON.stringify({ messages: withVia, draft: cur.draft, keepSummary: cur.touched?.includes("summary") }),
       });
       const j = (await res.json()) as { ok: boolean; draft?: IntakeState["draft"]; unsure?: IntakeField[] };
       if (j.ok && j.draft) {
