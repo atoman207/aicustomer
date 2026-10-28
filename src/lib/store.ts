@@ -311,7 +311,10 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
 
 export async function listEstimates(): Promise<EstimateRequest[]> {
   const list = await read<EstimateRequest[]>("estimates");
-  return [...list].sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+  // 対応状況は「未連絡」「連絡済」の 2 つ（2026-10-28 から）。以前に保存した「日程確定」「完了」は連絡済
+  return list
+    .map((e) => (e.status === "new" || e.status === "contacted" ? e : { ...e, status: "contacted" as const }))
+    .sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
 }
 
 export async function addEstimate(e: EstimateRequest): Promise<void> {

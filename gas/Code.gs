@@ -59,13 +59,37 @@ function doPost(e) {
       if (!sheet) {
         sheet = ss.insertSheet(sheetName);
       }
-      if (sheet.getLastRow() === 0 && payload.header && payload.header.length) {
-        sheet.appendRow(payload.header);
-        sheet.getRange(1, 1, 1, payload.header.length).setFontWeight("bold").setBackground("#efe6d6");
+      var header = payload.header || [];
+      if (sheet.getLastRow() === 0 && header.length) {
+        sheet.appendRow(header);
+        sheet.getRange(1, 1, 1, header.length).setFontWeight("bold").setBackground("#efe6d6");
         sheet.setFrozenRows(1);
       }
-      var row = payload.row || [];
+      // 値は見出しで列を探して入れる（担当者が列を足したり並べ替えたりしても正しい欄に入る。11 項目に整理する前の見出しも探す）
+      var legacy = { "対応状況": "ステータス", "相談内容（AI要約）": "相談内容（AI要約・お客様確認済み）" };
+      var head = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getDisplayValues()[0].map(function (c) {
+        return String(c).trim();
+      });
+      var src = payload.row || [];
+      var row = src;
+      if (head.indexOf("受付番号") >= 0) {
+        row = head.map(function () {
+          return "";
+        });
+        header.forEach(function (h, i) {
+          var at = head.indexOf(h);
+          if (at < 0 && legacy[h]) at = head.indexOf(legacy[h]);
+          if (at >= 0) row[at] = src[i];
+        });
+      }
       sheet.appendRow(row);
+      // 「対応状況」の欄は 2 択のプルダウン（未連絡・連絡済）
+      var statusCol = head.indexOf("対応状況") + 1;
+      if (statusCol > 0 && sheet.getMaxRows() > 1) {
+        var options = payload.statusOptions || ["未連絡", "連絡済"];
+        var rule = SpreadsheetApp.newDataValidation().requireValueInList(options, true).setAllowInvalid(false).build();
+        sheet.getRange(2, statusCol, sheet.getMaxRows() - 1, 1).setDataValidation(rule);
+      }
       return json_({ ok: true, sheet: sheetName, row: sheet.getLastRow() });
     }
     return json_({ ok: false, error: "unknown action: " + action });

@@ -644,13 +644,3 @@ export function autofillLabel(e: Pick<EstimateRequest, "channel" | "autofill">):
   if (!filled) return "なし（お客様が入力）";
   return edited ? `${filled}（お客様が修正：${edited}）` : filled;
 }
-
-/** 受付一覧のシートの「会話からの自動入力」の欄を、受付の autofill に戻す（autofillLabel の逆） */
-export function parseAutofillLabel(label: string): EstimateRequest["autofill"] {
-  const s = label.trim();
-  if (!s || s.startsWith("AIが会話で聞き取り")) return undefined;
-  if (s.startsWith("なし")) return { filled: [], edited: [] };
-  const m = s.match(/^(.*?)(?:（お客様が修正：(.*)）)?$/);
-  const fields = (text = "") => AUTOFILL_FIELDS.filter((f) => text.split("・").includes(FIELD_LABEL[f]));
-  return { filled: fields(m?.[1]), edited: fields(m?.[2]) };
-}

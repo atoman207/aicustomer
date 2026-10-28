@@ -11,7 +11,6 @@ import {
   MessageSquareText,
   PhoneCall,
   RefreshCw,
-  XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { BRAND } from "@/lib/brand";
@@ -25,7 +24,7 @@ import type {
   PhoneMode,
 } from "@/lib/types";
 import { autofillLabel } from "@/lib/intake";
-import { CHANNEL_LABEL, ESTIMATE_STATUS_LABEL as STATUS_LABEL } from "@/lib/types";
+import { CHANNEL_LABEL, ESTIMATE_STATUS_LABEL as STATUS_LABEL, RECEPTION_HEADER } from "@/lib/types";
 import { formatJst, truncate } from "@/lib/utils";
 
 const DAY_LABEL = ["日", "月", "火", "水", "木", "金", "土"];
@@ -98,8 +97,9 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
   }
 
   function exportCsv() {
-    const header = ["受付日時", "受付経路", "氏名", "住所", "電話番号", "相談内容", "第1希望", "第2希望", "第3希望", "受付番号", "確認状況", "ステータス", "会話からの自動入力"];
+    // スプレッドシートの受付一覧と同じ 11 項目・同じ並び
     const rows = filtered.map((e) => [
+      STATUS_LABEL[e.status],
       formatJst(e.receivedAt),
       CHANNEL_LABEL[e.channel],
       e.name,
@@ -110,11 +110,8 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
       e.preferredDates[1] ?? "",
       e.preferredDates[2] ?? "",
       e.id,
-      e.confirmedByCustomer ? "お客様確認済み" : "未確認",
-      STATUS_LABEL[e.status],
-      autofillLabel(e),
     ]);
-    const csv = [header, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
+    const csv = [[...RECEPTION_HEADER], ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
     const blob = new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -141,8 +138,8 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
               </option>
             ))}
           </select>
-          <select className="input min-w-[calc(50%-0.25rem)] flex-1 md:w-32 md:min-w-0 md:flex-none" value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">全ステータス</option>
+          <select className="input min-w-[calc(50%-0.25rem)] flex-1 md:w-36 md:min-w-0 md:flex-none" value={status} onChange={(e) => setStatus(e.target.value)} aria-label="対応状況で絞り込み">
+            <option value="">対応状況：すべて</option>
             {Object.entries(STATUS_LABEL).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}
@@ -162,7 +159,7 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
       {error ? <p className="px-4 py-2 text-sm text-shu-600">{error}</p> : null}
       {fromSheet ? (
         <p className="border-b border-washi-200 px-4 py-2 text-xs text-sumi-500">
-          受付と対応状況は、スプレッドシート「{sinkLabel.match(/「(.+?)」/)?.[1] ?? "受付一覧"}」から読み込んでいます。ステータスを変えると、シートの「ステータス」の欄も書き換わります。
+          受付と対応状況は、スプレッドシート「{sinkLabel.match(/「(.+?)」/)?.[1] ?? "受付一覧"}」から読み込んでいます。対応状況を変えると、シートの「対応状況」の欄も書き換わります。
         </p>
       ) : null}
       {sheetError ? (
@@ -196,27 +193,26 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
         <table className="table-base">
           <thead>
             <tr>
+              <th>対応状況</th>
               <th>受付日時</th>
               <th>経路</th>
               <th>氏名</th>
               <th>電話番号</th>
-              <th>相談内容（AI要約・確認済み）</th>
+              <th>相談内容（AI要約）</th>
               <th>希望日</th>
-              <th>記録</th>
-              <th>ステータス</th>
             </tr>
           </thead>
           <tbody>
             {loading && items.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-10 text-center text-sumi-400">
+                <td colSpan={7} className="py-10 text-center text-sumi-400">
                   <Spinner className="mx-auto h-5 w-5" />
                 </td>
               </tr>
             ) : null}
             {!loading && filtered.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-10 text-center text-sumi-400">
+                <td colSpan={7} className="py-10 text-center text-sumi-400">
                   受付はまだありません
                 </td>
               </tr>
@@ -228,6 +224,24 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
         </table>
       </div>
     </div>
+  );
+}
+
+/** 対応状況（未連絡／連絡済）。未連絡は目立つ色 */
+function StatusSelect({ e, onStatus, className }: { e: EstimateRequest; onStatus: (s: EstimateStatus) => void; className: string }) {
+  return (
+    <select
+      className={`input ${className} ${e.status === "new" ? "font-bold text-shu-600" : "text-sumi-600"}`}
+      value={e.status}
+      onChange={(ev) => onStatus(ev.target.value as EstimateStatus)}
+      aria-label={`${e.name} さんの対応状況`}
+    >
+      {Object.entries(STATUS_LABEL).map(([k, v]) => (
+        <option key={k} value={k}>
+          {v}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -258,18 +272,8 @@ function ReceptionCard({ e, open, onToggle, onStatus }: { e: EstimateRequest; op
           </p>
         ) : null}
       </div>
-      <div className="mt-2 flex items-center gap-2">
-        <select className="input min-w-0 flex-1 py-1.5 text-sm" value={e.status} onChange={(ev) => onStatus(ev.target.value as EstimateStatus)} aria-label={`${e.name} さんの対応状況`}>
-          {Object.entries(STATUS_LABEL).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </select>
-        <span className="flex shrink-0 items-center gap-1 text-xs text-sumi-500">
-          {e.confirmedByCustomer ? <CheckCircle2 className="h-3.5 w-3.5 text-tatami-500" /> : <XCircle className="h-3.5 w-3.5 text-amber-500" />}
-          {e.confirmedByCustomer ? "確認済み" : "未確認"}
-        </span>
+      <div className="mt-2">
+        <StatusSelect e={e} onStatus={onStatus} className="w-full py-1.5 text-sm" />
       </div>
       {open ? (
         <div className="mt-2 space-y-1 rounded-xl bg-washi-50 px-3 py-2 text-xs text-sumi-600">
@@ -303,11 +307,22 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
   return (
     <>
       <tr className="cursor-pointer hover:bg-washi-50" onClick={onToggle}>
+        <td className="whitespace-nowrap" onClick={(ev) => ev.stopPropagation()}>
+          <StatusSelect e={e} onStatus={onStatus} className="w-[6.5rem] py-1 sm:text-xs" />
+        </td>
         <td className="whitespace-nowrap">{formatJst(e.receivedAt)}</td>
         <td className="whitespace-nowrap">
           <Badge tone={e.channel === "phone" ? "blue" : e.channel === "line" ? "green" : "neutral"}>{CHANNEL_LABEL[e.channel]}</Badge>
         </td>
-        <td className="whitespace-nowrap font-medium text-sumi-800">{e.name}</td>
+        <td className="whitespace-nowrap font-medium text-sumi-800">
+          {e.name}
+          {e.lineUserId || e.syncError ? (
+            <div className="mt-1 flex flex-col gap-1 text-xs font-normal">
+              {e.lineUserId ? <Badge tone="green">LINE連携済み</Badge> : null}
+              {e.syncError ? <span className="text-shu-600">同期エラー</span> : null}
+            </div>
+          ) : null}
+        </td>
         <td className="whitespace-nowrap font-mono text-xs">{e.phone}</td>
         <td className="min-w-[240px] max-w-[420px]">{open ? e.summary : truncate(e.summary, 60)}</td>
         <td className="min-w-[160px] text-xs">
@@ -317,30 +332,10 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
             </div>
           ))}
         </td>
-        <td className="text-xs">
-          <div className="flex flex-col gap-1">
-            <span className="flex items-center gap-1">
-              {e.confirmedByCustomer ? <CheckCircle2 className="h-3.5 w-3.5 text-tatami-500" /> : <XCircle className="h-3.5 w-3.5 text-amber-500" />}
-              {e.confirmedByCustomer ? "確認済み" : "未確認"}
-            </span>
-            <span className="text-sumi-400">{e.syncedTo.join(" / ")}</span>
-            {e.lineUserId ? <Badge tone="green">LINE連携済み</Badge> : null}
-            {e.syncError ? <span className="text-shu-600">同期エラー</span> : null}
-          </div>
-        </td>
-        <td onClick={(ev) => ev.stopPropagation()}>
-          <select className="input py-1 text-xs" value={e.status} onChange={(ev) => onStatus(ev.target.value as EstimateStatus)}>
-            {Object.entries(STATUS_LABEL).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </td>
       </tr>
       {open ? (
         <tr className="bg-washi-50/80">
-          <td colSpan={8} className="text-xs text-sumi-600">
+          <td colSpan={7} className="text-xs text-sumi-600">
             <div className="grid gap-2 sm:grid-cols-3">
               <div>
                 <span className="text-sumi-400">受付番号：</span>
@@ -349,6 +344,10 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
               <div>
                 <span className="text-sumi-400">住所：</span>
                 {e.address}
+              </div>
+              <div>
+                <span className="text-sumi-400">記録：</span>
+                {e.syncedTo.join(" / ")}
               </div>
               <div>
                 <span className="text-sumi-400">セッション：</span>

@@ -142,6 +142,35 @@ export async function sheetsAppendRow(sheetId: string, sheetName: string, row: (
   if (!res.ok) throw await sheetsError(res, `シート「${sheetName}」への記録`);
 }
 
+/** タブの 1 行目（見出し）を読む */
+export async function sheetsReadHeader(sheetId: string, title: string): Promise<string[]> {
+  return (await sheetsGetValues(sheetId, `${quoteTab(title)}!1:1`))[0] ?? [];
+}
+
+/** 列（0 始まり）の 2 行目から下を、options から選ぶプルダウンにする（ほかの値は入れられない。あとから増えた行も含む） */
+export async function sheetsSetDropdown(sheetId: string, title: string, col: number, options: string[]): Promise<void> {
+  const { tabs } = await sheetsListTabs(sheetId);
+  const tab = tabs.find((t) => t.title === title);
+  if (!tab) throw new Error(`シート「${title}」がありません`);
+  const token = await getGoogleAccessToken();
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}:batchUpdate`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requests: [
+        {
+          setDataValidation: {
+            range: { sheetId: tab.sheetId, startRowIndex: 1, startColumnIndex: col, endColumnIndex: col + 1 },
+            rule: { condition: { type: "ONE_OF_LIST", values: options.map((v) => ({ userEnteredValue: v })) }, strict: true, showCustomUi: true },
+          },
+        },
+      ],
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw await sheetsError(res, `シート「${title}」のプルダウン`);
+}
+
 /** 名前でタブの全セルを読む（タブがなければ null） */
 export async function sheetsReadTabByName(sheetId: string, title: string): Promise<string[][] | null> {
   const { tabs } = await sheetsListTabs(sheetId);

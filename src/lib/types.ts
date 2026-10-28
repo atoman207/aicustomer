@@ -63,10 +63,30 @@ export interface SearchHit {
   score: number;
 }
 
-export type EstimateStatus = "new" | "contacted" | "scheduled" | "closed";
+export type EstimateStatus = "new" | "contacted";
 
-/** 対応状況（管理画面と、受付一覧のシートの「ステータス」の欄で同じ言葉を使う） */
-export const ESTIMATE_STATUS_LABEL: Record<EstimateStatus, string> = { new: "新規", contacted: "連絡済み", scheduled: "日程確定", closed: "完了" };
+/**
+ * 対応状況（管理画面と、受付一覧のシートの「対応状況」の欄で同じ言葉を使う）。
+ * 受付時は「未連絡」、各店舗・営業担当に LINE で引き継いだら「連絡済」。シートでは 2 択のプルダウン
+ */
+export const ESTIMATE_STATUS_LABEL: Record<EstimateStatus, string> = { new: "未連絡", contacted: "連絡済" };
+
+/** 受付一覧のシートの見出し（2026-10-28 一畳屋様のご依頼で 11 項目に整理。対応状況は一番左） */
+export const RECEPTION_HEADER = [
+  "対応状況",
+  "受付日時",
+  "受付経路",
+  "氏名",
+  "住所",
+  "電話番号",
+  "相談内容（AI要約）",
+  "第1希望",
+  "第2希望",
+  "第3希望",
+  "受付番号",
+] as const;
+
+export type ReceptionColumn = (typeof RECEPTION_HEADER)[number];
 
 export interface EstimateRequest {
   id: string;
