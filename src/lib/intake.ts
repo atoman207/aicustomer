@@ -440,10 +440,32 @@ function cleanName(s: string): string {
 const NOT_NAME_LEAD = /^(?:その前に|ちなみに|ところで|あと|それと|それから|すみません|ちょっと|まず|えっと|あの|では|じゃあ|やっぱり|やはり|今は|今回は)/;
 const NOT_NAME_TAIL = /(?:に|を|が|へ|って|けど|けれど|ので|から|のは|には|では|ます|ません|ました|でした|ください|たい|ない)$/;
 
-function plausibleName(s: string): boolean {
+/**
+ * お名前の中にはまず出ない言葉（ご依頼・品物・料金の話）。一畳屋様のご指摘 2026-10-29（EST-20261029-KIJJ）：
+ * お名前を伺ったときの「一番安いのでお願いしまう」（打ち間違い）を、お名前として「一番安いのでお願いしまう様ですね」と返していた
+ */
+const NOT_NAME_ANY =
+  /お願い|おねがい|一番(?:安|高|い)|安い|高い|ので|ください|下さい|したい|ほしい|欲しい|希望|料金|値段|金額|価格|いくら|種類|おすすめ|見積|みつもり|[0-9０-９一二三四五六七八九十]+\s*(?:枚|畳|帖|本|部屋)|網戸|障子|ふすま|クロス|カーテン|工事|交換|張替|張り替|新調|表替|わから|分から|大丈夫|いいです|結構/;
+
+export function plausibleName(s: string): boolean {
   if (!s || s.length > 20 || /\d/.test(s) || /[?？!！]/.test(s)) return false;
-  if (NOT_NAME.test(s) || NOT_NAME_LEAD.test(s) || NOT_NAME_TAIL.test(s) || ADDRESS_START.test(s) || QUESTION_RE.test(s) || CANCEL_RE.test(s)) return false;
+  if (NOT_NAME.test(s) || NOT_NAME_LEAD.test(s) || NOT_NAME_TAIL.test(s) || NOT_NAME_ANY.test(s) || ADDRESS_START.test(s) || QUESTION_RE.test(s) || CANCEL_RE.test(s)) return false;
   return /^[一-龯々ぁ-んァ-ヶー\sA-Za-z・.]+$/u.test(s);
+}
+
+/** AI が読み取ったお名前が、明らかにお名前ではない（ご依頼・品物・料金の話）。ひらがなの姓（「かない」など）は通す */
+export function notAName(s: string | undefined): boolean {
+  const t = (s ?? "").normalize("NFKC").trim();
+  return Boolean(t) && (t.length > 30 || /[?？\d]/.test(t) || NOT_NAME_ANY.test(t));
+}
+
+/**
+ * ご住所らしいか（市区町村・町・丁目・番地・数字のどれかがある）。AI が読み取ったご住所が「亀井」（お名前の言い直し）
+ * だけのときに、ご住所として「「亀井」のあとの番地まで」と伺い直さないように（EST-20261029-KIJJ）
+ */
+export function plausibleAddress(s: string | undefined): boolean {
+  const t = (s ?? "").normalize("NFKC").trim();
+  return t.length >= 2 && (/[都道府県市区町村郡]|丁目|番地?|号/.test(t) || /\d/.test(t) || ADDRESS_START.test(t));
 }
 
 /**

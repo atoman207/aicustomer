@@ -568,6 +568,27 @@ function sectionEntries(t: PriceTable, n: number, rules: CompiledRules): Knowled
 }
 
 /**
+ * 張替えの行で「虫が嫌がる網／銀黒」のように 2 つの品名が同じ料金の行になっていて、新調の行が片方（「新調銀黒」）だけのとき、
+ * 新調の行にも同じ組を書く（「新調虫が嫌がる網／銀黒」）。網戸の表は張替えと新調で同じ順に並び（18メッシュ・24メッシュ・
+ * ガラスネット・虫が嫌がる網／銀黒・ペットディフェンス・ステンレス）、新調の行名だけが片方になっていたため、AI が
+ * 「虫が嫌がる網の新調の料金はお答えできかねます」と答えた（一畳屋様のご指摘 2026-10-29 EST-20261029-7X7B）。
+ * もう片方の新調の行があるとき（「新調虫が嫌がる網」もある）は変えない
+ */
+function pairNewRows(t: PriceTable): void {
+  const key = (s: string) => s.normalize("NFKC").replace(/\s+/g, "");
+  const pairs = t.rows.map((r) => r.label).filter((l) => !l.startsWith("新調") && /[／/]/.test(l));
+  const newRows = new Set(t.rows.filter((r) => r.label.startsWith("新調")).map((r) => key(r.label.slice(2))));
+  for (const row of t.rows) {
+    if (!row.label.startsWith("新調")) continue;
+    const name = key(row.label.slice(2));
+    const pair = pairs.find((p) => p.split(/[／/]/).map(key).includes(name));
+    if (!pair) continue;
+    const others = pair.split(/[／/]/).map(key).filter((x) => x !== name);
+    if (others.length && others.every((x) => x && !newRows.has(x))) row.label = `新調${pair}`;
+  }
+}
+
+/**
  * シートの全セル（行×列、空行も位置を保ったもの）を解析する。
  * 文章部分は「最初に 3 つ以上のセルが並ぶ行」の手前まで。
  */
@@ -586,6 +607,7 @@ export function parseManualGrid(rows: string[][], rulesIn: ManualRules = DEFAULT
   const isTextSection = (t: PriceTable) => t.rows.length === 0 && t.notes.length > 0 && rules.textSection.some((re) => re.test(t.title));
   tables.filter(isTextSection).forEach((t, i) => textEntries.push(...sectionEntries(t, i + 1, rules)));
   const kept = tables.filter((t) => !isTextSection(t) && (t.rows.length > 0 || t.notes.length > 0));
+  kept.forEach(pairNewRows);
   kept.forEach((t, i) => {
     t.id = `m-p${String(i + 1).padStart(2, "0")}`;
     t.keywords = keywordsFor(t, rules);

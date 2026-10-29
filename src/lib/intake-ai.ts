@@ -28,6 +28,8 @@ import {
   isPastDate,
   mergeDraft,
   normalizeDateText,
+  notAName,
+  plausibleAddress,
   todayJst,
   wantsEstimate,
   type IntakeField,
@@ -137,9 +139,12 @@ export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opt
     const read = (ai.dates ?? []).map((d) => normalizeDateText(d, today)).filter(Boolean);
     const past = read.filter((d) => isPastDate(d, today));
     const dates = read.filter((d) => !past.includes(d));
+    // お名前・ご住所らしくないもの（「一番安いのでお願いします」をお名前、「亀井」をご住所に）は使わない（EST-20261029-KIJJ）
+    const aiName = ai.name?.trim().replace(/(?:様|さま)$/, "");
+    const aiAddress = ai.address?.trim();
     const out: IntakeDraft = {
-      name: ai.name?.trim().replace(/(?:様|さま)$/, "") || base.name,
-      address: ai.address?.trim() || base.address,
+      name: (aiName && !notAName(aiName) ? aiName : undefined) || (notAName(base.name) ? undefined : base.name),
+      address: (aiAddress && plausibleAddress(aiAddress) ? aiAddress : undefined) || (base.address && !plausibleAddress(base.address) ? undefined : base.address),
       // AI が読んだ番号の桁が合わず、規則で正しい番号が読めていればそちら
       phone: phone && (isLikelyPhone(phone) || !base.phone || !isLikelyPhone(base.phone)) ? phone : base.phone,
       dates: [...new Set(dates)].slice(0, 3).length ? [...new Set(dates)].slice(0, 3) : base.dates,
@@ -166,15 +171,43 @@ export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opt
   }
 }
 
-/** 聞き取りのやりとり（「見積をお願いします」・お名前などの答え・AI の質問）を除いた会話（途中のご質問の話題を取り違えないように） */
+/** AI の聞き取りの文（お名前・ご住所などを伺う文・確認画面の案内） */
+const INTAKE_ASK = /お伺いするために|伺うため、|ご希望日時|ご希望日はございますか|お見積りのご依頼|確認画面|内容をご確認|番地まで|お電話番号を|お電話番号をお願い|お名前を教えて|ご住所をお願い|様ですね|無料でお見積りに伺います/;
+
+/**
+ * 聞き取りのやりとり（お名前などの答え・AI の伺う文）を除いた会話（途中のご質問の話題を取り違えないように）。
+ * 品物・数量の入ったお客様の発言（「団地を退去するので、畳と襖の見積もりをお願いしたい」）と、AI の答えの部分
+ * （料金の目安。あとに続く伺う文は除く）は残す（退去のご相談なのに、ふつうの料金で答えないように。EST-20261029-KIJJ）
+ */
 function consultHistory(history: ChatMessage[]): ChatMessage[] {
   const today = todayJst();
-  return history.filter((m) =>
-    m.role === "user"
-      ? !wantsEstimate(m.content) && extractIntake(m.content, [], today).found.length === 0
-      : !/お伺いするために|伺うため、|ご希望日時|ご希望日はございますか|お見積りのご依頼|確認画面|内容をご確認|番地まで|お電話番号を|お電話番号をお願い|お名前を教えて|ご住所をお願い|様ですね/.test(m.content),
-  );
+  const out: ChatMessage[] = [];
+  for (const m of history) {
+    if (m.role === "user") {
+      const job = JOB_WORD.test(m.content) || CONSULT_TALK.test(m.content.normalize("NFKC"));
+      if (job || (!wantsEstimate(m.content) && extractIntake(m.content, [], today).found.length === 0)) out.push(m);
+      continue;
+    }
+    const kept = m.content
+      .split(/\n{2,}/)
+      .filter((p) => !INTAKE_ASK.test(p) && !/^（お見積りのご依頼の続きです）/.test(p.trim()))
+      .join("\n\n")
+      .trim();
+    if (kept) out.push({ ...m, content: kept });
+  }
+  return out;
 }
+
+/** ご依頼の品物・作業の言葉 */
+const JOB_WORD = /畳|襖|ふすま|障子|網戸|アミ戸|クロス|壁紙|カーテン|ブラインド|ガラス|床|外壁|屋根|塗装|リフォーム|トイレ|浴室|キッチン|水まわり|水回り/;
+/** ご依頼の内容の話（品物・数量・大きさ・種類の好み・退去など）。聞き取りの途中でも、先に答える */
+const CONSULT_TALK = new RegExp(
+  `${JOB_WORD.source}|[0-9一二三四五六七八九十]+\\s*(?:枚|本|畳|帖|部屋|間|箇所|か所|m|メートル|センチ|cm)|一番安|安いの|安いもの|高いの|種類|グレード|おすすめ|片面|両面|押入れ|退去|団地|賃貸`,
+);
+
+/** 聞き取りの途中の答えの決まり（このあとシステムがお名前などを伺うので、提案・質問を重ねない） */
+const DURING_INTAKE = `# この答えについて
+お客様は、すでに無料のお見積りのご依頼中です（この答えのあとに、システムがお名前・ご住所などを伺います）。この答えでは、お見積りの提案・個人情報の質問・お客様への質問はしない。ご相談の内容（品物・数量・種類のご希望）を短く受け止めて、料金の目安などに答えるだけにする。`;
 
 /** 聞き取りの途中のご質問に答える（ふだんの相談と同じ回答のモデル・同じ指示で。同じ質問は学習済みの回答） */
 async function answerQuestion(question: string, fullHistory: ChatMessage[], company: string): Promise<{ text: string; sources: AnswerSource[] }> {
@@ -186,7 +219,7 @@ async function answerQuestion(question: string, fullHistory: ChatMessage[], comp
       .filter((m) => m.role === "user" || m.role === "assistant")
       .slice(-6)
       .map((m) => ({ role: m.role as "user" | "assistant", content: truncate(m.content, 500) }));
-    const text = await composeAnswer(plan, company, [...recent, { role: "user", content: question }], "chat");
+    const text = await composeAnswer(plan, company, [...recent, { role: "user", content: question }], "chat", DURING_INTAKE);
     if (text.trim()) return { text: text.trim(), sources: plan.sources };
   } catch (e) {
     await logError("openai", "文字の相談（見積依頼の聞き取り中のご質問）", e);
@@ -284,6 +317,14 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
   // 確認画面でお客様が直した項目は、会話からの読み取りで上書きしない
   draft = keepTouched(draft, state.draft, state.touched);
   const carry = { summaryEdited: state.summaryEdited, touched: state.touched, aiFilled: state.aiFilled, ...(unsure?.length ? { unsure } : {}) };
+  // 伺った項目の答えがなく、ご依頼の内容（「畳は6枚、襖は押入れが2枚です」「一番安いのでお願いします」）を話された：
+  // 決まった文で伺い直すだけにせず、その内容に先に答えてから伺う（一畳屋様のご指摘 2026-10-29「会話が成立してない」EST-20261029-KIJJ）
+  const gotAsked = filledNow(state.draft, draft).some((f) => asked.includes(f));
+  if (!starting && !gotAsked && !cancel && CONSULT_TALK.test(last.normalize("NFKC"))) question = true;
+  // 最初の見積のご依頼に品物が入っていて、まだ料金をご案内していない：先に目安をご案内してからお名前を伺う（同じ返事の中で）
+  // （「団地を退去するので、畳と襖の見積もりをお願いしたい」→ 資料の「退去に伴う…の問い合わせは AI 窓口で完結させ…金額を伝える」）
+  const priced = history.some((m) => m.role === "assistant" && /\d[\d,]*円/.test(m.content));
+  if (starting && !offered && wantsEstimate(last) && !priced && JOB_WORD.test(last)) question = true;
 
   // 2. 見積のご依頼をやめる
   if (cancel) {

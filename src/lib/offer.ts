@@ -37,7 +37,9 @@ export function offerDue(history: Turn[], question: string, busy = false): boole
   const users = [...history.filter((m) => m.role === "user").slice(-5), { role: "user", content: question }];
   if (users.some((m) => DECLINED.test(m.content.normalize("NFKC")))) return false;
   const q = question.normalize("NFKC");
-  if (SCHEDULE.test(q)) return true;
+  // 日程・訪問の話、または提案のあとに大きさ・数量を答えた（「大きさは70×70cmくらいです」）：直前に提案していても、
+  // この答えで提案する（提案しないと、お客様が「見積をお願いします」と言い直すまで1往復多くなる。EST-20261029-FJUM）
+  if (SCHEDULE.test(q) || CONCRETE.test(q)) return true;
   if (answers.slice(-2).some((m) => OFFERED.test(m.content.normalize("NFKC")))) return false;
   return answers.length >= 1 || CONCRETE.test(q);
 }

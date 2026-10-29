@@ -446,11 +446,13 @@ export async function composeAnswer(
   company: string,
   messages: { role: "user" | "assistant"; content: string }[],
   purpose: string,
+  /** 指示の最後に足す（見積依頼の聞き取りの途中の答えでは、お見積りの提案をさせない など） */
+  extraSystem?: string,
 ): Promise<string> {
   const evidence = usesEvidence(plan.context);
   const voice = plan.style === "voice";
   const { model, effort } = answerModelFor(plan);
-  const system = buildChatSystemPrompt(company, plan.context, plan.channel, plan.snapshot.staffNotes?.text);
+  const system = `${buildChatSystemPrompt(company, plan.context, plan.channel, plan.snapshot.staffNotes?.text)}${extraSystem ? `\n\n${extraSystem}` : ""}`;
   const key = learnedKeyFor(plan, { model, effort, system }, messages);
   const learned = await learnedReply(plan, key);
   if (learned) return learned.answer;
