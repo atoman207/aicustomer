@@ -40,7 +40,8 @@ export default async function HomePage() {
             <p className="mt-3 text-balance text-center text-sm leading-relaxed text-sumi-600 [word-break:auto-phrase]">
               24時間いつでも、料金の目安や工期、対応エリアなどにすぐお答えします。
               <br className="hidden sm:inline" />
-              下の画面に文字で入力するか、マイクのボタンを押して話しかけてください。途中で切り替えても、会話はそのまま続きます。
+              {/* スマホでは 1 文だけ（使い方は相談の画面のボタンで伝わる） */}
+              <span className="hidden sm:inline">下の画面に文字で入力するか、マイクのボタンを押して話しかけてください。途中で切り替えても、会話はそのまま続きます。</span>
             </p>
           </Reveal>
           <div className="mt-8" data-consult="home">

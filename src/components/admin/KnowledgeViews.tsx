@@ -27,7 +27,7 @@ export function EntryCard({ e }: { e: AdminEntry }) {
       </div>
       <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[#3d3d3d]">{open || !long ? e.content : `${e.content.slice(0, 220)}…`}</p>
       {long ? (
-        <button type="button" className="mt-1 text-xs text-[#5d5d5d] underline underline-offset-2" onClick={() => setOpen(!open)}>
+        <button type="button" className="-mb-2 inline-flex min-h-10 items-center text-xs text-[#5d5d5d] underline underline-offset-2" onClick={() => setOpen(!open)}>
           {open ? "閉じる" : "すべて表示"}
         </button>
       ) : null}

@@ -241,6 +241,34 @@ img {
   .chat-card [data-disclaimer] {
     display: none;
   }
+  /* 声の通話の画面：状態の丸を小さくして文字と横に並べ、操作のボタンも小さく（高さ 360px でも状態の文字が切れないように） */
+  .chat-card [data-call-view] {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+  .chat-card [data-call-body] {
+    flex-direction: row;
+    gap: 0.75rem;
+  }
+  .chat-card [data-call-orb] {
+    height: 3.5rem;
+    width: 3.5rem;
+  }
+  .chat-card [data-call-orb] > span:last-child {
+    height: 2.75rem;
+    width: 2.75rem;
+  }
+  .chat-card [data-call-orb] svg {
+    height: 1.25rem;
+    width: 1.25rem;
+  }
+  .chat-card [data-call-orb] > span:last-child > span {
+    height: 1.25rem;
+  }
+  .chat-card [data-voice-bar] button > span {
+    height: 2.5rem;
+    width: 2.5rem;
+  }
 }
 
 /* ---------- SP メニュー（もくじ）トリガー ---------- */

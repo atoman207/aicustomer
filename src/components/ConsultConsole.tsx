@@ -2,7 +2,8 @@
 
 // AI 相談（お客様向け）。1 つの画面で、文字でも声でも相談できる（入口を分けない）
 //   ・文字：入力欄から質問（回答は一畳屋が指定したスプレッドシートの内容だけを根拠にする）
-//   ・声　：マイクのボタンで、電話のように話して相談（OpenAI Realtime）。話した内容・AI の答えも同じ会話に文字で残る
+//   ・声　：マイクのボタンで、電話のように話して相談（OpenAI Realtime）。話した内容・AI の答えも同じ会話に文字で残る。
+//     通話中は文字起こしを出さず、状態と大きなボタン（ミュート・会話・入力・終了）だけの通話の画面にする（2026-10-30）
 //   ・途中で切り替えても、それまでの会話はすべて引き継ぐ（声を始めるときは文字の会話を AI に渡し、文字に戻れば声の会話も踏まえて答える）
 //   ・会話はこの端末に 6 時間保存（読み直しても続きから）。「新しい相談」で最初から
 //   ・見積のご希望には、AI が会話の中でお名前・ご住所・お電話番号・ご希望日時（第3希望まで）を伺い、
@@ -21,6 +22,7 @@ import {
   Keyboard,
   Loader2,
   MapPin,
+  MessageSquareText,
   Mic,
   MicOff,
   PhoneOff,
@@ -82,7 +84,8 @@ function greeting(company: string): UiMessage {
   return {
     id: "greeting",
     role: "assistant",
-    content: `こんにちは。畳の${company}のAI相談員です。\n畳・襖・障子・網戸から住まいのリフォームまで、料金の目安や工期、対応エリアなどにお答えします。\n文字で入力しても、マイクのボタンを押して話しかけても大丈夫です。`,
+    // 声でも話せることは、すぐ下の「声で話して相談する」とマイクのボタンが伝えるので、あいさつには書かない（スマホで短く）
+    content: `こんにちは。畳の${company}のAI相談員です。\n畳・襖・障子・網戸から住まいのリフォームまで、料金の目安や工期、対応エリアなどにお答えします。`,
   };
 }
 
@@ -128,6 +131,10 @@ export default function ConsultConsole({
   const [restored, setRestored] = useState(false);
   const [voiceFirst, setVoiceFirst] = useState(prefer === "voice");
   const [now, setNow] = useState(0);
+  // 声の通話中：会話の記録（文字起こし）を表示するか・文字の入力欄を出すか（どちらも最初は出さない。一畳屋様のご要望 2026-10-30：
+  // 通話中は文字起こしを出さず、会話に集中できる簡単な画面に。会話は記録し、文字に切り替えたら見られるように）
+  const [showLog, setShowLog] = useState(false);
+  const [typing, setTyping] = useState(false);
   const messagesRef = useRef(messages);
   const sessionRef = useRef(sessionId);
   const busyRef = useRef(false);
@@ -224,6 +231,14 @@ export default function ConsultConsole({
     }
   }, [voice.status]);
 
+  // 通話が終わったら、次の通話はまた簡単な画面から
+  const inCall = voice.live || voice.status === "connecting";
+  useEffect(() => {
+    if (inCall) return;
+    setShowLog(false);
+    setTyping(false);
+  }, [inCall]);
+
   // 通話時間の表示
   useEffect(() => {
     if (!voice.live) return;
@@ -267,6 +282,13 @@ export default function ConsultConsole({
     if (!messages.some((m) => m.role === "user")) el.scrollTo({ top: 0 });
     else el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [messages]);
+
+  // 通話中は会話の記録を隠している（隠れている間はスクロールできない）ので、「会話」で表示したとき・通話を終えたときに最新の発言まで
+  useEffect(() => {
+    if (inCall && !showLog) return;
+    const el = listRef.current;
+    if (el && messagesRef.current.some((m) => m.role === "user")) el.scrollTo({ top: el.scrollHeight });
+  }, [inCall, showLog]);
 
   // 入力欄の高さを内容に合わせる
   useEffect(() => {
@@ -551,19 +573,27 @@ export default function ConsultConsole({
   const connecting = voice.status === "connecting";
   const clock = voice.startedAt ? Math.max(0, Math.floor((now - voice.startedAt) / 1000)) : 0;
   const clockLabel = `${String(Math.floor(clock / 60)).padStart(2, "0")}:${String(clock % 60).padStart(2, "0")}`;
-  const voiceLabel = connecting
-    ? voice.reconnecting
-      ? "接続し直しています…"
-      : "接続しています…（マイクの使用を求められたら「許可」を押してください）"
-    : voice.aiSpeaking
-      ? voice.mode === "openai"
-        ? "AIがお話ししています（途中で話しかけても大丈夫です）"
-        : "AIがお話ししています"
-      : voice.userSpeaking || voice.interim
-        ? "聞き取っています…"
-        : voice.mode === "demo" && !voice.listening && !voice.micOk
-          ? "マイクが使えないため、文字で入力してください"
-          : "どうぞ、お話しください";
+  // 通話の状態（短い言葉で 1 行に。補足はお客様の操作が要るときだけスマホでも出し、ほかはタブレット・PC だけ）
+  const callState = connecting
+    ? "connecting"
+    : voice.muted
+      ? "muted"
+      : voice.aiSpeaking
+        ? "ai"
+        : voice.userSpeaking || voice.interim
+          ? "user"
+          : voice.mode === "demo" && !voice.listening && !voice.micOk
+            ? "nomic"
+            : "listen";
+  const CALL_TEXT: Record<typeof callState, { label: string; hint: string; act?: boolean }> = {
+    connecting: { label: voice.reconnecting ? "接続し直しています" : "接続しています", hint: "マイクの使用を「許可」してください", act: !voice.reconnecting },
+    muted: { label: "ミュート中", hint: "「解除」を押すと話せます", act: true },
+    ai: { label: "AIが話しています", hint: voice.mode === "openai" ? "途中で話しかけても大丈夫です" : "" },
+    user: { label: "聞き取っています", hint: "" },
+    nomic: { label: "マイクが使えません", hint: "「入力」から文字でどうぞ", act: true },
+    listen: { label: "お話しください", hint: "電話のように話しかけてください" },
+  };
+  const call = CALL_TEXT[callState];
   const panelHeight =
     layout === "section"
       ? "h-[min(760px,calc(100dvh-96px))] min-h-[min(520px,calc(100dvh-88px))]"
@@ -605,13 +635,16 @@ export default function ConsultConsole({
         <header className="flex items-center gap-3 bg-ptn-logo px-4 py-3 text-white">
           <AiAvatar size="h-10 w-10" />
           <div className="min-w-0 flex-1 leading-tight">
-            <p className="font-hand text-[17px]">一畳屋 AI相談員</p>
+            <p className="whitespace-nowrap font-hand text-[17px]">
+              <span className="hidden sm:inline">一畳屋 </span>AI相談員
+            </p>
             <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-white/80" title={`回答の根拠：${knowledgeLabel}`}>
               <span className="relative flex h-2 w-2">
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#9be37a] opacity-60" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-[#9be37a]" />
               </span>
-              {voice.live ? `声で通話中 ${clockLabel}` : "24時間受付中"}
+              {/* 通話時間は通話の画面に大きく出すので、ここは短く */}
+              {voice.live ? "声で通話中" : "24時間受付中"}
             </p>
           </div>
           <button
@@ -630,7 +663,57 @@ export default function ConsultConsole({
           </button>
         </header>
 
-        <div ref={listRef} role="log" aria-live="polite" aria-relevant="additions" className="flex-1 space-y-5 overflow-y-auto bg-[#fbfaf5] px-3 py-5 sm:px-5">
+        {inCall && !showLog ? (
+          // 声の通話中の画面：状態だけを大きく（文字起こしは出さない。会話は記録して「会話」・通話の終了で見られる）
+          // 中身は m-auto で中央に（高さの低い画面でも上下が切れず、スクロールで見られる）
+          <div className="flex min-h-0 flex-1 overflow-y-auto bg-[#fbfaf5] px-6 py-6 text-center" data-call-view data-call-state={callState}>
+            <div className="m-auto flex flex-col items-center gap-3" data-call-body>
+              <div className="relative grid h-32 w-32 shrink-0 place-items-center sm:h-40 sm:w-40" aria-hidden data-call-orb>
+                <span
+                  className={`absolute inset-0 rounded-full transition-colors ${
+                    callState === "ai" ? "bg-ichi-theme/15" : callState === "user" ? "bg-[#d98c00]/15" : callState === "muted" || callState === "nomic" ? "bg-sumi-200/60" : "bg-ichi-green/15"
+                  } ${callState === "ai" || callState === "user" || callState === "connecting" ? "animate-pulse" : ""}`}
+                />
+                <span
+                  className={`relative grid h-20 w-20 place-items-center rounded-full text-white shadow-lg transition-colors sm:h-24 sm:w-24 ${
+                    callState === "ai" ? "bg-ichi-theme" : callState === "user" ? "bg-[#d98c00]" : callState === "muted" || callState === "nomic" ? "bg-sumi-400" : "bg-ichi-green"
+                  }`}
+                >
+                  {callState === "connecting" ? (
+                    <Loader2 className="h-8 w-8 animate-spin" />
+                  ) : callState === "ai" || callState === "user" ? (
+                    <span className="flex h-8 items-center gap-1">
+                      {[0, 0.15, 0.3, 0.45].map((d) => (
+                        <span key={d} className="h-full w-1.5 origin-center animate-voiceBar rounded-full bg-white/95" style={{ animationDelay: `${d}s` }} />
+                      ))}
+                    </span>
+                  ) : callState === "muted" || callState === "nomic" ? (
+                    <MicOff className="h-8 w-8" />
+                  ) : (
+                    <Mic className="h-8 w-8" />
+                  )}
+                </span>
+              </div>
+              <p className="whitespace-nowrap text-lg font-bold text-ichi-theme sm:text-xl" data-voice-state aria-live="polite" onClick={voice.interruptSpeech}>
+                {call.label}
+              </p>
+              {call.hint ? <p className={`max-w-xs text-[13px] leading-snug text-sumi-500 ${call.act ? "" : "hidden sm:block"}`}>{call.hint}</p> : null}
+              {voice.live ? <p className="text-sm tabular-nums text-sumi-400">{clockLabel}</p> : null}
+              {voice.mode === "demo" && mode === "openai" && voice.reason && voice.live ? (
+                <p className="max-w-xs text-[11px] leading-snug text-sumi-400" title={voice.reason}>
+                  簡易音声モードでお話ししています
+                </p>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+        <div
+          ref={listRef}
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions"
+          className={`flex-1 space-y-5 overflow-y-auto bg-[#fbfaf5] px-3 py-5 sm:px-5 ${inCall && !showLog ? "hidden" : ""}`}
+        >
           {messages.map((m) => {
             const local = answeredLocally(m.mode);
             const tag =
@@ -652,9 +735,10 @@ export default function ConsultConsole({
                     {m.content === "…" ? <span className="tracking-widest">…</span> : m.content}
                   </div>
                   {m.at || tag ? (
-                    <span className="mt-1 flex items-center gap-2 text-[11px] text-sumi-500">
+                    // スマホでは時刻を出さない（声で話した印だけ）
+                    <span className={`mt-1 items-center gap-2 text-[11px] text-sumi-500 ${tag ? "flex" : "hidden sm:flex"}`}>
                       {tag}
-                      {timeLabel(m.at)}
+                      <span className="hidden sm:inline">{timeLabel(m.at)}</span>
                     </span>
                   ) : null}
                 </div>
@@ -687,17 +771,18 @@ export default function ConsultConsole({
                     </button>
                   ) : null}
                   {!m.pending && (local || m.sources?.length || m.at || tag) ? (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-sumi-400">
+                    // スマホでは時刻・回答の出どころ・参考の見出しを出さない（声で話した印だけ）
+                    <div className={`mt-1.5 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-sumi-400 ${tag ? "flex" : "hidden sm:flex"}`}>
                       {tag}
-                      {m.at ? <span>{timeLabel(m.at)}</span> : null}
+                      {m.at ? <span className="hidden sm:inline">{timeLabel(m.at)}</span> : null}
                       {local ? (
-                        <span className="inline-flex items-center gap-1 font-bold text-ichi-green" data-answer={m.mode} title={local.detail}>
+                        <span className="hidden items-center gap-1 font-bold text-ichi-green sm:inline-flex" data-answer={m.mode} title={local.detail}>
                           <CheckCircle2 className="h-3 w-3" />
                           {local.label}
                         </span>
                       ) : null}
                       {(m.sources ?? []).slice(0, 2).map((s) => (
-                        <span key={s.title}>
+                        <span key={s.title} className="hidden sm:inline">
                           参考：{s.origin && ORIGIN_SHORT[s.origin] ? `${ORIGIN_SHORT[s.origin]}｜` : ""}
                           {s.title.replace(/^.*｜/, "")}
                         </span>
@@ -724,7 +809,8 @@ export default function ConsultConsole({
                       className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-ichi-red px-4 py-2 text-[13px] font-bold text-white shadow-sm transition hover:opacity-90 disabled:opacity-50"
                     >
                       <ClipboardCheck className="h-4 w-4" />
-                      このままチャットで見積を依頼する
+                      <span className="sm:hidden">見積を依頼する</span>
+                      <span className="hidden sm:inline">このままチャットで見積を依頼する</span>
                       <ChevronRight className="h-4 w-4" />
                     </button>
                   ) : null}
@@ -735,10 +821,14 @@ export default function ConsultConsole({
 
           {!asked && !voice.live ? (
             <div className="pl-[42px]">
-              <div className={`mb-4 flex flex-wrap items-center gap-3 rounded-xl border px-3 py-3 ${voiceFirst ? "border-ichi-green bg-ichi-cream" : "border-ichi-green/25 bg-white"}`} data-voice-intro>
+              <div
+                className={`mb-4 grid items-center gap-3 rounded-xl border p-2.5 sm:flex sm:px-3 sm:py-3 ${voiceFirst ? "border-ichi-green bg-ichi-cream" : "border-ichi-green/25 bg-white"}`}
+                data-voice-intro
+              >
                 {micButton(true)}
-                <span className="min-w-0 flex-1 text-[13px] leading-snug text-sumi-600">
-                  電話のように話しかけるだけでお答えします。
+                {/* スマホではボタンだけ（説明はボタンの言葉で足りる） */}
+                <span className="hidden min-w-0 flex-1 text-[13px] leading-snug text-sumi-600 sm:block">
+                  話しかけるだけでお答えします。
                   <span className="block text-[11px] text-sumi-400">途中で文字に切り替えても、会話はそのまま続きます。</span>
                 </span>
               </div>
@@ -767,52 +857,75 @@ export default function ConsultConsole({
         </div>
 
         <footer className="border-t border-black/[0.06] bg-white px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2.5 sm:px-4">
-          {voice.live || connecting ? (
-            <div className="mb-2 flex items-center gap-2 rounded-2xl bg-ichi-cream px-3 py-2" data-voice-bar aria-live="polite">
-              <span className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-full text-white ${voice.aiSpeaking ? "bg-ichi-theme" : voice.userSpeaking || voice.interim ? "bg-[#d98c00]" : "bg-ichi-green"}`}>
-                {connecting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : voice.aiSpeaking || voice.userSpeaking || voice.interim ? (
-                  <span className="flex h-4 items-center gap-0.5" aria-hidden>
-                    {[0, 0.15, 0.3, 0.45].map((d) => (
-                      <span key={d} className="h-full w-1 origin-center animate-voiceBar rounded-full bg-white/95" style={{ animationDelay: `${d}s` }} />
-                    ))}
-                  </span>
-                ) : voice.muted ? (
-                  <MicOff className="h-4 w-4" />
-                ) : (
-                  <Mic className="h-4 w-4" />
-                )}
-              </span>
-              <span className="min-w-0 flex-1 text-[13px] font-bold leading-snug text-ichi-theme" onClick={voice.interruptSpeech}>
-                {voiceLabel}
-                {voice.interim ? <span className="block truncate text-xs font-normal text-sumi-500">「{voice.interim}」</span> : null}
-              </span>
-              {voice.live && voice.mode === "openai" ? (
-                <button
-                  type="button"
-                  onClick={voice.toggleMute}
-                  aria-pressed={voice.muted}
-                  className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full border border-ichi-green/40 bg-white px-3 py-2 text-xs font-bold text-ichi-theme"
-                >
-                  {voice.muted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
-                  {voice.muted ? "解除" : "ミュート"}
-                </button>
-              ) : null}
-              <button type="button" onClick={voice.stop} className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full bg-ichi-red px-3.5 py-2 text-xs font-bold text-white" data-voice-end>
-                <Keyboard className="h-3.5 w-3.5" />
-                文字に戻す
-              </button>
+          {inCall ? (
+            // 通話中の操作：大きな丸いボタンと短い名前だけ（スマホの狭い幅でも 1 行に収まる）
+            <div className={`mb-2 grid gap-1 sm:mx-auto sm:max-w-md ${voice.mode === "openai" ? "grid-cols-4" : "grid-cols-3"}`} data-voice-bar>
+              {[
+                {
+                  key: "mute",
+                  label: voice.muted ? "解除" : "ミュート",
+                  icon: voice.muted ? MicOff : Mic,
+                  onClick: voice.toggleMute,
+                  pressed: voice.muted,
+                  disabled: !voice.live,
+                  tone: voice.muted ? "bg-sumi-600 text-white" : "bg-ichi-cream text-ichi-theme",
+                  data: { "data-call-mute": "" },
+                },
+                {
+                  key: "log",
+                  label: "会話",
+                  icon: MessageSquareText,
+                  onClick: () => setShowLog((v) => !v),
+                  pressed: showLog,
+                  tone: showLog ? "bg-ichi-green text-white" : "bg-ichi-cream text-ichi-theme",
+                  data: { "data-call-log-toggle": "" },
+                },
+                {
+                  key: "type",
+                  label: "入力",
+                  icon: Keyboard,
+                  onClick: () => {
+                    setTyping((v) => !v);
+                    window.setTimeout(() => textareaRef.current?.focus(), 50);
+                  },
+                  pressed: typing,
+                  tone: typing ? "bg-ichi-green text-white" : "bg-ichi-cream text-ichi-theme",
+                  data: { "data-call-typing-toggle": "" },
+                },
+                {
+                  key: "end",
+                  label: "終了",
+                  icon: PhoneOff,
+                  onClick: voice.stop,
+                  tone: "bg-ichi-red text-white",
+                  data: { "data-voice-end": "" },
+                },
+              ]
+                // 簡易音声モード（ブラウザの音声認識）ではミュートは使えないので出さない
+                .filter((b) => b.key !== "mute" || voice.mode === "openai")
+                .map((b) => (
+                  <button
+                    key={b.key}
+                    type="button"
+                    onClick={b.onClick}
+                    disabled={b.disabled}
+                    aria-pressed={b.pressed}
+                    aria-label={b.key === "end" ? "通話を終えて文字の相談に戻る" : b.key === "log" ? "会話の記録を表示" : b.key === "type" ? "文字で入力" : b.label}
+                    className="flex flex-col items-center gap-1 rounded-xl py-1 text-[11px] font-bold text-sumi-600 disabled:opacity-35"
+                    {...b.data}
+                  >
+                    <span className={`grid h-12 w-12 place-items-center rounded-full transition ${b.tone}`}>
+                      <b.icon className="h-5 w-5" />
+                    </span>
+                    {b.label}
+                  </button>
+                ))}
             </div>
           ) : null}
           {voice.error ? <p className="mb-2 rounded-xl border border-shu-200 bg-shu-50 px-3 py-2 text-xs leading-relaxed text-shu-700">{voice.error}</p> : null}
-          {voice.mode === "demo" && mode === "openai" && voice.reason && voice.live ? (
-            <p className="mb-2 rounded-xl bg-ichi-cream px-3 py-2 text-xs leading-relaxed text-sumi-600" title={voice.reason}>
-              音声の接続が不安定なため、簡易音声モードでお話ししています（聞き取りの精度が下がる場合があります）。
-            </p>
-          ) : null}
           {asked && !voice.live ? (
-            <div className="-mx-1 mb-2 flex gap-1.5 overflow-x-auto px-1 pb-0.5" data-quick>
+            // スマホでは出さない（見積はヘッダーの「見積」と答えの下のボタン、よくある質問は入力欄から）
+            <div className="-mx-1 mb-2 hidden gap-1.5 overflow-x-auto px-1 pb-0.5 sm:flex" data-quick>
               {!lastEstimate ? (
                 <button type="button" onClick={openEstimate} className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full bg-ichi-red px-3.5 py-2 text-[13px] font-bold text-white">
                   <ClipboardCheck className="h-3.5 w-3.5" />
@@ -833,7 +946,7 @@ export default function ConsultConsole({
             </div>
           ) : null}
           <form
-            className="flex items-end gap-1.5 rounded-[24px] border border-sumi-200 bg-white py-1.5 pl-4 pr-1.5 transition focus-within:border-ichi-green focus-within:ring-2 focus-within:ring-ichi-green/15"
+            className={`items-end gap-1.5 rounded-[24px] border border-sumi-200 bg-white py-1.5 pl-4 pr-1.5 transition focus-within:border-ichi-green focus-within:ring-2 focus-within:ring-ichi-green/15 ${inCall && !typing ? "hidden" : "flex"}`}
             onSubmit={(e) => {
               e.preventDefault();
               submit(input);
@@ -844,7 +957,7 @@ export default function ConsultConsole({
               className="max-h-[140px] min-h-[36px] flex-1 resize-none bg-transparent py-2 text-[16px] leading-relaxed text-sumi-800 outline-none placeholder:text-sumi-300"
               rows={1}
               value={input}
-              placeholder={voice.live ? "話しかけるか、ここに入力してください" : "ご質問を入力（マイクで話しても大丈夫です）"}
+              placeholder={voice.live ? "文字で入力" : "ご質問を入力"}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -856,7 +969,7 @@ export default function ConsultConsole({
               aria-busy={busy}
               enterKeyHint="send"
             />
-            {micButton()}
+            {inCall ? null : micButton()}
             <button
               type="submit"
               className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-ichi-green text-white transition hover:opacity-90 disabled:bg-sumi-200"
@@ -866,9 +979,12 @@ export default function ConsultConsole({
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-[18px] w-[18px]" />}
             </button>
           </form>
-          <p className="mt-1.5 text-center text-[11px] leading-snug text-sumi-500" data-disclaimer>
-            AIは一畳屋の公式情報をもとにお答えします。正式なお見積りは担当者が現地を確認してご案内します。
-          </p>
+          {!inCall ? (
+            <p className="mt-1.5 text-center text-[11px] leading-snug text-sumi-500" data-disclaimer>
+              <span className="sm:hidden">正式なお見積りは担当者が現地で確認します</span>
+              <span className="hidden sm:inline">AIは一畳屋の公式情報をもとにお答えします。正式なお見積りは担当者が現地を確認してご案内します。</span>
+            </p>
+          ) : null}
         </footer>
       </section>
 
@@ -879,7 +995,7 @@ export default function ConsultConsole({
             <p className="mt-0.5 text-xs text-sumi-600">担当者が現地を確認してから、お見積りを無料で提出します。</p>
           </div>
           <div className="p-4">
-            <ol className="space-y-2 text-xs text-sumi-600">
+            <ol className="hidden space-y-2 text-xs text-sumi-600 sm:block">
               {["AIが会話の中でお名前・ご連絡先・ご希望日時を伺います（文字でも声でも）", "「見積依頼」を押すと、伺った内容とご相談内容の要約が入った確認画面に", "確認して送信 → 担当者からお電話し、伺う日程を決定"].map((s, i) => (
                 <li key={s} className="flex items-start gap-2">
                   <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-ichi-green text-[11px] font-bold text-white">{i + 1}</span>
@@ -887,7 +1003,7 @@ export default function ConsultConsole({
                 </li>
               ))}
             </ol>
-            <button type="button" className="btn-accent mt-4 w-full py-3" onClick={openEstimate}>
+            <button type="button" className="btn-accent w-full py-3 sm:mt-4" onClick={openEstimate}>
               <ClipboardCheck className="h-4 w-4" />
               {intake.ready && !lastEstimate ? "内容を確認して送信" : "無料お見積りを依頼"}
             </button>

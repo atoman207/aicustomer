@@ -192,7 +192,7 @@ export default function KnowledgeAdmin() {
             <p className="text-sm font-semibold text-sumi-800">学習済みの回答</p>
             <span className="text-xs text-sumi-400">{learned.length} 件</span>
             {learned.length ? (
-              <button type="button" className="ml-auto text-xs text-sumi-500 underline" onClick={() => window.confirm("学習済みの回答をすべて削除しますか？") && removeLearned("*")}>
+              <button type="button" className="-my-2 ml-auto inline-flex min-h-10 items-center px-2 text-xs text-sumi-500 underline" onClick={() => window.confirm("学習済みの回答をすべて削除しますか？") && removeLearned("*")}>
                 すべて削除
               </button>
             ) : null}
@@ -205,7 +205,7 @@ export default function KnowledgeAdmin() {
                 <div className="flex items-start gap-2">
                   <p className="flex-1 font-medium text-sumi-800">{l.question}</p>
                   <Badge>{l.style === "voice" ? "音声" : "文字"}</Badge>
-                  <button type="button" className="rounded p-1 text-sumi-400 hover:bg-shu-50 hover:text-shu-600" onClick={() => removeLearned(l.key)} aria-label="削除">
+                  <button type="button" className="-my-2 grid h-10 w-10 shrink-0 place-items-center rounded text-sumi-400 hover:bg-shu-50 hover:text-shu-600" onClick={() => removeLearned(l.key)} aria-label="削除">
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
@@ -224,7 +224,7 @@ export default function KnowledgeAdmin() {
             <p className="text-sm font-semibold text-sumi-800">AIが答えられなかった質問</p>
             <span className="text-xs text-sumi-400">{unanswered.length} 件</span>
             {unanswered.length ? (
-              <button type="button" className="ml-auto text-xs text-sumi-500 underline" onClick={() => window.confirm("一覧をすべて消しますか？") && removeUnanswered()}>
+              <button type="button" className="-my-2 ml-auto inline-flex min-h-10 items-center px-2 text-xs text-sumi-500 underline" onClick={() => window.confirm("一覧をすべて消しますか？") && removeUnanswered()}>
                 すべて消す
               </button>
             ) : null}
@@ -238,7 +238,7 @@ export default function KnowledgeAdmin() {
                 <span className="whitespace-nowrap text-xs text-sumi-400">
                   {u.count} 回 ／ {formatJst(u.lastAt)}
                 </span>
-                <button type="button" className="rounded p-1 text-sumi-400 hover:bg-shu-50 hover:text-shu-600" onClick={() => removeUnanswered(u.key)} aria-label="消す">
+                <button type="button" className="-my-2 grid h-10 w-10 shrink-0 place-items-center rounded text-sumi-400 hover:bg-shu-50 hover:text-shu-600" onClick={() => removeUnanswered(u.key)} aria-label="消す">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </li>

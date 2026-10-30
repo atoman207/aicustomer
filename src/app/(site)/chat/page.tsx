@@ -22,7 +22,7 @@ export default async function ChatPage() {
       ruby="えーあいにそうだん"
       title="AIに相談"
       badge={["24", "時間"]}
-      lead="文字で入力しても、マイクで話しかけても大丈夫です。途中で切り替えても、会話はそのまま続きます。"
+      lead="文字でも声でも相談できます。"
     >
       <ConsultBoundary>
         <ConsultConsole

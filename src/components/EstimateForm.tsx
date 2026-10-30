@@ -253,20 +253,23 @@ export default function EstimateForm({
   const banner = loading ? (
     <p className="flex items-center gap-2 rounded-xl bg-ai-50 px-4 py-3 text-sm text-ai-700" data-intake-banner="loading">
       <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-      AIとの会話から、お名前・ご連絡先・ご希望日時・ご相談内容を読み取っています…
+      <span className="sm:hidden">会話から読み取っています…</span>
+      <span className="hidden sm:inline">AIとの会話から、お名前・ご連絡先・ご希望日時・ご相談内容を読み取っています…</span>
     </p>
   ) : unsure.length > 0 ? (
     <p className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-900" data-intake-banner="unsure">
       <PencilLine className="mt-0.5 h-4 w-4 shrink-0" />
       <span>
         恐れ入りますが、<b>{unsureLabels}</b>は正確に聞き取れなかった可能性があります。{unsure.map((f) => `${FIELD_LABEL[f]}の「修正」`).join("・")}ボタンを押して、正確な内容をご入力ください。
-        <span className="block text-xs text-amber-800/80">ほかの項目は、会話で伺った内容を入力済みです。ご確認のうえ送信してください。</span>
+        <span className="hidden text-xs text-amber-800/80 sm:block">ほかの項目は、会話で伺った内容を入力済みです。ご確認のうえ送信してください。</span>
       </span>
     </p>
   ) : filledCount > 0 && missing.length === 0 ? (
     <p className="flex items-start gap-2 rounded-xl border border-ichi-green/25 bg-ichi-cream px-4 py-3 text-sm leading-relaxed text-ichi-theme" data-intake-banner="complete">
       <Sparkles className="mt-0.5 h-4 w-4 shrink-0" />
-      <span>
+      {/* スマホでは短く（各項目の「修正」ボタンと下の送信ボタンが見えているため） */}
+      <span className="sm:hidden">会話の内容を入力しました。ご確認のうえ送信してください。</span>
+      <span className="hidden sm:inline">
         AIとの会話から、すべての項目を入力しました。内容をご確認のうえ、下の「この内容で送信する」を押してください。
         <span className="block text-xs text-sumi-500">直したい項目は「修正」から変更できます。</span>
       </span>
@@ -302,9 +305,10 @@ export default function EstimateForm({
         <div className="flex items-center justify-between gap-2">
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-bold text-sumi-500">
             {FIELD_LABEL[f]}
-            {f === "dates" ? <span className="font-normal text-sumi-400">（第3希望まで）</span> : null}
+            {f === "dates" ? <span className="hidden font-normal text-sumi-400 sm:inline">（第3希望まで）</span> : null}
             {fromAi ? (
-              <span className="inline-flex items-center gap-0.5 rounded-full bg-ichi-cream px-2 py-0.5 text-[10px] font-bold text-ichi-green" data-ai-filled>
+              // スマホでは出さない（上の案内に「会話の内容を入力しました」とあるため。各項目に同じ印を並べない）
+              <span className="hidden items-center gap-0.5 rounded-full bg-ichi-cream px-2 py-0.5 text-[10px] font-bold text-ichi-green sm:inline-flex" data-ai-filled>
                 <Sparkles className="h-3 w-3" />
                 AIが会話から入力
               </span>
