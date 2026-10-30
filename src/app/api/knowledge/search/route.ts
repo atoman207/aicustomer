@@ -2,6 +2,7 @@ import { composeAnswer, planAnswer } from "@/lib/answer";
 import { logError } from "@/lib/errorlog";
 import { error, json, rateLimited, readJson } from "@/lib/http";
 import { speakableYen } from "@/lib/jnum";
+import { OFFER_NOT_YET } from "@/lib/offer";
 import { getSettings } from "@/lib/store";
 import { truncate } from "@/lib/utils";
 import { speakableWords } from "@/lib/voice-words";
@@ -18,7 +19,8 @@ export const maxDuration = 60;
 export async function POST(req: Request) {
   const limited = rateLimited(req, "search", 60);
   if (limited) return limited;
-  const body = await readJson<{ query?: string; k?: number; style?: "text" | "voice" }>(req);
+  // offer："not_yet"＝会話の最初の答え（無料の訪問見積もりはまだ提案しない。ご状況を伺ってから。offer.ts）
+  const body = await readJson<{ query?: string; k?: number; style?: "text" | "voice"; offer?: string }>(req);
   // query は声の AI が作るお客様の質問の一文（言葉を削ったり足したりしない：「1枚あたり」などの聞き方も、資料の全文を読む AI が読み取る）
   const query = (body?.query ?? "").toString().trim().slice(0, 500);
   if (!query) return error("query が必要です");
@@ -28,7 +30,7 @@ export async function POST(req: Request) {
   if (plan.mode === "openai") {
     try {
       const settings = await getSettings();
-      answer = await composeAnswer(plan, settings.companyName, [{ role: "user", content: query }], "voice_answer");
+      answer = await composeAnswer(plan, settings.companyName, [{ role: "user", content: query }], "voice_answer", body?.offer === "not_yet" ? OFFER_NOT_YET : undefined);
     } catch (e) {
       // AI の回答が作れなければ、関係するナレッジを返して Realtime のモデルに答えさせる
       await logError("openai", "声の相談（資料からの回答）", e);

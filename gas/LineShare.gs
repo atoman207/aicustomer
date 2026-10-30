@@ -19,6 +19,14 @@
  *  （任意）ボタンを置く：「挿入」→「図形描画」でボタンを作って保存 → ボタンの「︙」→「スクリプトを割り当て」に lineShareSelected と入力
  *
  * 共有する文は管理画面の「LINE共有」と同じ（src/lib/line-share.ts）。変えるときは両方を直す
+ *
+ * 【連絡済の行を隠す】（一畳屋様のご要望 2026-10-30「連絡済の行がボタン一つで隠れるようにする」）
+ *  ・「受付一覧」の 1 行目の右の「連絡済を隠す」の横のチェックボックスを入れる → 連絡済の行が隠れる／外す → すべて表示
+ *    （スマホのスプレッドシートのアプリでも使えます）
+ *  ・メニューの「LINE共有」→「連絡済を隠す」「すべて表示」でも同じ
+ *  ・隠すのはフィルタ（行は消えません）。隠している間に対応状況を「連絡済」にした行も、すぐ隠れます
+ *  ・（任意）図形描画のボタンにする：スクリプトの割り当てに receptionToggleContacted と入力
+ *  ※すでに onEdit という関数があるときは、その中に receptionOnEdit_(e); の 1 行を足し、下の onEdit は消してください
  */
 
 var LINE_SHARE_MAX = 10;
@@ -26,12 +34,119 @@ var LINE_SHARE_EMPTY = "（未入力）";
 // 11 項目に整理する前（2026-10-28 まで）の見出し
 var LINE_SHARE_LEGACY = { "対応状況": "ステータス", "相談内容（AI要約）": "相談内容（AI要約・お客様確認済み）" };
 
+// 連絡済の行を隠すチェックボックスの見出し（受付一覧の 1 行目。この文字の右のセルがチェックボックス）
+var RECEPTION_HIDE_LABEL = "連絡済を隠す";
+var RECEPTION_TAB = "受付一覧";
+
 function onOpen() {
   lineShareAddMenu();
 }
 
+function onEdit(e) {
+  receptionOnEdit_(e);
+}
+
 function lineShareAddMenu() {
-  SpreadsheetApp.getUi().createMenu("LINE共有").addItem("選択した受付をLINE用にコピー", "lineShareSelected").addToUi();
+  SpreadsheetApp.getUi()
+    .createMenu("LINE共有")
+    .addItem("選択した受付をLINE用にコピー", "lineShareSelected")
+    .addSeparator()
+    .addItem("連絡済を隠す", "receptionHideContacted")
+    .addItem("すべて表示", "receptionShowAll")
+    .addToUi();
+}
+
+// ---------------- 連絡済の行を隠す・すべて表示 ----------------
+
+function receptionSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  return ss.getSheetByName(RECEPTION_TAB) || ss.getActiveSheet();
+}
+
+/** 1 行目の「連絡済を隠す」の右のセル（チェックボックス）。なければ null */
+function receptionToggleCell_(sheet) {
+  var lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return null;
+  var head = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+  for (var i = 0; i < head.length; i++) {
+    if (String(head[i]).trim() === RECEPTION_HIDE_LABEL) return sheet.getRange(1, i + 2);
+  }
+  return null;
+}
+
+/** 連絡済の行を隠す（hide=true）・すべて表示（false）。フィルタで隠す（行は消さない） */
+function receptionApplyHide_(sheet, hide) {
+  var lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return;
+  var cols = lineShareColumns_(sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0]);
+  if (cols.status < 0) return;
+  // フィルタをかけるのは受付の欄（見出しのある欄）だけ。「連絡済を隠す」のチェックボックスの欄は入れない
+  var known = [cols.status, cols.id, cols.name, cols.address, cols.phone, cols.summary].concat(cols.dates);
+  var width = Math.max.apply(null, known) + 1;
+  var filter = sheet.getFilter();
+  if (!filter) {
+    if (!hide) return;
+    filter = sheet.getRange(1, 1, sheet.getMaxRows(), width).createFilter();
+  }
+  if (!hide) {
+    filter.removeColumnFilterCriteria(cols.status + 1);
+    return;
+  }
+  // 隠す値：「連絡済」と、整理前の「連絡済み」「日程確定」「完了」
+  var hidden = ["連絡済"];
+  if (sheet.getLastRow() >= 2) {
+    sheet
+      .getRange(2, cols.status + 1, sheet.getLastRow() - 1, 1)
+      .getDisplayValues()
+      .forEach(function (r) {
+        var v = String(r[0]).trim();
+        if (/^(連絡済|日程確定|完了)/.test(v) && hidden.indexOf(v) < 0) hidden.push(v);
+      });
+  }
+  filter.setColumnFilterCriteria(cols.status + 1, SpreadsheetApp.newFilterCriteria().setHiddenValues(hidden).build());
+}
+
+/** チェックボックス・対応状況を変えたとき（シンプルトリガー onEdit から） */
+function receptionOnEdit_(e) {
+  if (!e || !e.range) return;
+  var sheet = e.range.getSheet();
+  if (sheet.getName() !== RECEPTION_TAB) return;
+  var toggle = receptionToggleCell_(sheet);
+  if (!toggle) return;
+  var r = e.range;
+  if (r.getRow() === toggle.getRow() && r.getColumn() === toggle.getColumn()) {
+    receptionApplyHide_(sheet, toggle.getValue() === true);
+    return;
+  }
+  // 隠している間に対応状況を変えた：フィルタをかけ直して、連絡済にした行もすぐ隠す
+  if (toggle.getValue() !== true || r.getRow() < 2) return;
+  var cols = lineShareColumns_(sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0]);
+  if (cols.status >= 0 && r.getColumn() <= cols.status + 1 && r.getLastColumn() >= cols.status + 1) receptionApplyHide_(sheet, true);
+}
+
+/** メニュー：連絡済を隠す */
+function receptionHideContacted() {
+  var sheet = receptionSheet_();
+  receptionApplyHide_(sheet, true);
+  var toggle = receptionToggleCell_(sheet);
+  if (toggle) toggle.setValue(true);
+}
+
+/** メニュー：すべて表示 */
+function receptionShowAll() {
+  var sheet = receptionSheet_();
+  receptionApplyHide_(sheet, false);
+  var toggle = receptionToggleCell_(sheet);
+  if (toggle) toggle.setValue(false);
+}
+
+/** 図形描画のボタン用：隠す・すべて表示を切り替える */
+function receptionToggleContacted() {
+  var sheet = receptionSheet_();
+  var toggle = receptionToggleCell_(sheet);
+  var hide = toggle ? toggle.getValue() !== true : true;
+  receptionApplyHide_(sheet, hide);
+  if (toggle) toggle.setValue(hide);
 }
 
 /** 見出し行 → 列の位置（0 始まり。ない列は -1） */

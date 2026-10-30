@@ -6,6 +6,8 @@ import {
   CheckCircle2,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   FileSpreadsheet,
   Loader2,
   MessageSquareText,
@@ -30,6 +32,8 @@ import { CHANNEL_LABEL, ESTIMATE_STATUS_LABEL as STATUS_LABEL, RECEPTION_HEADER 
 import { formatJst, truncate } from "@/lib/utils";
 
 const DAY_LABEL = ["日", "月", "火", "水", "木", "金", "土"];
+/** 受付一覧の「連絡済を隠す」の状態（この端末に覚えておく） */
+const HIDE_CONTACTED_KEY = "ichijoya-admin-hide-contacted";
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
@@ -52,6 +56,24 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
   const [channel, setChannel] = useState("");
   const [status, setStatus] = useState("");
   const [open, setOpen] = useState<string | null>(null);
+
+  // 「連絡済を隠す」（ボタン一つで、未連絡の受付だけにする。一畳屋様のご要望 2026-10-30）。この端末で前に選んだ状態を覚えておく
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(HIDE_CONTACTED_KEY) === "1") setStatus("new");
+    } catch {
+      // 保存できない環境では、毎回すべて表示から
+    }
+  }, []);
+  function toggleHideContacted() {
+    const next = status === "new" ? "" : "new";
+    setStatus(next);
+    try {
+      window.localStorage.setItem(HIDE_CONTACTED_KEY, next === "new" ? "1" : "0");
+    } catch {
+      // noop
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -148,6 +170,16 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
               </option>
             ))}
           </select>
+          <button
+            type="button"
+            className={`btn-secondary px-3 py-1.5 text-xs ${status === "new" ? "border-tatami-600 bg-tatami-50 text-tatami-700" : ""}`}
+            onClick={toggleHideContacted}
+            aria-pressed={status === "new"}
+            data-hide-contacted
+          >
+            {status === "new" ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+            {status === "new" ? "すべて表示" : "連絡済を隠す"}
+          </button>
           <button type="button" className="btn-secondary px-3 py-1.5 text-xs" onClick={load}>
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             更新
@@ -382,7 +414,8 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
         <td className="whitespace-nowrap">
           <Badge tone={e.channel === "phone" ? "blue" : e.channel === "line" ? "green" : "neutral"}>{CHANNEL_LABEL[e.channel]}</Badge>
         </td>
-        <td className="whitespace-nowrap font-medium text-sumi-800">
+        {/* 会社名つきの長いお名前（「有限会社くまもと管理 田中」）でも表が横にはみ出さないよう、長いお名前は折り返す */}
+        <td className="min-w-[8.5rem] max-w-[9.5rem] break-words font-medium text-sumi-800">
           {e.name}
           {e.lineUserId || e.syncError ? (
             <div className="mt-1 flex flex-col gap-1 text-xs font-normal">

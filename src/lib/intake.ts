@@ -427,8 +427,11 @@ export interface Extracted {
 }
 
 function cleanName(s: string): string {
+  // 頭の言いよどみ（「あのー、山田です」「えーっと、はい、山田です」）は、のばす音ごと除く
+  const lead = /^(?:はい|ええ|えっと|えーっと|えーと|え[ーっ]+|あの[ーう〜]*|あー|うーん|わたしは|私は|僕は|ぼくは)[、,ー〜\s]*/u;
   return s
-    .replace(/^(?:はい|えっと|えーと|あの|わたしは|私は|僕は|ぼくは)[、,]?\s*/u, "")
+    .replace(lead, "")
+    .replace(lead, "")
     .replace(NAME_LABEL, "")
     .replace(NAME_TAIL, "")
     .replace(/(?:様|さま)$/u, "")
@@ -442,13 +445,21 @@ const NOT_NAME_TAIL = /(?:に|を|が|へ|って|けど|けれど|ので|から|
 
 /**
  * お名前の中にはまず出ない言葉（ご依頼・品物・料金の話）。一畳屋様のご指摘 2026-10-29（EST-20261029-KIJJ）：
- * お名前を伺ったときの「一番安いのでお願いしまう」（打ち間違い）を、お名前として「一番安いのでお願いしまう様ですね」と返していた
+ * お名前を伺ったときの「一番安いのでお願いしまう」（打ち間違い）を、お名前として「一番安いのでお願いしまう様ですね」と返していた。
+ * 「本」は数えない（一本木・二本松・六本木のような姓をお名前と読めず、何度も伺い直さないように。2026-10-30「何度も名前を聞かれ先に進めない」）
  */
 const NOT_NAME_ANY =
-  /お願い|おねがい|一番(?:安|高|い)|安い|高い|ので|ください|下さい|したい|ほしい|欲しい|希望|料金|値段|金額|価格|いくら|種類|おすすめ|見積|みつもり|[0-9０-９一二三四五六七八九十]+\s*(?:枚|畳|帖|本|部屋)|網戸|障子|ふすま|クロス|カーテン|工事|交換|張替|張り替|新調|表替|わから|分から|大丈夫|いいです|結構/;
+  /お願い|おねがい|一番(?:安|高|い)|安い|高い|ので|ください|下さい|したい|ほしい|欲しい|希望|料金|値段|金額|価格|いくら|種類|おすすめ|見積|みつもり|[0-9０-９一二三四五六七八九十]+\s*(?:枚|畳|帖|部屋)|網戸|障子|ふすま|クロス|カーテン|工事|交換|張替|張り替|新調|表替|わから|分から|大丈夫|いいです|結構/;
+
+/**
+ * 言いよどみ・つなぎの声だけ（「あのー」「えっと」「うーん」）。お名前を伺ったときの「あのー」を、お名前「ー」として
+ * 「ー様ですね」と返していた（2026-10-30 の試験）
+ */
+const FILLER_ONLY = /^(?:え[ーっ]*と?|えっと|えーっと|あ[ーっ]*|あの[ーう〜]*|う[ーん]*|ん[ーん]*|ま[ーあ]*|その[ーう]*|はい|ええ|うん)$/;
 
 export function plausibleName(s: string): boolean {
   if (!s || s.length > 20 || /\d/.test(s) || /[?？!！]/.test(s)) return false;
+  if (/^[ー〜~\s・.、。]*$/.test(s) || FILLER_ONLY.test(s.replace(/[、。,.\s〜~]/g, ""))) return false;
   if (NOT_NAME.test(s) || NOT_NAME_LEAD.test(s) || NOT_NAME_TAIL.test(s) || NOT_NAME_ANY.test(s) || ADDRESS_START.test(s) || QUESTION_RE.test(s) || CANCEL_RE.test(s)) return false;
   return /^[一-龯々ぁ-んァ-ヶー\sA-Za-z・.]+$/u.test(s);
 }
@@ -456,7 +467,7 @@ export function plausibleName(s: string): boolean {
 /** AI が読み取ったお名前が、明らかにお名前ではない（ご依頼・品物・料金の話）。ひらがなの姓（「かない」など）は通す */
 export function notAName(s: string | undefined): boolean {
   const t = (s ?? "").normalize("NFKC").trim();
-  return Boolean(t) && (t.length > 30 || /[?？\d]/.test(t) || NOT_NAME_ANY.test(t));
+  return Boolean(t) && (t.length > 30 || /[?？\d]/.test(t) || NOT_NAME_ANY.test(t) || /^[ー〜~\s・.、。]*$/.test(t) || FILLER_ONLY.test(t.replace(/[、。,.\s〜~]/g, "")));
 }
 
 /**

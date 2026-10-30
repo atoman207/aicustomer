@@ -3,6 +3,7 @@
 //     （OpenAI で答えるときは資料の全文を渡し、根拠の引用＝evidence を先に作らせる）
 //   ・見積受付の聞き取り・復唱は OpenAI（構造化出力）で行い、そのときはナレッジを渡さない（トークン節約）
 import { fixAddress } from "./address-ai";
+import { areaOf, outOfAreaNote, serviceAreaFrom } from "./area";
 import { learnAnswer, planAnswer } from "./answer";
 import { env } from "./env";
 import { logError } from "./errorlog";
@@ -13,6 +14,7 @@ import { normalizeDraft } from "./intake";
 import { getKnowledge } from "./knowledge";
 import { canRetryWithChatModel, chatCompletionJson } from "./openai";
 import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt, isFullDocumentContext } from "./prompts";
+import { SALES_DECLINE, SalesPitchError } from "./sales";
 import { getSession, getSettings, saveSession, upsertConversation } from "./store";
 import { summarizeConversation } from "./summarize";
 import type { AgentSession, AgentStage, AgentTurnResult, Channel, IntakeDraft, SearchHit } from "./types";
@@ -238,30 +240,49 @@ export async function runTurn(
       // ご相談内容は会話の全体（最初のご相談から）でまとめ直す（聞き取り中の AI は直近 12 件しか見ていないため）
       // 電話で伺ったご住所の町名の聞き違い（「岱明町」→「大名町」）は、熊本県・大牟田市の町名の一覧で直す（LINE は文字のまま）
       const [whole, fixed] = await Promise.all([summarizeConversation(session.messages), fixAddress(result.draft.address, session.messages, { spoken: session.channel === "phone" })]);
-      const estimate = await createEstimate({
-        channel: session.channel,
-        name: result.draft.name ?? "",
-        address: fixed?.address ?? result.draft.address ?? "",
-        phone: result.draft.phone ?? "",
-        summary: (whole.mode === "openai" && whole.summary) || result.draft.summary || summaryFromMessages(session),
-        preferredDates: result.draft.dates,
-        sessionId: session.id,
-        confirmedByCustomer: true,
-      });
-      session.estimateId = estimate.id;
-      result.estimate = estimate;
-      if (session.channel !== "phone") result.reply = `${result.reply}\n受付番号：${estimate.id}`;
-      // 電話：受付を記録したら、お礼を伝えて通話を終える（AI が終了を判断しなかったときも、無言のまま待たせない）。
-      // AI がほかのご用件を伺っている（質問で終わる）ときは、お答えを待つ
-      else if (!/[?？]\s*$/.test(result.reply)) {
-        if (!/ありがとうございました/.test(result.reply)) result.reply = `${result.reply}\nお電話ありがとうございました。`;
-        result.done = true;
+      let created: Awaited<ReturnType<typeof createEstimate>> | null = null;
+      try {
+        created = await createEstimate({
+          channel: session.channel,
+          name: result.draft.name ?? "",
+          address: fixed?.address ?? result.draft.address ?? "",
+          phone: result.draft.phone ?? "",
+          summary: (whole.mode === "openai" && whole.summary) || result.draft.summary || summaryFromMessages(session),
+          preferredDates: result.draft.dates,
+          sessionId: session.id,
+          confirmedByCustomer: true,
+        });
+      } catch (e) {
+        if (!(e instanceof SalesPitchError)) throw e;
+      }
+      if (!created) {
+        // 営業・売り込みの内容：受け付けずに、お断りする（sales.ts）
+        result.reply = SALES_DECLINE;
+        result.stage = "consult";
+        result.done = session.channel === "phone";
+      } else {
+        const { duplicate: _dup, ...estimate } = created;
+        session.estimateId = estimate.id;
+        result.estimate = estimate;
+        if (session.channel !== "phone") result.reply = `${result.reply}\n受付番号：${estimate.id}`;
+        // 電話：受付を記録したら、お礼を伝えて通話を終える（AI が終了を判断しなかったときも、無言のまま待たせない）。
+        // AI がほかのご用件を伺っている（質問で終わる）ときは、お答えを待つ
+        else if (!/[?？]\s*$/.test(result.reply)) {
+          if (!/ありがとうございました/.test(result.reply)) result.reply = `${result.reply}\nお電話ありがとうございました。`;
+          result.done = true;
+        }
       }
     } else {
       result.stage = "collecting";
       result.reply = missingPrompt(result.draft);
       result.done = false;
     }
+  }
+
+  // ご住所が営業エリアの外：配送費が別途かかることを一度だけ伝える（一畳屋様のご指摘 2026-10-30「配送費のことを説明せずに受け付けた」。area.ts）
+  const newAddress = result.draft.address?.trim();
+  if (newAddress && newAddress !== session.draft.address?.trim() && !/配送費/.test(result.reply) && !session.messages.some((m) => m.role === "assistant" && /配送費/.test(m.content))) {
+    if (areaOf(newAddress, serviceAreaFrom((await getKnowledge()).entries)) === "out") result.reply = `${outOfAreaNote(newAddress)}\n${result.reply}`;
   }
 
   session.stage = result.stage;

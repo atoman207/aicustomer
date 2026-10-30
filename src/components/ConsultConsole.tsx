@@ -28,6 +28,7 @@ import {
   PhoneOff,
   RotateCcw,
   Store,
+  Volume2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AiAvatar from "./chat/AiAvatar";
@@ -41,6 +42,7 @@ import { CONSULT_EVENT, type ConsultCommand } from "@/lib/consult-events";
 import { clearConversation, loadConversation, saveConversation, type StoredMessage } from "@/lib/conversation-store";
 import { emptyDraft, keepTouched, missingFields, sanitizeIntake, unsureFromTalk, type IntakeField, type IntakeState } from "@/lib/intake";
 import { yenDigits } from "@/lib/jnum";
+import { receiptText } from "@/lib/receipt";
 import type { ChatMessage, EstimateRequest } from "@/lib/types";
 import { uid } from "@/lib/utils";
 import { captionWords } from "@/lib/voice-words";
@@ -135,6 +137,12 @@ export default function ConsultConsole({
   // 通話中は文字起こしを出さず、会話に集中できる簡単な画面に。会話は記録し、文字に切り替えたら見られるように）
   const [showLog, setShowLog] = useState(false);
   const [typing, setTyping] = useState(false);
+  // 通話中の「AIの声が聞こえないとき」の案内（一畳屋様のご指摘 2026-10-30「音が出ない（エクスペリア）」）
+  const [soundHelp, setSoundHelp] = useState(false);
+  // 確認画面が開いているか・この相談で送信した受付（声の AI が確認画面を開き直したり、送信の案内をくり返したりしないように。
+  // 開く・閉じる・送信のときにすぐ書き換える：画面の書き換えを待たずに、声の AI の処理から読めるように）
+  const estimateOpenRef = useRef(false);
+  const lastEstimateRef = useRef<EstimateRequest | null>(null);
   const messagesRef = useRef(messages);
   const sessionRef = useRef(sessionId);
   const busyRef = useRef(false);
@@ -210,7 +218,11 @@ export default function ConsultConsole({
       voiceSourcesRef.current = titles.slice(0, 3);
     },
     openEstimate: () => void openEstimate(),
-    onEstimate: (est) => setLastEstimate(est),
+    getEstimateState: () => ({ open: estimateOpenRef.current, submittedId: lastEstimateRef.current?.id }),
+    onEstimate: (est) => {
+      lastEstimateRef.current = est;
+      setLastEstimate(est);
+    },
     onSettled: () => {
       if (logDirtyRef.current) void saveLog();
     },
@@ -237,6 +249,7 @@ export default function ConsultConsole({
     if (inCall) return;
     setShowLog(false);
     setTyping(false);
+    setSoundHelp(false);
   }, [inCall]);
 
   // 通話時間の表示
@@ -487,6 +500,7 @@ export default function ConsultConsole({
     const id = uid();
     setSessionId(id);
     sessionRef.current = id;
+    lastEstimateRef.current = null;
     setLastEstimate(null);
     setIntake(emptyIntake());
     intakeRef.current = emptyIntake();
@@ -502,6 +516,7 @@ export default function ConsultConsole({
    * （すべてそろっていて、要約のあとに会話が増えていなければ読み取り直さない）
    */
   async function openEstimate() {
+    estimateOpenRef.current = true;
     setEstimateOpen(true);
     const history = toHistory(messagesRef.current);
     const cur = intakeRef.current;
@@ -551,20 +566,28 @@ export default function ConsultConsole({
     }));
   }
 
+  function closeEstimate() {
+    estimateOpenRef.current = false;
+    setEstimateOpen(false);
+  }
+
   function onSubmitted(est: EstimateRequest) {
+    lastEstimateRef.current = est;
     setLastEstimate(est);
     // 次のご依頼のために、お名前・ご連絡先だけ残す（ご希望日時・ご相談内容は新しく伺う）
     setIntake((prev) => ({ active: false, draft: { name: prev.draft.name, address: prev.draft.address, phone: prev.draft.phone, dates: [] } }));
-    const thanks = `無料お見積りのご依頼を受け付けました（受付番号：${est.id}）。\n担当者より折り返しお電話し、お見積りに伺う日程を決めさせていただきます。ありがとうございました。`;
-    if (voice.live) {
-      // 声で話している間：AI がひと言お礼を伝える（その声も会話に入る）
-      voice.notify(
-        `見積依頼フォームが送信され、受付番号 ${est.id} で登録されました。お客様に短くお礼を伝え、担当者より折り返しご連絡して日程を確定する旨を伝えてください。`,
-        `見積依頼を受付しました。受付番号は ${est.id} です。担当者より折り返しご連絡し、日程を確定いたします。`,
-      );
-      return;
-    }
+    // ご依頼の内容の控えを会話にも残す（確認画面を閉じたあとも、あとで確認できるように。一畳屋様のご要望 2026-10-30）
+    const receipt = receiptText(est);
+    const thanks = `無料お見積りのご依頼を受け付けました。\n担当者より折り返しお電話し、お見積りに伺う日程を決めさせていただきます。ありがとうございました。\n\n${receipt}`;
     setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: thanks, at: Date.now() }]);
+    if (voice.live) {
+      // 声で話している間：AI がひと言お礼を伝える（一度だけ。送信済みであることも伝え、確認画面の案内をくり返させない）
+      voice.notify(
+        `見積依頼フォームが送信され、受付番号 ${est.id} で登録されました。お客様に短くお礼を伝え、担当者より折り返しご連絡して日程を確定する旨を、一度だけ伝えてください。確認画面や送信ボタンの案内は、もうしないでください。`,
+        `見積依頼を受付しました。受付番号は ${est.id} です。担当者より折り返しご連絡し、日程を確定いたします。`,
+        `見積依頼は、お客様が送信済みです（受付番号 ${est.id}）。確認画面・送信ボタンの案内は、もうしないでください。`,
+      );
+    }
   }
 
   const asked = messages.some((m) => m.role === "user");
@@ -699,6 +722,42 @@ export default function ConsultConsole({
               </p>
               {call.hint ? <p className={`max-w-xs text-[13px] leading-snug text-sumi-500 ${call.act ? "" : "hidden sm:block"}`}>{call.hint}</p> : null}
               {voice.live ? <p className="text-sm tabular-nums text-sumi-400">{clockLabel}</p> : null}
+              {/* AI の声を流せなかった・聞こえない：押した操作の中で流し直す（一畳屋様のご指摘 2026-10-30「音が出ない（エクスペリア）」） */}
+              {voice.live && voice.audioBlocked ? (
+                <button
+                  type="button"
+                  onClick={voice.resumeAudio}
+                  className="inline-flex min-h-11 items-center gap-1.5 rounded-full bg-ichi-red px-5 py-2.5 text-[15px] font-bold text-white shadow-sm"
+                  data-audio-resume
+                >
+                  <Volume2 className="h-5 w-5" />
+                  音を出す
+                </button>
+              ) : voice.live ? (
+                <button
+                  type="button"
+                  onClick={() => setSoundHelp((v) => !v)}
+                  aria-expanded={soundHelp}
+                  className="inline-flex min-h-10 items-center gap-1 text-[12px] font-bold text-sumi-500 underline underline-offset-2"
+                  data-sound-help-toggle
+                >
+                  <Volume2 className="h-3.5 w-3.5" />
+                  声が聞こえないとき
+                </button>
+              ) : null}
+              {voice.live && soundHelp ? (
+                <div className="w-full max-w-xs rounded-xl border border-sumi-200 bg-white px-3.5 py-3 text-left text-[12px] leading-relaxed text-sumi-600" data-sound-help>
+                  <ul className="list-disc space-y-1 pl-4">
+                    <li>スマホの横の音量ボタンで、音量を上げてください</li>
+                    <li>イヤホンや Bluetooth の機器につながっていないか、ご確認ください</li>
+                    <li>それでも聞こえないときは、下のボタンを押してください</li>
+                  </ul>
+                  <button type="button" onClick={voice.resumeAudio} className="btn-secondary mt-2.5 w-full" data-audio-resume>
+                    <Volume2 className="h-4 w-4" />
+                    音を出す
+                  </button>
+                </div>
+              ) : null}
               {voice.mode === "demo" && mode === "openai" && voice.reason && voice.live ? (
                 <p className="max-w-xs text-[11px] leading-snug text-sumi-400" title={voice.reason}>
                   簡易音声モードでお話ししています
@@ -1045,7 +1104,7 @@ export default function ConsultConsole({
         <PhoneCompact />
       </aside>
 
-      <Modal open={estimateOpen} onClose={() => setEstimateOpen(false)} title="無料お見積りのご依頼">
+      <Modal open={estimateOpen} onClose={closeEstimate} title="無料お見積りのご依頼">
         <EstimateForm
           channel={messages.some((m) => m.channel === "voice") ? "web_voice" : "web_text"}
           sessionId={sessionId}
@@ -1056,7 +1115,7 @@ export default function ConsultConsole({
           loading={draftLoading}
           lineUrl={lineUrl}
           onSubmitted={onSubmitted}
-          onCancel={() => setEstimateOpen(false)}
+          onCancel={closeEstimate}
           onChange={onFormChange}
         />
       </Modal>

@@ -1,5 +1,6 @@
 import { createEstimate, listReceptions, receptionSink, receptionSinkLabel, validateEstimateInput } from "@/lib/estimates";
 import { error, json, rateLimited, readJson, requireAdmin } from "@/lib/http";
+import { SALES_DECLINE, SalesPitchError } from "@/lib/sales";
 import { getConversation, storageInfo, upsertConversation } from "@/lib/store";
 import type { Channel } from "@/lib/types";
 
@@ -53,11 +54,20 @@ export async function POST(req: Request) {
   };
   const errors = validateEstimateInput(input);
   if (errors.length > 0) return error(errors.join("、"), 400, { errors });
-  const estimate = await createEstimate(input);
+  let created: Awaited<ReturnType<typeof createEstimate>>;
+  try {
+    created = await createEstimate(input);
+  } catch (e) {
+    // 営業・売り込みの内容は受け付けない（sales.ts。理由は管理画面のエラー履歴に）
+    if (e instanceof SalesPitchError) return error(SALES_DECLINE, 422, { sales: true });
+    throw e;
+  }
+  // 少し前に同じお客様の受付があった（2 回送信など）：新しい受付にせず、前の受付をそのまま返す
+  const { duplicate, ...estimate } = created;
   if (input.sessionId) {
     const conv = await getConversation(input.sessionId);
     if (conv) await upsertConversation({ ...conv, estimateId: estimate.id, updatedAt: new Date().toISOString() });
   }
   const sink = receptionSink();
-  return json({ ok: true, estimate, sink, sinkLabel: receptionSinkLabel(sink) });
+  return json({ ok: true, estimate, duplicate: duplicate === true, sink, sinkLabel: receptionSinkLabel(sink) });
 }

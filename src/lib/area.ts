@@ -1,5 +1,9 @@
 // 「○○町は来てもらえますか？」に、顧客対応マニュアルの営業範囲から直接答える（OpenAI を使わない）
 //   営業範囲は「熊本市・菊池郡・…」のように市と郡で書かれているため、郡に属する町村は下の対応表で判定する
+// 見積依頼のご住所が営業エリアの外か（areaOf。一畳屋様のご指摘 2026-10-30「なにもことわらずに営業エリア外の住所をこたえたら、
+//   配送費のことを説明せずに受け付けた」）：エリアの外のご住所では、配送費が別途かかることを必ず伝える
+//   （文字の相談の聞き取り・声の相談の check_address・電話/LINE・確認画面）
+import { PLACE_CITIES, lookupAddress, type PlaceCity } from "./gazetteer";
 
 /** 熊本県の市町村（郡ごと）と近隣の市。地理的な事実のみ */
 const GUN: Record<string, string[]> = {
@@ -81,4 +85,51 @@ export function answerArea(question: string, manualText: string): AreaAnswer | n
         .replace(/（場所による）/, "（金額は場所によります）")
     : "エリア外のご依頼は担当者が確認してご案内します";
   return { reply: `${name}${where}は当社の通常の営業範囲外ですが、${outside.replace(/^エリア外でも/, "")}${/。$/.test(outside) ? "" : "。"}`.replace(/、。/g, "。"), place: name, inArea: false };
+}
+
+// ---------------- 見積依頼のご住所が営業エリアの外か ----------------
+
+/** 資料に「営業範囲」の行がないときの営業エリア（2026-10-30 の資料のとおり） */
+export const DEFAULT_AREA = ["熊本市", "合志市", "菊池市", "菊池郡", "山鹿市", "荒尾市", "玉名市", "玉名郡", "宇土市", "宇城市", "八代市", "上益城郡", "下益城郡", "阿蘇市", "阿蘇郡", "大牟田市"];
+
+/** ナレッジ（資料の項目）から営業範囲の市・郡を読む（「営業範囲　熊本市・合志市・…・大牟田市（福岡）」） */
+export function serviceAreaFrom(entries: { title: string; content: string }[]): string[] {
+  for (const e of entries) {
+    const areas = areaFromManual(`${e.title}\n${e.content}`)?.areas.filter((a) => /[市郡町村]$/.test(a));
+    if (areas && areas.length >= 3) return areas;
+  }
+  return DEFAULT_AREA;
+}
+
+/** 熊本県・大牟田市の一覧にない、近くの県のおもな市（都道府県を言わなかったご住所の手がかり） */
+const NEARBY_OUTSIDE = /^(?:福岡市|北九州市|久留米市|柳川市|みやま市|筑後市|大川市|八女市|佐賀市|鳥栖市|唐津市|長崎市|佐世保市|諫早市|鹿児島市|出水市|薩摩川内市|宮崎市|延岡市|都城市|大分市|日田市|別府市)/;
+
+export type AreaStatus = "in" | "out" | "unknown";
+
+/** ご住所が営業エリアの中か外か（市区町村がわからなければ unknown。わからないときは「外」と言わない） */
+export function areaOf(address: string, area: string[] = DEFAULT_AREA): AreaStatus {
+  const a = (address ?? "").normalize("NFKC").replace(/\s+/g, "");
+  if (!a) return "unknown";
+  const l = lookupAddress(a);
+  let cities: PlaceCity[] = l.cities;
+  // 市区町村を言わずに町名だけ（「坪井3丁目」）：その町名の市区町村
+  if (!cities.length && l.town) cities = PLACE_CITIES.filter((c) => c.name === l.town?.city);
+  if (cities.length) {
+    const inArea = (c: PlaceCity) => area.some((n) => c.city === n || c.county === n || c.name === n || c.name.startsWith(n));
+    return cities.some(inArea) ? "in" : "out";
+  }
+  // 熊本県・福岡県（大牟田市）の外の都道府県
+  const pref = a.match(/^(?:北海道|東京都|京都府|大阪府|[一-龯]{2,3}県)/)?.[0];
+  if (pref && pref !== "熊本県" && pref !== "福岡県") return "out";
+  const rest = pref ? a.slice(pref.length) : a;
+  if (pref === "福岡県" && !/^大牟田市/.test(rest)) return "out";
+  if (NEARBY_OUTSIDE.test(rest)) return "out";
+  return "unknown";
+}
+
+/** エリアの外のときに、お客様に伝える一言（市区町村がわかれば、その名前を添える） */
+export function outOfAreaNote(address: string): string {
+  const l = lookupAddress((address ?? "").normalize("NFKC").replace(/\s+/g, ""));
+  const where = l.cities[0]?.name ?? "";
+  return `${where ? `${where}は` : "ご住所は"}当社の営業エリアの外ですが、ご相談はお受けしております。営業エリア外のため、別途、配送費がかかります（場所によります）。`;
 }

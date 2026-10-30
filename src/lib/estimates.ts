@@ -1,10 +1,21 @@
 // 見積依頼（受付情報）の作成とスプレッドシートへの記録
 import { env } from "./env";
 import { logError } from "./errorlog";
-import { gasRequest, sheetsAppendRow, sheetsEnsureTab, sheetsReadHeader, sheetsReadTabByName, sheetsSetDropdown, sheetsUpdateCell } from "./google";
+import {
+  gasRequest,
+  sheetsAppendRow,
+  sheetsEnsureTab,
+  sheetsInsertRowAtTop,
+  sheetsReadHeader,
+  sheetsReadRange,
+  sheetsReadTabByName,
+  sheetsSetDropdown,
+  sheetsUpdateCell,
+} from "./google";
+import { SalesPitchError, isSalesPitch } from "./sales";
 import { addEstimate, listEstimates, updateEstimate } from "./store";
 import { CHANNEL_LABEL, ESTIMATE_STATUS_LABEL, RECEPTION_HEADER, type Channel, type EstimateRequest, type EstimateStatus, type ReceptionColumn } from "./types";
-import { formatJst, isLikelyPhone, newId, normalizePhone, nowJstIso } from "./utils";
+import { formatJst, isLikelyPhone, newId, normalizePhone, nowJstIso, truncate } from "./utils";
 
 export interface EstimateInput {
   channel: Channel;
@@ -86,6 +97,7 @@ function receptionColumns(head: string[]): Record<ReceptionColumn, number> {
 
 /**
  * 受付一覧のタブに 1 行記録する。値は見出しで列を探して入れる（担当者が列を足したり並べ替えたりしても正しい欄に入る）。
+ * 新しい受付は見出しのすぐ下（いちばん上）に入れる（一畳屋様のご要望 2026-10-30「新しいものが上」）。
  * タブがなければ 11 項目の見出しで作る。「対応状況」の欄は「未連絡」「連絡済」のプルダウンにする（新しい行にも）
  */
 async function recordToSheet(e: EstimateRequest): Promise<void> {
@@ -104,7 +116,7 @@ async function recordToSheet(e: EstimateRequest): Promise<void> {
   RECEPTION_HEADER.forEach((h, i) => {
     if (cols[h] >= 0) row[cols[h]] = values[i];
   });
-  await sheetsAppendRow(id, name, Array.from(row, (v) => v ?? ""));
+  await sheetsInsertRowAtTop(id, name, Array.from(row, (v) => v ?? ""));
   if (head[cols["対応状況"]]?.trim() === "対応状況") {
     // プルダウンを付けられなくても、受付の記録は済んでいる（理由は管理画面のエラー履歴に）
     await sheetsSetDropdown(id, name, cols["対応状況"], Object.values(ESTIMATE_STATUS_LABEL)).catch((err) =>
@@ -133,7 +145,66 @@ export async function linkEstimateToLine(id: string, userId: string): Promise<"l
   return "linked";
 }
 
-export async function createEstimate(input: EstimateInput): Promise<EstimateRequest> {
+// ---------------- 同じご依頼を 2 件受け付けない ----------------
+// 一畳屋様のご指摘 2026-10-30「送信ボタンは 1 回しか押してないのに同じものが 2 回受信されている（エクスペリア）」：
+// 2 回押し・送信のあとに確認画面が開き直して、もう一度送信したなど。同じお客様（お名前とお電話番号が同じ）の受付が
+// DUPLICATE_MS の間にもう一度届いたら、新しい受付にせず、前の受付（同じ受付番号）を返す
+
+const DUPLICATE_MS = 30 * 60 * 1000;
+const nameKey = (s: string) => s.normalize("NFKC").replace(/\s+/g, "").replace(/(?:様|さま)$/, "");
+const phoneKey = (s: string) => s.normalize("NFKC").replace(/\D/g, "");
+
+const sameCustomer = (e: EstimateRequest, name: string, phone: string, since: number) =>
+  Boolean(phone) && phoneKey(e.phone) === phone && nameKey(e.name) === name && Date.parse(e.receivedAt) >= since;
+
+/** 少し前に受け付けた、同じお客様の受付（このサーバーの保存と、受付一覧のシートの上の行＝新しい受付から探す） */
+async function recentDuplicate(name: string, phone: string): Promise<EstimateRequest | null> {
+  const since = Date.now() - DUPLICATE_MS;
+  const local = (await listEstimates()).find((e) => sameCustomer(e, name, phone, since));
+  if (local || receptionSink() !== "sheets_api") return local ?? null;
+  try {
+    const rows = await sheetsReadRange(env.receptionSheetId, env.receptionSheetName, "A1:Z40");
+    return parseReceptionRows(rows).items.find((x) => sameCustomer(x.estimate, name, phone, since))?.estimate ?? null;
+  } catch (e) {
+    // タブがまだない（最初の受付）なら重複もない。読めなかったときは、そのまま受け付ける（理由は管理画面のエラー履歴に）
+    if (!/Unable to parse range/.test((e as Error).message)) await logError("sheet", "見積受付の重複の確認（受付一覧の読み取り）", e);
+    return null;
+  }
+}
+
+const inflight = globalThis as unknown as { __estimateInflight?: Map<string, Promise<EstimateRequest>> };
+
+/**
+ * 見積依頼を受け付ける。売り込み（営業）の内容は受け付けない（SalesPitchError）。同じお客様の受付が少し前にあれば、
+ * その受付を返す（duplicate: true。同時に 2 回届いたときも 1 件だけ記録する）
+ */
+export async function createEstimate(input: EstimateInput): Promise<EstimateRequest & { duplicate?: boolean }> {
+  const key = `${nameKey(input.name)}|${phoneKey(normalizePhone(input.phone))}`;
+  const map = (inflight.__estimateInflight ??= new Map());
+  const running = map.get(key);
+  if (running) {
+    const first = await running.catch(() => null);
+    if (first) return { ...first, duplicate: true };
+  }
+  const p = (async () => {
+    // 一畳屋様のご要望 2026-10-30「営業の問い合わせが無理に送信してきても受け付けなくしてほしい」（sales.ts）
+    if (await isSalesPitch(`お名前：${input.name}\nご住所：${input.address}\nご相談内容：${input.summary}`)) {
+      await logError("other", "営業のお問い合わせのため、見積依頼として受け付けませんでした", `${truncate(input.name, 40)}：${truncate(input.summary, 200)}`);
+      throw new SalesPitchError();
+    }
+    const dup = await recentDuplicate(nameKey(input.name), phoneKey(normalizePhone(input.phone)));
+    if (dup) return { ...dup, duplicate: true };
+    return createEstimateRecord(input);
+  })();
+  map.set(key, p);
+  try {
+    return await p;
+  } finally {
+    if (map.get(key) === p) map.delete(key);
+  }
+}
+
+async function createEstimateRecord(input: EstimateInput): Promise<EstimateRequest> {
   const phone = normalizePhone(input.phone);
   const record: EstimateRequest = {
     id: newId("EST"),
@@ -266,20 +337,37 @@ export async function listReceptions(): Promise<ReceptionList> {
     // シートにある欄はシートの値（担当者の修正を含む）、シートにない情報（会話の ID・LINE・自動入力の項目など）はサーバーの値
     return l ? { ...l, ...s, receivedAt: l.receivedAt || s.receivedAt, syncedTo: l.syncedTo } : s;
   });
-  const estimates = [...fromSheet, ...byId.values()].sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
+  // 新しい順。受付日時が同じ（同じ分・同じ秒）ならシートの並び（上ほど新しい）のまま
+  const estimates = [...fromSheet, ...byId.values()].sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : a.receivedAt > b.receivedAt ? -1 : 0));
   return { estimates, fromSheet: true };
 }
 
-/** 対応状況を変える（シートに記録しているときは、シートの「対応状況」の欄も書き換える） */
+/**
+ * 対応状況を変える（シートに記録しているときは、シートの「対応状況」の欄も書き換える）。
+ * 新しい受付はいちばん上の行に入るので、読んでから書くまでの間に受付が届くと行が 1 つずれる：書いたあとに、その行の
+ * 受付番号を確かめ、ずれていたら書いた欄を元に戻して書き直す
+ */
 export async function setEstimateStatus(id: string, status: EstimateStatus): Promise<EstimateRequest | null> {
   const local = await updateEstimate(id, { status });
   if (receptionSink() !== "sheets_api") return local;
-  const rows = await sheetsReadTabByName(env.receptionSheetId, env.receptionSheetName);
-  const sheet = rows ? parseReceptionRows(rows) : null;
-  const hit = sheet?.items.find((x) => x.estimate.id === id);
-  if (!sheet || !hit) return local; // シートへの記録に失敗した受付：サーバーの保存だけ
-  const col = sheet.cols["対応状況"];
-  if (col < 0) throw new Error(`シート「${env.receptionSheetName}」に「対応状況」の欄（見出し）がありません`);
-  await sheetsUpdateCell(env.receptionSheetId, env.receptionSheetName, hit.row, col, ESTIMATE_STATUS_LABEL[status]);
-  return local ? { ...local, status } : { ...hit.estimate, status };
+  const sid = env.receptionSheetId;
+  const tab = env.receptionSheetName;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const rows = await sheetsReadTabByName(sid, tab);
+    const sheet = rows ? parseReceptionRows(rows) : null;
+    const hit = sheet?.items.find((x) => x.estimate.id === id);
+    if (!rows || !sheet || !hit) return local; // シートへの記録に失敗した受付：サーバーの保存だけ
+    const col = sheet.cols["対応状況"];
+    const idCol = sheet.cols["受付番号"];
+    if (col < 0) throw new Error(`シート「${tab}」に「対応状況」の欄（見出し）がありません`);
+    await sheetsUpdateCell(sid, tab, hit.row, col, ESTIMATE_STATUS_LABEL[status]);
+    const now = idCol >= 0 ? ((await sheetsReadRange(sid, tab, `${hit.row + 1}:${hit.row + 1}`))[0] ?? []) : [];
+    const there = (now[idCol] ?? "").toString().normalize("NFKC").trim().toUpperCase();
+    if (idCol < 0 || there === id) return local ? { ...local, status } : { ...hit.estimate, status };
+    // ずれていた：書いてしまった行（ほかの受付）の対応状況を、読んだときの値（新しく届いた受付なら「未連絡」）に戻す
+    const before = sheet.items.find((x) => x.estimate.id === there);
+    const restore = before ? (rows[before.row]?.[col] ?? "") : ESTIMATE_STATUS_LABEL.new;
+    await sheetsUpdateCell(sid, tab, hit.row, col, restore.toString());
+  }
+  throw new Error(`シート「${tab}」の対応状況を書き換えられませんでした（受付が続けて届いたため）。もう一度お試しください`);
 }

@@ -6,6 +6,7 @@
 //       伺う文は決まった文（AI が日程を約束したり、確定したりしないように）
 import { fixAddress } from "./address-ai";
 import { composeAnswer, planAnswer, type AnswerSource } from "./answer";
+import { areaOf, outOfAreaNote, serviceAreaFrom } from "./area";
 import { env } from "./env";
 import { lookupAddress } from "./gazetteer";
 import { logError } from "./errorlog";
@@ -35,8 +36,10 @@ import {
   type IntakeField,
   type IntakeState,
 } from "./intake";
+import { getKnowledge } from "./knowledge";
 import { chatCompletionJson } from "./openai";
 import { INTAKE_JSON_SCHEMA, buildIntakeExtractPrompt } from "./prompts";
+import { SALES_DECLINE, isSalesPitch } from "./sales";
 import type { ChatMessage, IntakeDraft } from "./types";
 import { isLikelyPhone, truncate } from "./utils";
 
@@ -265,6 +268,10 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
 
   // AI の「お伺いしましょうか？」に「お願いします」と答えて、伺い始める
   const offered = starting && !wantsEstimate(last) && acceptsOffer(last, prevAi);
+  // 営業・売り込みの会話では、お名前などを伺い始めない（一畳屋様のご要望 2026-10-30。sales.ts）
+  if (starting && (await isSalesPitch(messages.filter((m) => m.role === "user").map((m) => m.content).join("\n")))) {
+    return { reply: SALES_DECLINE, state: { ...state, active: false, ready: false, asked: [] }, mode: "rules", sources: [] };
+  }
   // 確認画面の準備後の訂正（「電話番号は080-…でした」など）
   if (!state.active && state.ready && !wantsEstimate(last) && !offered) {
     const x = extractIntake(last, [], today);
@@ -340,24 +347,40 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
     sources = a.sources;
   }
 
+  // ご住所が営業エリアの外：配送費が別途かかることを伝える（一畳屋様のご指摘 2026-10-30「配送費のことを説明せずに受け付けた」。area.ts）
+  const got = filledNow(state.draft, draft);
+  const areaNote =
+    got.includes("address") && draft.address && areaOf(draft.address, serviceAreaFrom((await getKnowledge()).entries)) === "out" ? outOfAreaNote(draft.address) : "";
+
   // 4. 足りない項目を伺う／そろったら確認画面へ
-  const needs = intakeNeeds(draft, asked, state.draft);
+  let needs = intakeNeeds(draft, asked, state.draft);
+  // お名前を 2 回伺っても読み取れなかった：それ以上は伺わずに先へ進む（確認画面で入力していただく。
+  // 一畳屋様のご指摘 2026-10-30「何度も名前を聞かれ先に進めない」）
+  const nameAsks = history.filter((m) => m.role === "assistant" && NAME_ASK.test(m.content)).length;
+  const skipName = needs.includes("name") && nameAsks >= 2;
+  if (skipName) needs = needs.filter((f) => f !== "name");
+  const carried = skipName ? { ...carry, unsure: [...new Set([...(unsure ?? []), "name" as IntakeField])] } : carry;
+  const nameLater = skipName ? "お名前は、このあと表示される確認画面でご入力ください。" : "";
   if (needs.length === 0) {
     if (!draft.summary) draft = { ...draft, summary: extractFromConversation(messages, today).summary || undefined };
     const ready = intakeReadyText(draft, job);
     return {
-      reply: answer ? `${answer}\n\n${ready}` : ready,
-      state: { ...carry, active: false, ready: true, asked: [], draft, summaryAt: messages.length },
+      reply: [answer, areaNote, nameLater, ready].filter(Boolean).join("\n\n"),
+      state: { ...carried, active: false, ready: true, asked: [], draft, summaryAt: messages.length },
       mode,
       sources,
     };
   }
-  const q = intakeQuestion(draft, { needs, start: starting, offered, got: filledNow(state.draft, draft), past, today, callName });
-  const reply = !answer ? q.text : starting ? `${answer}\n\n${q.text}` : `${answer}\n\n（お見積りのご依頼の続きです）\n${q.text.replace(/^ありがとうございます。/, "")}`;
+  const q = intakeQuestion(draft, { needs, start: starting, offered, got, past, today, callName });
+  const ask = [areaNote, nameLater, q.text].filter(Boolean).join("\n");
+  const reply = !answer ? ask : starting ? `${answer}\n\n${ask}` : `${answer}\n\n（お見積りのご依頼の続きです）\n${ask.replace(/^ありがとうございます。/, "")}`;
   return {
     reply,
-    state: { ...carry, active: true, ready: false, asked: q.asked, draft, summaryAt: draft.summary ? messages.length : state.summaryAt },
+    state: { ...carried, active: true, ready: false, asked: q.asked, draft, summaryAt: draft.summary ? messages.length : state.summaryAt },
     mode,
     sources,
   };
 }
+
+/** AI がお名前を伺った文（intakeQuestion の「お名前を教えていただけますか？」など） */
+const NAME_ASK = /お名前を(?:教えて|お願い|もう一度|伺)/;

@@ -8,6 +8,7 @@ import { Check, CheckCircle2, Copy, ExternalLink, Loader2, LockKeyhole, PencilLi
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import SpriteIcon from "./SpriteIcon";
 import { FIELD_LABEL, type DraftField } from "@/lib/intake";
+import { receiptText } from "@/lib/receipt";
 import type { Channel, EstimateRequest, IntakeDraft } from "@/lib/types";
 import { formatJst, isLikelyPhone } from "@/lib/utils";
 
@@ -100,9 +101,35 @@ export default function EstimateForm({
   const [agree, setAgree] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState("");
-  const [result, setResult] = useState<{ estimate: EstimateRequest; sinkLabel: string } | null>(null);
+  // duplicate：少し前に同じご依頼を受け付けていた（2 回目の送信。新しい受付にせず、前の受付番号のまま）
+  const [result, setResult] = useState<{ estimate: EstimateRequest; sinkLabel: string; duplicate?: boolean } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [receiptCopied, setReceiptCopied] = useState<"" | "ok" | "ng">("");
   const firstInputRef = useRef<HTMLDivElement>(null);
+  // 送信は 1 回だけ（2 回押し・2 回タップで同じ受付が 2 件にならないように。一畳屋様のご指摘 2026-10-30「送信 1 回で 2 回受信」）
+  const sendingRef = useRef(false);
+
+  // ご住所が営業エリアの外なら、配送費が別途かかることを確認画面にも出す（一畳屋様のご指摘 2026-10-30「営業エリア外の住所で、
+  // 配送費のことを説明せずに受け付けた」。営業エリアはスプレッドシートの「営業範囲」の行：/api/address/check）
+  const [areaNote, setAreaNote] = useState("");
+  useEffect(() => {
+    const a = address.trim();
+    if (a.length < 3) {
+      setAreaNote("");
+      return;
+    }
+    const ac = new AbortController();
+    const t = window.setTimeout(() => {
+      fetch("/api/address/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: a }), signal: ac.signal })
+        .then((r) => r.json())
+        .then((j: { area?: string; area_text?: string }) => setAreaNote(j.area === "out" ? (j.area_text ?? "") : ""))
+        .catch(() => undefined);
+    }, 500);
+    return () => {
+      window.clearTimeout(t);
+      ac.abort();
+    };
+  }, [address]);
 
   const dates = useMemo(() => rows.map((r) => r.text.trim()).filter(Boolean), [rows]);
   const value: Record<DraftField, string> = { name, address, phone, summary, dates: dates.join("\n") };
@@ -187,6 +214,7 @@ export default function EstimateForm({
   }
 
   async function submit() {
+    if (sendingRef.current || step === 1) return;
     const e = validate();
     setErrors(e);
     if (Object.keys(e).length) {
@@ -199,9 +227,11 @@ export default function EstimateForm({
       setServerError("内容をご確認のうえ、チェックボックスにチェックを入れてください");
       return;
     }
+    sendingRef.current = true;
     setSubmitting(true);
     setServerError("");
     const filled = FIELDS.filter((f) => aiFilled.has(f) && !isEmpty(f));
+    let done = false;
     try {
       const res = await fetch("/api/estimates", {
         method: "POST",
@@ -218,18 +248,48 @@ export default function EstimateForm({
           autofill: { filled, edited: filled.filter((f) => touched.has(f)) },
         }),
       });
-      const j = (await res.json()) as { ok: boolean; error?: string; estimate?: EstimateRequest; sinkLabel?: string };
+      const j = (await res.json()) as { ok: boolean; error?: string; estimate?: EstimateRequest; sinkLabel?: string; duplicate?: boolean };
       if (!res.ok || !j.ok || !j.estimate) {
         setServerError(j.error ?? "送信に失敗しました");
         return;
       }
-      setResult({ estimate: j.estimate, sinkLabel: j.sinkLabel ?? "" });
+      done = true;
+      setResult({ estimate: j.estimate, sinkLabel: j.sinkLabel ?? "", duplicate: j.duplicate === true });
       setStep(1);
       onSubmitted?.(j.estimate);
     } catch {
       setServerError("通信エラーが発生しました。時間をおいて再度お試しください");
     } finally {
       setSubmitting(false);
+      // 送れなかったときだけ、もう一度押せるようにする（送れた確認画面からは、もう送らない）
+      if (!done) sendingRef.current = false;
+    }
+  }
+
+  /** 受付の控え（receipt.ts）をコピーする（メモなどに保存していただく） */
+  async function copyReceipt() {
+    if (!result) return;
+    const text = receiptText(result.estimate);
+    try {
+      await navigator.clipboard.writeText(text);
+      setReceiptCopied("ok");
+      return;
+    } catch {
+      // 埋め込みの窓の中などで使えないとき：選んだ文字をコピーする
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      setReceiptCopied(ok ? "ok" : "ng");
+    } catch {
+      setReceiptCopied("ng");
     }
   }
 
@@ -344,6 +404,11 @@ export default function EstimateForm({
           </p>
         ) : null}
         {errors[f] ? <p className="mt-1 text-xs font-bold text-shu-600">{errors[f]}</p> : null}
+        {f === "address" && areaNote ? (
+          <p className="mt-1 text-xs font-bold leading-relaxed text-amber-800" data-area-note>
+            {areaNote}
+          </p>
+        ) : null}
       </div>
     );
   };
@@ -514,6 +579,37 @@ export default function EstimateForm({
             <br />
             <span className="text-xs text-sumi-400">受付日時：{formatJst(result.estimate.receivedAt)}</span>
           </p>
+          {result.duplicate ? (
+            <p className="rounded-lg bg-ichi-cream px-3 py-2 text-xs leading-relaxed text-ichi-theme" data-duplicate>
+              このご依頼は、すでに受け付けております（受付番号は同じです）。二重に受け付けることはありませんので、ご安心ください。
+            </p>
+          ) : null}
+          {/* ご依頼の内容の控え（あとで確認できるように、コピーかスクリーンショットで保存していただく。一畳屋様のご要望 2026-10-30） */}
+          <div className="rounded-xl border border-ichi-green/30 bg-ichi-cream/60 p-4 text-left" data-receipt>
+            <p className="text-sm font-bold text-ichi-theme">ご依頼の内容（控え）</p>
+            <p className="mt-1 text-xs leading-relaxed text-sumi-600">
+              あとで確認できるよう、<b>この画面のスクリーンショット</b>を撮るか、「内容をコピー」でメモなどに保存しておいてください。
+            </p>
+            <dl className="mt-3 space-y-1.5 text-[13px] leading-relaxed text-sumi-700">
+              {[
+                ["お名前", `${result.estimate.name} 様`],
+                ["ご住所", result.estimate.address],
+                ["お電話番号", result.estimate.phone],
+                ["ご希望日時", result.estimate.preferredDates.length ? result.estimate.preferredDates.join("／") : "（なし）"],
+                ["ご相談内容", result.estimate.summary],
+              ].map(([k, v]) => (
+                <div key={k} className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-2">
+                  <dt className="text-xs font-bold text-sumi-500">{k}</dt>
+                  <dd className="break-words">{v}</dd>
+                </div>
+              ))}
+            </dl>
+            <button type="button" className="btn-secondary mt-3 w-full sm:w-auto" onClick={() => void copyReceipt()} data-copy-receipt>
+              {receiptCopied === "ok" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {receiptCopied === "ok" ? "コピーしました" : "内容をコピー"}
+            </button>
+            {receiptCopied === "ng" ? <p className="mt-1.5 text-xs text-shu-600">コピーできませんでした。お手数ですが、スクリーンショットで保存してください。</p> : null}
+          </div>
           {lineUrl ? (
             <div className="rounded-xl border border-ichi-line/40 bg-ichi-line/10 p-4 text-left">
               <p className="text-sm font-bold text-ichi-theme">一畳屋の公式LINEもご利用いただけます（任意）</p>

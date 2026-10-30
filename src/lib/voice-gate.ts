@@ -46,6 +46,21 @@ const AI_HANGOVER_S = 0.3;
 const AI_TAIL_S = 1.2;
 /** 遅れを取り戻すとき、静かな部分を最大でこの倍率で飛ばす（話している部分は飛ばさない） */
 const CATCH_UP = 6;
+/**
+ * 遠くの話し声を送らない（一畳屋様のご指摘 2026-10-30「遠くで違う人の会話を途中で拾われた。同じ部屋の離れた場所での電話の会話も」）：
+ * お客様がマイクの近くで話す声の大きさを覚えておき、その NEAR_RATIO 倍より小さい音（遠くの人の声・テレビ・ほかの人の電話）は、
+ * お客様の声とみなさない（送らない・割り込みにしない）。小さめの声のお客様も止めないよう、求める大きさは NEAR_MAX まで。
+ * 覚えた大きさは NEAR_HALF_LIFE 秒ごとに半分に戻す（お客様がスマホから離れても、ずっと聞こえないままにならない）
+ */
+// 2026-10-30 の gate-near（同じ声の音量を区間ごとに変えて入れる）：0.35・0.09 で、お客様の声より 18dB 小さい声（3m ほど離れた人）は
+// ほぼ送らず（送った割合 0〜7%）、お客様の 10dB 小さめの声も 92〜100% 送る。gate-sweep（割り込み・相づち・回り込み）は変わらず
+const NEAR_RATIO = 0.35;
+const NEAR_MAX = 0.09;
+/** お客様の声の大きさを覚える速さ（秒） */
+const NEAR_TAU_S = 1.5;
+const NEAR_HALF_LIFE_S = 20;
+/** お客様の声が途切れてから、この時間は送り続ける（言葉の終わり・小さくなる語尾を切らない） */
+const NEAR_HANG_S = 0.35;
 
 export interface VoiceGate {
   /** OpenAI に送るマイクの音声 */
@@ -81,6 +96,11 @@ export const GATE_OPTIONS = {
   aiHangover: AI_HANGOVER_S,
   aiTail: AI_TAIL_S,
   catchUp: CATCH_UP,
+  nearRatio: NEAR_RATIO,
+  nearMax: NEAR_MAX,
+  nearTau: NEAR_TAU_S,
+  nearHalfLife: NEAR_HALF_LIFE_S,
+  nearHang: NEAR_HANG_S,
 };
 
 /** AudioWorklet の処理（音声の処理の専用スレッドで動く。試験のために書き出す） */
@@ -111,6 +131,10 @@ class VoiceGate extends AudioWorkletProcessor {
     this.gated = false;
     this.decay = Math.pow(this.c.release, this.n / sampleRate / 0.05);
     this.fdecay = Math.pow(this.c.fastRelease, this.n / sampleRate / 0.01);
+    // お客様がマイクの近くで話す声の大きさ（遠くの話し声を送らないため）
+    this.near = 0;
+    this.nearDecay = this.c.nearHalfLife > 0 ? Math.pow(0.5, this.n / sampleRate / this.c.nearHalfLife) : 1;
+    this.nearK = this.c.nearTau > 0 ? Math.min(1, this.n / sampleRate / this.c.nearTau) : 1;
     this.port.onmessage = (e) => {
       const m = e.data || {};
       if ("ai" in m) this.aiFlag = !!m.ai;
@@ -154,9 +178,16 @@ class VoiceGate extends AudioWorkletProcessor {
     else this.ring.fill(0, this.cur, this.cur + n);
     const level = mic ? this.rms(mic) : 0;
     const dt = n / sampleRate;
+    // お客様の声とみなす大きさ：お客様の声の大きさの nearRatio 倍（nearMax まで）。それより小さい音は遠くの話し声など
+    const thr = c.nearRatio > 0 ? Math.max(c.micLevel, Math.min(this.near * c.nearRatio, c.nearMax)) : c.micLevel;
     // 遅い包絡線（loud）：言葉の短い切れ目は「話し中」。送り始める位置（utter）と、追いつくときに飛ばしてよい静かな部分の判定に使う
     this.env = Math.max(level, this.env * this.decay);
-    const loud = this.env > c.micLevel;
+    const loud = this.env > thr;
+    // お客様の声の大きさを覚える（いま覚えている大きさの半分より大きい声だけで。遠くの小さな声では上げない）
+    if (c.nearRatio > 0) {
+      this.near *= this.nearDecay;
+      if (this.env > c.micLevel && this.env > this.near * 0.5) this.near += (Math.min(this.env, 0.5) - this.near) * this.nearK;
+    }
     this.loud[this.cur / n] = loud ? 1 : 0;
     if (loud) {
       if (this.quiet >= c.gap) this.utter = 0;
@@ -168,7 +199,7 @@ class VoiceGate extends AudioWorkletProcessor {
     }
     // 速い包絡線（voiced）：いま声が出ているか。直近 bargeWindow 秒のうち声が出ている時間（割り込みの判定）
     this.fenv = Math.max(level, this.fenv * this.fdecay);
-    const v = this.fenv > c.micLevel ? 1 : 0;
+    const v = this.fenv > thr ? 1 : 0;
     this.wsum += v - this.win[this.wi];
     this.win[this.wi] = v;
     this.wi = (this.wi + 1) % this.win.length;
@@ -194,6 +225,11 @@ class VoiceGate extends AudioWorkletProcessor {
     }
     if (this.muted) {
       this.lag = 0;
+      out.fill(0);
+      return true;
+    }
+    // お客様が話していない間（遠くの話し声・テレビ・ほかの人の電話の声だけ）は送らない
+    if (c.nearRatio > 0 && this.lag === 0 && this.quiet >= c.nearHang) {
       out.fill(0);
       return true;
     }

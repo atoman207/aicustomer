@@ -3,7 +3,7 @@
  *
  * 【役割】
  *  - doGet  : ナレッジシート（社内総合マニュアル › 指定1シート）を JSON で返す
- *  - doPost : 受付情報（3窓口＋LINE）を受付一覧シートに追記する
+ *  - doPost : 受付情報（3窓口＋LINE）を受付一覧シートに記録する（新しい受付は見出しのすぐ下＝いちばん上）
  *
  * 【セットアップ】
  *  1. 「社内総合マニュアル」スプレッドシートを開き、拡張機能 › Apps Script でこのコードを貼り付け
@@ -82,7 +82,21 @@ function doPost(e) {
           if (at >= 0) row[at] = src[i];
         });
       }
-      sheet.appendRow(row);
+      // 新しい受付は見出しのすぐ下（いちばん上）に入れる（一畳屋様のご要望 2026-10-30「新しいものが上」）。
+      // 値は書いたとおりの文字で（電話番号の先頭の 0 が消えないように）。書式は下の行（前の受付）と同じにする
+      var width = Math.max(row.length, 1);
+      if (sheet.getLastRow() >= 2) {
+        sheet.insertRowBefore(2);
+        if (sheet.getLastRow() >= 3) sheet.getRange(3, 1, 1, width).copyFormatToRange(sheet, 1, width, 2, 2);
+      }
+      var cells = sheet.getRange(2, 1, 1, width);
+      cells.setNumberFormat("@");
+      cells.setValues([
+        row.map(function (v) {
+          return v == null ? "" : String(v);
+        }),
+      ]);
+      sheet.showRows(2);
       // 「対応状況」の欄は 2 択のプルダウン（未連絡・連絡済）
       var statusCol = head.indexOf("対応状況") + 1;
       if (statusCol > 0 && sheet.getMaxRows() > 1) {
@@ -90,7 +104,7 @@ function doPost(e) {
         var rule = SpreadsheetApp.newDataValidation().requireValueInList(options, true).setAllowInvalid(false).build();
         sheet.getRange(2, statusCol, sheet.getMaxRows() - 1, 1).setDataValidation(rule);
       }
-      return json_({ ok: true, sheet: sheetName, row: sheet.getLastRow() });
+      return json_({ ok: true, sheet: sheetName, row: 2 });
     }
     return json_({ ok: false, error: "unknown action: " + action });
   } catch (err) {

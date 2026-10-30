@@ -1,7 +1,9 @@
 // 無料の訪問見積もりへの案内の時機（文字・声の相談で共通。ブラウザとサーバーの両方で使う）
 //   一畳屋様のご指摘 2026-10-28「会話のなかで見積に誘導しない」（EST-20261028-NB0J 文字・3C4O 声）：
-//   AI に任せると、具体的な相談が続いても提案しないことがあった。そこで、2回目以降の答え・条件（数量・大きさ）が
-//   わかった答えで、まだ提案していなければ、この答えで必ず提案するよう AI に伝える（offerDue）
+//   AI に任せると、具体的な相談が続いても提案しないことがあった。そこで、2回目以降の答えで、まだ提案していなければ、
+//   この答えで必ず提案するよう AI に伝える（offerDue）
+//   一畳屋様のご指摘 2026-10-30「曖昧な質問には、ある程度状況を聞き取りしたあとに無料見積をすすめる。初手で無料見積を
+//   案内するパターンがある」：最初の答えでは提案しない（日程・訪問を聞かれたときだけは別）。最初の答えはご状況を伺う質問で終える（offerTooEarly）
 
 interface Turn {
   role: string;
@@ -29,20 +31,40 @@ const isAnswer = (text: string) => /\d|円/.test(text.normalize("NFKC")) || text
  * この答えで、無料の訪問見積もりを提案するか。history はこの質問より前の会話、question はいまの質問、
  * busy は見積依頼を伺っている・確認画面を出した（もう提案はいらない）
  */
+/** これまでの AI の答え（あいさつ＝最初の質問より前の AI の発言と、声の相談のつなぎの言葉「お調べしますね」は数えない） */
+function answersOf(history: Turn[]): Turn[] {
+  const firstUser = history.findIndex((m) => m.role === "user");
+  return firstUser < 0 ? [] : history.slice(firstUser).filter((m) => m.role === "assistant" && isAnswer(m.content));
+}
+
 export function offerDue(history: Turn[], question: string, busy = false): boolean {
   if (busy) return false;
-  const firstUser = history.findIndex((m) => m.role === "user");
-  // あいさつ（最初の質問より前の AI の発言）と、声の相談のつなぎの言葉（「お調べしますね」）は数えない
-  const answers = firstUser < 0 ? [] : history.slice(firstUser).filter((m) => m.role === "assistant" && isAnswer(m.content));
+  const answers = answersOf(history);
   const users = [...history.filter((m) => m.role === "user").slice(-5), { role: "user", content: question }];
   if (users.some((m) => DECLINED.test(m.content.normalize("NFKC")))) return false;
   const q = question.normalize("NFKC");
-  // 日程・訪問の話、または提案のあとに大きさ・数量を答えた（「大きさは70×70cmくらいです」）：直前に提案していても、
-  // この答えで提案する（提案しないと、お客様が「見積をお願いします」と言い直すまで1往復多くなる。EST-20261029-FJUM）
-  if (SCHEDULE.test(q) || CONCRETE.test(q)) return true;
+  // 日程・訪問の話：最初の答えでも、直前に提案していても、この答えで提案する（訪問見積もりのときに日程も相談できるため）
+  if (SCHEDULE.test(q)) return true;
+  // 最初の答えでは提案しない（まずご状況を伺う）
+  if (answers.length === 0) return false;
+  // 提案のあとに大きさ・数量を答えた（「大きさは70×70cmくらいです」）：直前に提案していても、この答えで提案する
+  // （提案しないと、お客様が「見積をお願いします」と言い直すまで1往復多くなる。EST-20261029-FJUM）
+  if (CONCRETE.test(q)) return true;
   if (answers.slice(-2).some((m) => OFFERED.test(m.content.normalize("NFKC")))) return false;
-  return answers.length >= 1 || CONCRETE.test(q);
+  return true;
 }
+
+/** 最初の答え（まだご状況を伺っていない）：この答えでは提案しない（日程・訪問を聞かれたとき・見積依頼の途中は除く） */
+export function offerTooEarly(history: Turn[], question: string, busy = false): boolean {
+  return !busy && answersOf(history).length === 0 && !SCHEDULE.test(question.normalize("NFKC"));
+}
+
+/** 文字の相談：最初の答えの指示の最後に足す（提案しない。ご状況を伺う質問で終える） */
+export const OFFER_NOT_YET = `# この答えの終わり方（必ず守る）
+この答えでは、無料の訪問見積もりの提案はしない（まだお客様のご状況を伺っていないため。提案は、ご状況を伺ったあとの答えでする）。答えのあとは、必要なら、ご状況（大きさ・枚数・傷み具合・ご希望など）を伺う簡単な質問を1つだけ返す。`;
+
+/** 声の相談：最初の答えの search_knowledge の結果に足す */
+export const OFFER_NOT_YET_VOICE = "この答えでは、無料の訪問見積もりはまだ提案しないでください（先にご状況を伺います）。答えのあと、必要ならご状況を伺う簡単な質問を1つだけしてください。";
 
 /** 文字の相談：この答えで提案するときに AI の指示の最後に足す */
 export const OFFER_NOW = `# この答えの終わり方（必ず守る）

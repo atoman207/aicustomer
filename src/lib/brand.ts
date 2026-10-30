@@ -21,6 +21,11 @@ export const BRAND = {
 export const LINKS = {
   /** 見積受付後の「LINEでも連絡を受け取る」（友だち追加） */
   lineFriend: "https://page.line.me/402irbdq",
+  /**
+   * スタッフの紹介（ホームページの「会社・店舗案内」。代表のあいさつと、各店舗のスタッフの紹介）。
+   * スタッフのことを聞かれたら、このページを案内して、それ以上は答えない（資料の「働いている人間についての質問があった場合」）
+   */
+  staff: "https://ichijoya.co.jp/about/",
 } as const;
 
 const A = "/ichijoya";

@@ -142,6 +142,41 @@ export async function sheetsAppendRow(sheetId: string, sheetName: string, row: (
   if (!res.ok) throw await sheetsError(res, `シート「${sheetName}」への記録`);
 }
 
+/**
+ * 見出しのすぐ下（2 行目）に 1 行入れる（新しい受付がいちばん上に来る。一畳屋様のご要望 2026-10-30「受付一覧の表示順を逆に
+ * （新しいものが上）」）。値は書いたとおりの文字で記録する（RAW と同じ）。書式は下の行（前の受付）と同じにし、非表示にはしない
+ */
+export async function sheetsInsertRowAtTop(sheetId: string, title: string, row: (string | number)[]): Promise<void> {
+  const { tabs } = await sheetsListTabs(sheetId);
+  const tab = tabs.find((t) => t.title === title);
+  if (!tab) throw new Error(`シート「${title}」がありません`);
+  const token = await getGoogleAccessToken();
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}:batchUpdate`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requests: [
+        { insertDimension: { range: { sheetId: tab.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 2 }, inheritFromBefore: false } },
+        { updateDimensionProperties: { range: { sheetId: tab.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 2 }, properties: { hiddenByUser: false }, fields: "hiddenByUser" } },
+        {
+          updateCells: {
+            start: { sheetId: tab.sheetId, rowIndex: 1, columnIndex: 0 },
+            rows: [{ values: row.map((v) => ({ userEnteredValue: { stringValue: String(v ?? "") } })) }],
+            fields: "userEnteredValue",
+          },
+        },
+      ],
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw await sheetsError(res, `シート「${title}」への記録`);
+}
+
+/** タブの範囲を読む（a1 は「A1:K40」など。タブ名は自動で囲む） */
+export async function sheetsReadRange(sheetId: string, title: string, a1: string): Promise<string[][]> {
+  return sheetsGetValues(sheetId, `${quoteTab(title)}!${a1}`);
+}
+
 /** タブの 1 行目（見出し）を読む */
 export async function sheetsReadHeader(sheetId: string, title: string): Promise<string[]> {
   return (await sheetsGetValues(sheetId, `${quoteTab(title)}!1:1`))[0] ?? [];
