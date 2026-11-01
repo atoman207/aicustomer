@@ -28,11 +28,11 @@
  *  ・（任意）図形描画のボタンにする：スクリプトの割り当てに receptionToggleContacted と入力
  *  ※すでに onEdit という関数があるときは、その中に receptionOnEdit_(e); と fixesOnEdit_(e); の 2 行を足し、下の onEdit は消してください
  *
- * 【修正点など：修正済みの行を紫にする】（一畳屋様のご要望 2026-11-02「修正したエラーの行を紫にして、チェックを付ける」）
- *  ・「修正点など」のタブで、項目（A 列）の右のセル（B 列）が「✓」か「修正済」で始まると、その行が紫になります
- *    （「修正済み」とだけ書いたときは、頭に ✓ が付きます）。B 列を消す・書き換えると、紫は消えます（ほかの色はそのまま）
- *  ・修正できなかった項目は、B 列に理由を赤い字で書きます（紫にはなりません）
- *  ・メニューの「修正点など」→「修正済みの行を紫にする（✓）」で、タブ全体をまとめてそろえ直せます
+ * 【修正点など：修正済みの行を緑にする】（一畳屋様のご要望 2026-11-02「修正したエラーの行に色を付けて、チェックを付ける」。同じ日に紫から緑に変更）
+ *  ・「修正点など」のタブで、項目（A 列）の右のセル（B 列）が「✓」か「修正済」で始まると、その行が緑になります
+ *    （「修正済み」とだけ書いたときは、頭に ✓ が付きます）。B 列を消す・書き換えると、緑は消えます（ほかの色はそのまま）
+ *  ・修正できなかった項目は、B 列に理由を赤い字で書きます（緑にはなりません）
+ *  ・メニューの「修正点など」→「修正済みの行を緑にする（✓）」で、タブ全体をまとめてそろえ直せます（前の版で付けた紫も緑になります）
  *  ※すでに onOpen という関数があるときは、その中に fixesAddMenu(); の 1 行も足してください
  */
 
@@ -45,9 +45,11 @@ var LINE_SHARE_LEGACY = { "対応状況": "ステータス", "相談内容（AI�
 var RECEPTION_HIDE_LABEL = "連絡済を隠す";
 var RECEPTION_TAB = "受付一覧";
 
-// 修正点など：修正済みの行の色（紫）と、頭に付ける印
+// 修正点など：修正済みの行の色（緑。スプレッドシートの色の「明るい緑 2」）と、頭に付ける印
 var FIXES_TAB = "修正点など";
-var FIXES_DONE_COLOR = "#d9c2f0";
+var FIXES_DONE_COLOR = "#b6d7a8";
+// 前の版で付けた色（紫）。修正済みでなくなった行からは、これも消す
+var FIXES_OLD_COLORS = ["#d9c2f0"];
 var FIXES_MARK = "✓";
 
 function onOpen() {
@@ -70,10 +72,10 @@ function lineShareAddMenu() {
     .addToUi();
 }
 
-// ---------------- 修正点など：修正済みの行を紫にして ✓ を付ける ----------------
+// ---------------- 修正点など：修正済みの行を緑にして ✓ を付ける ----------------
 
 function fixesAddMenu() {
-  SpreadsheetApp.getUi().createMenu("修正点など").addItem("修正済みの行を紫にする（✓）", "fixesMarkAll").addToUi();
+  SpreadsheetApp.getUi().createMenu("修正点など").addItem("修正済みの行を緑にする（✓）", "fixesMarkAll").addToUi();
 }
 
 /** B 列の文が「✓」か「修正済」で始まる＝修正済み */
@@ -81,7 +83,7 @@ function fixesIsDone_(text) {
   return /^\s*(?:[✓✔☑]|修正済)/.test(String(text));
 }
 
-/** 1 行をそろえる：修正済みなら紫にして ✓ を付ける。修正済みでなければ、この仕組みで付けた紫だけ消す */
+/** 1 行をそろえる：修正済みなら緑にして ✓ を付ける。修正済みでなければ、この仕組みで付けた緑（と前の版の紫）だけ消す */
 function fixesMarkRow_(sheet, row) {
   var width = Math.max(2, sheet.getLastColumn());
   var range = sheet.getRange(row, 1, 1, width);
@@ -95,7 +97,8 @@ function fixesMarkRow_(sheet, row) {
   var bgs = range.getBackgrounds();
   var changed = false;
   for (var i = 0; i < bgs[0].length; i++) {
-    if (String(bgs[0][i]).toLowerCase() === FIXES_DONE_COLOR) {
+    var bg = String(bgs[0][i]).toLowerCase();
+    if (bg === FIXES_DONE_COLOR || FIXES_OLD_COLORS.indexOf(bg) >= 0) {
       bgs[0][i] = null;
       changed = true;
     }
@@ -128,7 +131,7 @@ function fixesMarkAll() {
     fixesMarkRow_(sheet, r + 1);
     if (fixesIsDone_(values[r][1])) done++;
   }
-  SpreadsheetApp.getActiveSpreadsheet().toast("修正済みの行：" + done + " 行を紫にしました", FIXES_TAB, 5);
+  SpreadsheetApp.getActiveSpreadsheet().toast("修正済みの行：" + done + " 行を緑にしました", FIXES_TAB, 5);
 }
 
 // ---------------- 連絡済の行を隠す・すべて表示 ----------------

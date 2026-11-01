@@ -45,11 +45,11 @@ npm run smoke
 
 ---
 
-## 1.5 Vercel へのデプロイ
+## 1.5 Netlify・Vercel へのデプロイ
 
-GitHub リポジトリを Vercel にインポートするだけでビルド・デプロイできます（追加設定なしで `next build` が通ります）。AI の回答情報源は指定の Googleスプレッドシート（サービスアカウントで読み取り）だけです。シートを読めないときに使う保存版（`database/manual.json`）はビルドに同梱されます（ホームページの内容 `database/website.json` も同梱していますが、既定では回答に使いません）。
+**本番は Netlify**（https://ichijoya.netlify.app 。2026-11-02 に Vercel から移行）。GitHub リポジトリを Netlify（または Vercel）にインポートするだけでビルド・デプロイできます（追加設定なしで `next build` が通ります。Netlify は Next.js を自動で判定します）。AI の回答情報源は指定の Googleスプレッドシート（サービスアカウントで読み取り）だけです。シートを読めないときに使う保存版（`database/manual.json`）はビルドに同梱されます（ホームページの内容 `database/website.json` も同梱していますが、既定では回答に使いません）。
 
-**設定する環境変数**（Settings › Environment Variables。変更後は Redeploy で反映。`.env.example` と同じ内容です）。
+**設定する環境変数**（Netlify は Site configuration › Environment variables、Vercel は Settings › Environment Variables。変更後は再デプロイ（Netlify は Deploys › Trigger deploy、Vercel は Redeploy）で反映。`.env.example` と同じ内容です）。
 
 | 設定 | 目的 |
 | --- | --- |
@@ -64,11 +64,11 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | 設定 | 目的 |
 | --- | --- |
 | `EMBED_ALLOWED_ORIGINS` | 今のホームページの「AIに相談」の窓（§1.6）として開いてよいサイト（空白区切り。既定 `https://ichijoya.co.jp https://www.ichijoya.co.jp`）。ほかのサイトの中では開けません。**ビルド時に読むので、変えたら Redeploy** |
-| `PUBLIC_BASE_URL` | 独自ドメインの公開 URL（例：`https://ai.example.jp`）。Twilio/LINE の署名検証と OGP に使用（Vercel では自動判定） |
-| Storage › **Upstash Redis** | 会話履歴・設定・エラー履歴の永続化（Vercel 用）。追加すると `UPSTASH_REDIS_REST_URL/TOKEN` が自動設定されます |
+| `PUBLIC_BASE_URL` | 独自ドメインの公開 URL（例：`https://ai.example.jp`）。Twilio/LINE の署名検証と OGP に使用（Netlify・Vercel では自動判定） |
+| **Upstash Redis** | 会話履歴・設定・エラー履歴の永続化。Netlify では Upstash（無料枠あり）でデータベースを作り、`UPSTASH_REDIS_REST_URL/TOKEN` を環境変数に設定。Vercel では Storage から追加すると自動設定されます |
 | `TWILIO_*` / `STAFF_FORWARD_NUMBER` | 0120 番号の AI 電話受付（§5） |
 
-**サーバーレスでの保存について**：Vercel ではファイル書き込みが一時的（インスタンスごとの `/tmp`）です。**受付はスプレッドシートの「受付一覧」タブに記録**し、**管理画面の受付一覧と対応状況（未連絡／連絡済）もシートから読み書き**します（再起動・別のサーバーでも同じ一覧。担当者がシートで直した内容・対応状況もそのまま表示）。そのため、スプレッドシートの「共有」にサービスアカウントを**編集者**として追加してください（閲覧者のままだと、回答の読み取りはできても受付を記録できません）。会話履歴・管理画面の設定変更・エラー履歴は、Redis が未設定だと再デプロイやスリープで消えます（VPS ではサーバーの `data/runtime` に保存されます）。
+**サーバーレスでの保存について**：Netlify・Vercel ではファイル書き込みが一時的（インスタンスごとの `/tmp`）です。**受付はスプレッドシートの「受付一覧」タブに記録**し、**管理画面の受付一覧と対応状況（未連絡／連絡済）もシートから読み書き**します（再起動・別のサーバーでも同じ一覧。担当者がシートで直した内容・対応状況もそのまま表示）。そのため、スプレッドシートの「共有」にサービスアカウントを**編集者**として追加してください（閲覧者のままだと、回答の読み取りはできても受付を記録できません）。会話履歴・管理画面の設定変更・エラー履歴は、Redis が未設定だと再デプロイやスリープで消えます（VPS ではサーバーの `data/runtime` に保存されます）。
 
 **本番の確認**：設定・Redeploy のあと、管理画面「接続状況」で「Googleスプレッドシート」「受付情報の記録先＝Sheets API」が緑になっていること、テストの見積依頼が「受付一覧」タブに 1 行増えることを確かめてください（確認後、テストの行はシートで削除）。
 
@@ -83,7 +83,7 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 ホームページの `</body>` の直前に **1 行**貼るだけで、右下に「AIに相談」ボタンが出ます（WordPress ならテーマのフッター、またはフッターにスクリプトを入れるプラグイン）。
 
 ```html
-<script src="https://aicustomer-flax.vercel.app/embed.js" async></script>
+<script src="https://ichijoya.netlify.app/embed.js" async></script>
 ```
 
 - ボタンを押すと、ページの上に相談の窓を開きます（トップページと同じ 1 つの相談の画面。文字でも、マイクのボタンで声でも）。スマホでは画面いっぱい。窓の中ではヘッダー・フッターを出さず、相談の枠だけを表示します
@@ -121,7 +121,7 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | `OPENAI_REALTIME_SPEED` / `OPENAI_REALTIME_REASONING` | | 既定 `1` / `minimal`（声の話す速さ＝標準・話す前に考える深さ。深いほど話の途中の無言が長くなる） |
 | `OPENAI_TTS_MODEL` / `OPENAI_TTS_VOICE` | | 既定 `gpt-4o-mini-tts` / `sage`（電話シミュレーター・簡易音声モードの読み上げ。声の相談と同じ声） |
 | `OPENAI_EMBEDDING_MODEL` | | 既定 `text-embedding-3-large`（ナレッジ検索。`ANSWER_CONTEXT=search` のときだけ使う） |
-| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | | 会話の履歴・学習済みの回答・受付の保存先（Vercel の Storage で Upstash Redis を接続すると自動で入ります。未設定だと再デプロイ・スリープで消えます） |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | | 会話の履歴・学習済みの回答・受付の保存先（Netlify では Upstash の値を環境変数に設定、Vercel では Storage で Upstash Redis を接続すると自動で入ります。未設定だと再デプロイ・スリープで消えます） |
 | `GAS_WEBHOOK_URL` | ナレッジ連携 A | `gas/Code.gs` をデプロイした URL（読み書き両対応・推奨。シートを公開せずに読める） |
 | `KNOWLEDGE_SHEET_CSV_URL` | ナレッジ連携 C | シートの共有リンク（回答に使うタブを開いた URL＝`#gid=…` 付き）または「ウェブに公開」の URL（読み取り専用。タブの内容が外部から見られる状態になる） |
 | `KNOWLEDGE_SHEET_NAME` | | 既定 `ＡＩ相談ソース`（スプレッドシート接続時に回答根拠にする **1 シート**の名前） |
@@ -134,7 +134,7 @@ GitHub リポジトリを Vercel にインポートするだけでビルド・�
 | `PUBLIC_BASE_URL` | 電話/LINE | 公開 URL（Webhook 署名検証に使用） |
 | `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN` | LINE | Messaging API |
 | `NEXT_PUBLIC_LINE_ADD_FRIEND_URL` | | 見積受付後の「LINEでもご連絡を受け取れます」（友だち追加）の遷移先（既定は一畳屋の公式 LINE） |
-| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Vercel 推奨 | アプリ内データ（受付・会話・設定・セッション）の永続化と、読み込んだスプレッドシートの共有（声の相談の回答が速くなる）。`KV_REST_API_URL/TOKEN` や、Vercel で接頭辞を付けた名前（例 `STORAGE_KV_REST_API_URL`）も自動で使います。管理画面の「保存先」に、使っている変数名が出ます |
+| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | 本番推奨 | アプリ内データ（受付・会話・設定・セッション）の永続化と、読み込んだスプレッドシートの共有（声の相談の回答が速くなる）。`KV_REST_API_URL/TOKEN` や、Vercel で接頭辞を付けた名前（例 `STORAGE_KV_REST_API_URL`）も自動で使います。管理画面の「保存先」に、使っている変数名が出ます |
 | `OPENAI_BASE_URL` | | 互換 API／プロキシ／モック用（既定 `https://api.openai.com/v1`） |
 | `COMPANY_NAME` / `COMPANY_PHONE` | | 会社名・0120 番号（既定 一畳屋・0120-158-108。管理画面でも変更可） |
 
@@ -303,7 +303,7 @@ git add database && git commit -m "保存版の更新" && git push
    - **スプレッドシート**（`gas/LineShare.gs`）：「受付一覧」で行を選び（複数行・10 件まで）、メニュー「LINE共有」→「選択した受付をLINE用にコピー」→「コピー」→ LINE のトークに貼り付けて送信 →「連絡済にする」で対応状況が「連絡済」に。パソコンのブラウザで使えます（Google スプレッドシートのスマホアプリでは、スクリプトのメニュー・ボタンは動きません）
      - 設定（最初に 1 回）：スプレッドシートの「拡張機能」→「Apps Script」→ ファイルの「＋」→「スクリプト」で `LineShare` を作り、`gas/LineShare.gs` を全部貼り付けて保存 → スプレッドシートを再読み込み → 初回だけ Google の権限の確認で「許可」。シートに「LINE共有」ボタンを置くときは、図形描画のボタンに「スクリプトを割り当て」で `lineShareSelected`
      - 権限は `@OnlyCurrentDoc`（このスプレッドシートだけ）。行は受付番号で探すので、画面を開いたあとに並べ替えても正しい行が「連絡済」になります。フィルタ・非表示で隠れた行は共有しません
-   - **修正点などの修正済みの行を紫にする**（2026-11-02 のご要望）：「修正点など」のタブで、項目（A 列）の右（B 列）が「✓」か「修正済」で始まると、その行が紫になります（「修正済み」とだけ書けば頭に ✓ が付きます。B 列を書き換えると紫は消えます）。修正できなかった部分は B 列に理由を赤い字で書きます。メニュー「修正点など」→「修正済みの行を紫にする（✓）」でタブ全体をそろえ直せます（同じ `gas/LineShare.gs` に入っています）
+   - **修正点などの修正済みの行を緑にする**（2026-11-02 のご要望。同じ日に紫から緑に変更）：「修正点など」のタブで、項目（A 列）の右（B 列）が「✓」か「修正済」で始まると、その行が緑になります（「修正済み」とだけ書けば頭に ✓ が付きます。B 列を書き換えると緑は消えます）。修正できなかった部分は B 列に理由を赤い字で書きます。メニュー「修正点など」→「修正済みの行を緑にする（✓）」でタブ全体をそろえ直せます（前の版の紫も緑になります。同じ `gas/LineShare.gs` に入っています）
    - **管理画面**（受付一覧の各受付の「LINE共有」）：スマホは LINE が開き、文が入った状態で送り先を選ぶだけ（LINE の `line.me/R/share` のリンク。パソコン版の LINE では使えないため）。パソコンは文をコピーして LINE に貼り付け。対応状況はとなりのプルダウンで「連絡済」に
    - 送り先を選ばずに自動で送る仕組み（LINE 公式アカウントの Messaging API）は、各店舗のグループへの招待・送り先の対応表・月の通数の上限（無料は 200 通）が要るため、今は入れていません（LINE Notify は 2025-03-31 に終了）
 6. 担当者（各店舗・営業担当）が折り返してお見積り訪問の日程を確定（AI は日程を確定しません）。お見積りは担当者が現地を見てから提出します
@@ -418,7 +418,7 @@ database/places.json    熊本県・大牟田市の町名と読み方（scripts/
 database/               スプレッドシートの保存版（manual.json）・ホームページ（website.json）・読み取り規則（manual-rules.json）
 scripts/                build-knowledge.mjs（スプレッドシート → manual.json）・learn-website.mjs（ホームページ → website.json）・smoke.mjs（疎通テスト）・ts-resolve.mjs
 gas/Code.gs             スプレッドシート連携用 Apps Script
-gas/LineShare.gs        受付一覧の「LINE共有」メニュー（選んだ行を LINE 用にコピー・連絡済にする。§4 の 5）・連絡済を隠す・修正点などの修正済みの行を紫にする
+gas/LineShare.gs        受付一覧の「LINE共有」メニュー（選んだ行を LINE 用にコピー・連絡済にする。§4 の 5）・連絡済を隠す・修正点などの修正済みの行を緑にする
 public/ichijoya         一畳屋サイトのロゴ・画像・テクスチャ・アイコン
 public/embed.js         今のホームページに「AIに相談」ボタンと相談の窓を付けるスクリプト（§1.6）
 ```
@@ -463,7 +463,7 @@ public/embed.js         今のホームページに「AIに相談」ボタンと
 
 - 会社情報・料金は一畳屋の顧客対応マニュアル（2026年8月1日改定の料金表）とご提供いただいた内容です。価格改定などは Excel を更新して `npm run knowledge:build` → 再デプロイ（スプレッドシート接続時はシート側）で反映してください。
 - `data/runtime/` は実行時データ（受付・会話・設定）で Git 管理外です。本番ではスプレッドシートが正となります。
-- Vercel 等のサーバーレス環境では §1.5 のとおりサービスアカウント（スプレッドシートの編集者）を設定してください。会話履歴・設定も残す場合は Upstash Redis も追加します。
+- Netlify・Vercel 等のサーバーレス環境では §1.5 のとおりサービスアカウント（スプレッドシートの編集者）を設定してください。会話履歴・設定も残す場合は Upstash Redis も追加します。
 - `/api/status` は、管理者としてログインしていないときは動作の有無だけを返します（シートの ID・サービスアカウント・Webhook・エラーの内容は管理画面でだけ表示）。
 - 公開 API（チャット・音声・要約など）には IP ごとの簡易レートリミットを設けています（1 分あたり：チャット 20 回、音声セッション 10 回など）。OpenAI への各リクエストには 15〜55 秒のタイムアウトを設定し、関数の最大実行時間は 60 秒です。
 - 写真は WebP（1x/2x）と PNG／JPEG フォールバックで配信します（実際に読み込まれるのは主に WebP。会社情報セクションの写真は遅延読み込み）。

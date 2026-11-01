@@ -229,7 +229,7 @@ export function storageInfo(): StorageInfo {
       persistent: false,
       label: "一時保存（サーバーレス：再デプロイやスリープで消えます）",
       detail:
-        "Vercel の Storage から Upstash Redis を追加すると、受付・会話・設定が永続化され、電話・LINE の会話状態も安定します（声の相談の資料の読み込みも速くなります）。追加したあとは Redeploy してください。",
+        "Upstash Redis（無料枠あり）の UPSTASH_REDIS_REST_URL・UPSTASH_REDIS_REST_TOKEN を Netlify（Site configuration › Environment variables）か Vercel（Storage）に設定すると、受付・会話・設定が永続化され、電話・LINE の会話状態も安定します（声の相談の資料の読み込みも速くなります）。設定したあとは再デプロイしてください。",
     };
   }
   return { backend: "file", persistent: true, label: "ローカルファイル（data/runtime）", detail: state.writable === false ? "書き込みに失敗したためメモリで動作中" : undefined };

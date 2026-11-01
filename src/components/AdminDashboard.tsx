@@ -208,7 +208,7 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
             : `受付はスプレッドシートに記録していますが、この一覧は「${storage.label}」から表示しています。`}
           {storage.detail ?? ""}
           {sink === "local"
-            ? "Vercel の環境変数に GOOGLE_SERVICE_ACCOUNT_EMAIL・GOOGLE_PRIVATE_KEY・KNOWLEDGE_SHEET_ID を設定すると、受付はスプレッドシートの「受付一覧」に記録され、この一覧もシートから表示します。"
+            ? "Netlify・Vercel の環境変数に GOOGLE_SERVICE_ACCOUNT_EMAIL・GOOGLE_PRIVATE_KEY・KNOWLEDGE_SHEET_ID を設定すると、受付はスプレッドシートの「受付一覧」に記録され、この一覧もシートから表示します。"
             : null}
         </p>
       ) : null}
@@ -879,7 +879,7 @@ export function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus 
         <Card title="アプリ内データの保存先（受付・会話・設定・セッション）" ok={status.storage.persistent}>
           <p>{status.storage.label}</p>
           {status.storage.detail ? <p className="text-xs text-amber-700">{status.storage.detail}</p> : null}
-          <p className="text-xs text-sumi-400">Vercel では会話履歴・設定・エラー履歴は一時的な保存です（再起動で消えます）。受付はスプレッドシートに残ります。VPS ではサーバーのファイル（data/runtime）に保存されます。</p>
+          <p className="text-xs text-sumi-400">Netlify・Vercel では会話履歴・設定・エラー履歴は一時的な保存です（再起動で消えます）。受付はスプレッドシートに残ります。VPS ではサーバーのファイル（data/runtime）に保存されます。</p>
         </Card>
         <Card title="Twilio（AI電話受付）" ok={status.twilio.configured}>
           <p>Twilio 番号：{status.twilio.number || "未設定"}</p>

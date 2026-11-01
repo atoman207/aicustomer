@@ -7,6 +7,9 @@ export const dynamic = "force-dynamic";
 function siteUrl(): URL {
   const explicit = process.env.PUBLIC_BASE_URL?.trim();
   if (explicit) return new URL(explicit);
+  // Netlify は本番の URL を URL（https://… の形）で、実行中のサーバーにも渡す
+  const netlify = process.env.URL?.trim();
+  if (netlify && /^https?:\/\//.test(netlify)) return new URL(netlify);
   const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL;
   if (vercel) return new URL(`https://${vercel}`);
   return new URL("http://localhost:3000");
