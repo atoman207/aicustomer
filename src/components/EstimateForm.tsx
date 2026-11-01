@@ -110,7 +110,8 @@ export default function EstimateForm({
   const sendingRef = useRef(false);
 
   // ご住所が営業エリアの外なら、配送費が別途かかることを確認画面にも出す（一畳屋様のご指摘 2026-10-30「営業エリア外の住所で、
-  // 配送費のことを説明せずに受け付けた」。営業エリアはスプレッドシートの「営業範囲」の行：/api/address/check）
+  // 配送費のことを説明せずに受け付けた」。営業エリアはスプレッドシートの「営業範囲」の行：/api/address/check）。
+  // 市町村郡のないご住所は、エリアの外と決めつけずに、市町村名からの入力をお願いする（一畳屋様のご指摘 2026-10-31）
   const [areaNote, setAreaNote] = useState("");
   useEffect(() => {
     const a = address.trim();
@@ -122,7 +123,7 @@ export default function EstimateForm({
     const t = window.setTimeout(() => {
       fetch("/api/address/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: a }), signal: ac.signal })
         .then((r) => r.json())
-        .then((j: { area?: string; area_text?: string }) => setAreaNote(j.area === "out" ? (j.area_text ?? "") : ""))
+        .then((j: { area?: string; area_text?: string; city_text?: string }) => setAreaNote(j.area === "out" ? (j.area_text ?? "") : (j.city_text ?? "")))
         .catch(() => undefined);
     }, 500);
     return () => {

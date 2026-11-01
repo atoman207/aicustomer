@@ -6,7 +6,7 @@
 //       伺う文は決まった文（AI が日程を約束したり、確定したりしないように）
 import { fixAddress } from "./address-ai";
 import { composeAnswer, planAnswer, type AnswerSource } from "./answer";
-import { areaOf, outOfAreaNote, serviceAreaFrom } from "./area";
+import { CITY_ASKED, CITY_ASK_TEXT, CITY_NUMBER_ASK_TEXT, areaCheck, cityPart, joinCity, outOfAreaNote, serviceAreaFrom } from "./area";
 import { env } from "./env";
 import { lookupAddress } from "./gazetteer";
 import { logError } from "./errorlog";
@@ -295,6 +295,14 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
     address = `${state.draft.address}${leftover.replace(/^(?:の|で)/, "")}`.trim();
     leftover = "";
   }
+  // 市町村名を伺ったあとに市町村名だけを答えた（「玉名市です」）：前のご住所（市町村郡なし）の頭につなげる
+  if (asked.includes("address") && CITY_ASKED.test(prevAi) && state.draft.address) {
+    const city = cityPart(address || leftover);
+    if (city) {
+      address = joinCity(city, state.draft.address);
+      leftover = "";
+    }
+  }
   const dates = x.draft.dates && x.appendDates ? [...state.draft.dates, ...x.draft.dates].slice(0, 3) : x.draft.dates;
   let draft = mergeDraft(state.draft, { ...x.draft, address, dates });
   if (starting) draft = mergeDraft(extractFromConversation(history, today).draft, draft);
@@ -349,8 +357,11 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
 
   // ご住所が営業エリアの外：配送費が別途かかることを伝える（一畳屋様のご指摘 2026-10-30「配送費のことを説明せずに受け付けた」。area.ts）
   const got = filledNow(state.draft, draft);
-  const areaNote =
-    got.includes("address") && draft.address && areaOf(draft.address, serviceAreaFrom((await getKnowledge()).entries)) === "out" ? outOfAreaNote(draft.address) : "";
+  const area = got.includes("address") && draft.address ? areaCheck(draft.address, serviceAreaFrom((await getKnowledge()).entries)) : null;
+  const areaNote = area?.status === "out" && draft.address ? outOfAreaNote(draft.address) : "";
+  // 市町村郡を言わなかったご住所（町名だけ）で、町名からエリアの中と決まらない：エリアの外と決めつけず、市町村名を一度だけ伺う
+  // （一畳屋様のご指摘 2026-10-31。area.ts）
+  const askCity = Boolean(area?.cityMissing && area.status !== "in" && !history.some((m) => m.role === "assistant" && CITY_ASKED.test(m.content)));
 
   // 4. 足りない項目を伺う／そろったら確認画面へ
   let needs = intakeNeeds(draft, asked, state.draft);
@@ -361,6 +372,16 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
   if (skipName) needs = needs.filter((f) => f !== "name");
   const carried = skipName ? { ...carry, unsure: [...new Set([...(unsure ?? []), "name" as IntakeField])] } : carry;
   const nameLater = skipName ? "お名前は、このあと表示される確認画面でご入力ください。" : "";
+  if (askCity && draft.address) {
+    const ack = got.includes("name") && draft.name ? `${callName || draft.name}様ですね。` : "";
+    const ask = [nameLater, `${ack}${addressComplete(draft.address) ? CITY_ASK_TEXT : CITY_NUMBER_ASK_TEXT}`].filter(Boolean).join("\n");
+    return {
+      reply: !answer ? ask : starting ? `${answer}\n\n${ask}` : `${answer}\n\n（お見積りのご依頼の続きです）\n${ask}`,
+      state: { ...carried, active: true, ready: false, asked: ["address"], draft, summaryAt: draft.summary ? messages.length : state.summaryAt },
+      mode,
+      sources,
+    };
+  }
   if (needs.length === 0) {
     if (!draft.summary) draft = { ...draft, summary: extractFromConversation(messages, today).summary || undefined };
     const ready = intakeReadyText(draft, job);

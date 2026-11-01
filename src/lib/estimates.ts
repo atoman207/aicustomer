@@ -147,24 +147,60 @@ export async function linkEstimateToLine(id: string, userId: string): Promise<"l
 
 // ---------------- 同じご依頼を 2 件受け付けない ----------------
 // 一畳屋様のご指摘 2026-10-30「送信ボタンは 1 回しか押してないのに同じものが 2 回受信されている（エクスペリア）」：
-// 2 回押し・送信のあとに確認画面が開き直して、もう一度送信したなど。同じお客様（お名前とお電話番号が同じ）の受付が
-// DUPLICATE_MS の間にもう一度届いたら、新しい受付にせず、前の受付（同じ受付番号）を返す
+// 2 回押し・送信のあとに確認画面が開き直して、もう一度送信したなど。同じご依頼（お名前・お電話番号・ご住所・第1希望が同じで、
+// ご相談内容もほぼ同じ）が DUPLICATE_MS の間にもう一度届いたら、新しい受付にせず、前の受付（同じ受付番号）を返す。
+// 見直し 2026-11-02：お名前とお電話番号だけで見ていたため、同じ方が続けて送った別のご依頼（内容・ご住所・ご希望日が違う）まで
+// 1 件にしていた（受付一覧の 10/29〜30 の 12 組のうち、本当の 2 回受信は 2 組だけ：同じ分に届き、内容の似ている割合 0.97・0.56。
+// ほかの 10 組は 0.48 以下か、ご住所・ご希望日が違う）
 
 const DUPLICATE_MS = 30 * 60 * 1000;
+/** ご相談内容（AI の要約）の似ている割合がこれ以上なら同じご依頼（確認画面を開き直すと要約が作り直されて少し変わる） */
+const DUPLICATE_SIMILARITY = 0.5;
 const nameKey = (s: string) => s.normalize("NFKC").replace(/\s+/g, "").replace(/(?:様|さま)$/, "");
 const phoneKey = (s: string) => s.normalize("NFKC").replace(/\D/g, "");
+const textKey = (s: string | undefined) => (s ?? "").normalize("NFKC").replace(/[\s、。,.・]/g, "");
 
-const sameCustomer = (e: EstimateRequest, name: string, phone: string, since: number) =>
-  Boolean(phone) && phoneKey(e.phone) === phone && nameKey(e.name) === name && Date.parse(e.receivedAt) >= since;
+/** 2 文字ずつの組の重なり（0〜1） */
+function similarity(a: string, b: string): number {
+  const grams = (s: string) => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) m.set(s.slice(i, i + 2), (m.get(s.slice(i, i + 2)) ?? 0) + 1);
+    return m;
+  };
+  const x = grams(textKey(a));
+  const y = grams(textKey(b));
+  let both = 0;
+  let total = 0;
+  for (const [g, n] of x) {
+    both += Math.min(n, y.get(g) ?? 0);
+    total += n;
+  }
+  for (const n of y.values()) total += n;
+  return total ? (2 * both) / total : textKey(a) === textKey(b) ? 1 : 0;
+}
 
-/** 少し前に受け付けた、同じお客様の受付（このサーバーの保存と、受付一覧のシートの上の行＝新しい受付から探す） */
-async function recentDuplicate(name: string, phone: string): Promise<EstimateRequest | null> {
+/** 同じご依頼か（お名前・お電話番号・ご住所・第1希望が同じで、ご相談内容がほぼ同じ。DUPLICATE_MS の間に届いた） */
+export function sameRequest(e: Pick<EstimateRequest, "name" | "phone" | "address" | "summary" | "preferredDates" | "receivedAt">, input: Pick<EstimateInput, "name" | "phone" | "address" | "summary" | "preferredDates">, since: number): boolean {
+  const phone = phoneKey(normalizePhone(input.phone));
+  return (
+    Boolean(phone) &&
+    phoneKey(e.phone) === phone &&
+    nameKey(e.name) === nameKey(input.name) &&
+    textKey(e.address) === textKey(input.address) &&
+    textKey(e.preferredDates[0]) === textKey(input.preferredDates[0]) &&
+    similarity(e.summary, input.summary) >= DUPLICATE_SIMILARITY &&
+    Date.parse(e.receivedAt) >= since
+  );
+}
+
+/** 少し前に受け付けた、同じご依頼の受付（このサーバーの保存と、受付一覧のシートの上の行＝新しい受付から探す） */
+async function recentDuplicate(input: EstimateInput): Promise<EstimateRequest | null> {
   const since = Date.now() - DUPLICATE_MS;
-  const local = (await listEstimates()).find((e) => sameCustomer(e, name, phone, since));
+  const local = (await listEstimates()).find((e) => sameRequest(e, input, since));
   if (local || receptionSink() !== "sheets_api") return local ?? null;
   try {
     const rows = await sheetsReadRange(env.receptionSheetId, env.receptionSheetName, "A1:Z40");
-    return parseReceptionRows(rows).items.find((x) => sameCustomer(x.estimate, name, phone, since))?.estimate ?? null;
+    return parseReceptionRows(rows).items.find((x) => sameRequest(x.estimate, input, since))?.estimate ?? null;
   } catch (e) {
     // タブがまだない（最初の受付）なら重複もない。読めなかったときは、そのまま受け付ける（理由は管理画面のエラー履歴に）
     if (!/Unable to parse range/.test((e as Error).message)) await logError("sheet", "見積受付の重複の確認（受付一覧の読み取り）", e);
@@ -179,7 +215,8 @@ const inflight = globalThis as unknown as { __estimateInflight?: Map<string, Pro
  * その受付を返す（duplicate: true。同時に 2 回届いたときも 1 件だけ記録する）
  */
 export async function createEstimate(input: EstimateInput): Promise<EstimateRequest & { duplicate?: boolean }> {
-  const key = `${nameKey(input.name)}|${phoneKey(normalizePhone(input.phone))}`;
+  // 同時に 2 回届いた（2 回押し）のは同じ内容。内容の違うご依頼は待たせない
+  const key = [nameKey(input.name), phoneKey(normalizePhone(input.phone)), textKey(input.address), textKey(input.preferredDates[0]), textKey(input.summary)].join("|");
   const map = (inflight.__estimateInflight ??= new Map());
   const running = map.get(key);
   if (running) {
@@ -192,7 +229,7 @@ export async function createEstimate(input: EstimateInput): Promise<EstimateRequ
       await logError("other", "営業のお問い合わせのため、見積依頼として受け付けませんでした", `${truncate(input.name, 40)}：${truncate(input.summary, 200)}`);
       throw new SalesPitchError();
     }
-    const dup = await recentDuplicate(nameKey(input.name), phoneKey(normalizePhone(input.phone)));
+    const dup = await recentDuplicate(input);
     if (dup) return { ...dup, duplicate: true };
     return createEstimateRecord(input);
   })();

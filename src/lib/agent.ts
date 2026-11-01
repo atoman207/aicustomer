@@ -3,7 +3,7 @@
 //     （OpenAI で答えるときは資料の全文を渡し、根拠の引用＝evidence を先に作らせる）
 //   ・見積受付の聞き取り・復唱は OpenAI（構造化出力）で行い、そのときはナレッジを渡さない（トークン節約）
 import { fixAddress } from "./address-ai";
-import { areaOf, outOfAreaNote, serviceAreaFrom } from "./area";
+import { CITY_ASKED, CITY_ASK_TEXT, areaCheck, outOfAreaNote, serviceAreaFrom } from "./area";
 import { learnAnswer, planAnswer } from "./answer";
 import { env } from "./env";
 import { logError } from "./errorlog";
@@ -282,7 +282,21 @@ export async function runTurn(
   // ご住所が営業エリアの外：配送費が別途かかることを一度だけ伝える（一畳屋様のご指摘 2026-10-30「配送費のことを説明せずに受け付けた」。area.ts）
   const newAddress = result.draft.address?.trim();
   if (newAddress && newAddress !== session.draft.address?.trim() && !/配送費/.test(result.reply) && !session.messages.some((m) => m.role === "assistant" && /配送費/.test(m.content))) {
-    if (areaOf(newAddress, serviceAreaFrom((await getKnowledge()).entries)) === "out") result.reply = `${outOfAreaNote(newAddress)}\n${result.reply}`;
+    const area = areaCheck(newAddress, serviceAreaFrom((await getKnowledge()).entries));
+    if (area.status === "out") result.reply = `${outOfAreaNote(newAddress)}\n${result.reply}`;
+    // 市町村郡を言わなかったご住所：エリアの外と決めつけず、市町村名を一度だけ伺う（一畳屋様のご指摘 2026-10-31）
+    else if (
+      area.cityMissing &&
+      area.status !== "in" &&
+      !result.estimate &&
+      !result.formReady &&
+      !CITY_ASKED.test(result.reply) &&
+      !session.messages.some((m) => m.role === "assistant" && CITY_ASKED.test(m.content))
+    ) {
+      result.reply = CITY_ASK_TEXT;
+      result.stage = "collecting";
+      result.done = false;
+    }
   }
 
   session.stage = result.stage;

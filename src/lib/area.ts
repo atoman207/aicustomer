@@ -106,25 +106,89 @@ const NEARBY_OUTSIDE = /^(?:福岡市|北九州市|久留米市|柳川市|みや
 
 export type AreaStatus = "in" | "out" | "unknown";
 
-/** ご住所が営業エリアの中か外か（市区町村がわからなければ unknown。わからないときは「外」と言わない） */
-export function areaOf(address: string, area: string[] = DEFAULT_AREA): AreaStatus {
-  const a = (address ?? "").normalize("NFKC").replace(/\s+/g, "");
-  if (!a) return "unknown";
+export interface AreaCheck {
+  status: AreaStatus;
+  /** 市町村郡を言っていないご住所（町名だけ）。エリアの外と決めつけず、市町村名を伺う */
+  cityMissing: boolean;
+}
+
+/** 市町村郡を言わなかったお客様に伺う一言（文字の相談・電話/LINE。声の相談は check_address の area_ask） */
+export const CITY_ASK_TEXT = "恐れ入ります、ご住所の市町村名（〇〇市・〇〇郡など）も教えていただけますか？";
+/** 市町村名と番地の両方がないとき */
+export const CITY_NUMBER_ASK_TEXT = "恐れ入ります、ご住所を市町村名から番地まで教えていただけますか？（例：熊本市中央区坪井3丁目5-8）";
+/** AI が市町村名を伺った文（2 回は伺わない・次の答えを前のご住所の頭につなげる） */
+export const CITY_ASKED = /市町村名/;
+/** 確認画面のご住所の欄に出す一言 */
+export const CITY_HINT_TEXT = "ご住所は、市町村名（〇〇市・〇〇郡など）からご入力ください。";
+
+const placeNorm = (s: string) => s.normalize("NFKC").replace(/\s+/g, "").replace(/[ヶヵケ]/g, "ケ");
+
+/**
+ * 市町村郡を言わなかったご住所の町名がある市町村（一覧の町名で始まる。なければ、一覧の町名の頭の部分を言った
+ * 「岱明町123」）。同じ町名がいくつもの市町村にある（「新町」「栄町」）ときは、そのすべて
+ */
+function townCities(a: string): PlaceCity[] {
+  const full = PLACE_CITIES.flatMap((c) => c.towns.filter(([t]) => a.startsWith(placeNorm(t))).map(([t]) => ({ c, n: t.length })));
+  if (full.length) {
+    const longest = Math.max(...full.map((x) => x.n));
+    return [...new Set(full.filter((x) => x.n === longest).map((x) => x.c))];
+  }
+  const head = a.match(/^(.*?)(?=\d|[一二三四五六七八九十]+丁目|番地|-)/)?.[1] || a;
+  if (head.length < 2) return [];
+  return PLACE_CITIES.filter((c) => c.towns.some(([t]) => placeNorm(t).startsWith(head)));
+}
+
+/**
+ * ご住所が営業エリアの中か外か（市区町村がわからなければ unknown。わからないときは「外」と言わない）。
+ * 市町村郡を言わずに町名だけのご住所は、その町名がある市町村がすべてエリアの中のときだけ「中」。エリアの外の市町村にも
+ * ある町名・一覧にない町名は unknown（町名の一覧は一部の市で欠けているので、町名だけで「外」とは決めない）。
+ * 一畳屋様のご指摘 2026-10-31「市町村郡を省略して住所を伝えてきた相談に対して、エリア外と決めつけない。そのあとに続く町名で
+ * エリア外かどうか判断するか、市町村郡を教えてもらうよう促す」（EST-20261031-5EMX：町名の頭の 2 文字が球磨郡湯前町の町名と同じで「外」にしていた）
+ */
+export function areaCheck(address: string, area: string[] = DEFAULT_AREA): AreaCheck {
+  const a = placeNorm(address ?? "");
+  if (!a) return { status: "unknown", cityMissing: false };
+  const inArea = (c: PlaceCity) => area.some((n) => c.city === n || c.county === n || c.name === n || c.name.startsWith(n));
   const l = lookupAddress(a);
-  let cities: PlaceCity[] = l.cities;
-  // 市区町村を言わずに町名だけ（「坪井3丁目」）：その町名の市区町村
-  if (!cities.length && l.town) cities = PLACE_CITIES.filter((c) => c.name === l.town?.city);
-  if (cities.length) {
-    const inArea = (c: PlaceCity) => area.some((n) => c.city === n || c.county === n || c.name === n || c.name.startsWith(n));
-    return cities.some(inArea) ? "in" : "out";
+  if (l.cities.length) {
+    // 郡を言わない町村の名前が、ほかの市の町名でもある（「錦町」＝球磨郡錦町・八代市錦町）：どちらかわからない
+    const shortName = !l.town && l.cities.every((c) => c.county) && !/郡/.test(l.cityText);
+    const also = shortName ? townCities(a.replace(/^(?:熊本県|福岡県)/, "")).filter((c) => !l.cities.includes(c)) : [];
+    if (!also.length) return { status: l.cities.some(inArea) ? "in" : "out", cityMissing: false };
+    return { status: [...l.cities, ...also].every(inArea) ? "in" : "unknown", cityMissing: true };
   }
   // 熊本県・福岡県（大牟田市）の外の都道府県
   const pref = a.match(/^(?:北海道|東京都|京都府|大阪府|[一-龯]{2,3}県)/)?.[0];
-  if (pref && pref !== "熊本県" && pref !== "福岡県") return "out";
+  if (pref && pref !== "熊本県" && pref !== "福岡県") return { status: "out", cityMissing: false };
   const rest = pref ? a.slice(pref.length) : a;
-  if (pref === "福岡県" && !/^大牟田市/.test(rest)) return "out";
-  if (NEARBY_OUTSIDE.test(rest)) return "out";
-  return "unknown";
+  if (pref === "福岡県" && !/^大牟田市/.test(rest)) return { status: "out", cityMissing: false };
+  if (NEARBY_OUTSIDE.test(rest)) return { status: "out", cityMissing: false };
+  // 郡まで言って町村を言わなかった（「菊池郡引水」）：郡で決まる
+  const county = PLACE_CITIES.filter((c) => c.county && rest.startsWith(c.county));
+  if (county.length) return { status: county.every(inArea) ? "in" : "out", cityMissing: false };
+  const cities = townCities(rest);
+  return { status: cities.length && cities.every(inArea) ? "in" : "unknown", cityMissing: true };
+}
+
+export function areaOf(address: string, area: string[] = DEFAULT_AREA): AreaStatus {
+  return areaCheck(address, area).status;
+}
+
+/** 市町村名を伺ったときに、市町村名だけを答えた（「玉名市です」「熊本県菊池郡」）：その市町村名。ほかは "" */
+export function cityPart(text: string): string {
+  const s = placeNorm(text ?? "").replace(/(?:です|でした|になります|と申します)?[。.!！]*$/, "");
+  if (!s) return "";
+  const county = s.replace(/^熊本県/, "");
+  if (PLACE_CITIES.some((c) => c.county && c.county === county)) return s;
+  const l = lookupAddress(s);
+  return l.status === "ok" && l.cities.length && !l.town && !l.head && !l.tail ? `${l.pref}${l.cityText}` : "";
+}
+
+/** 前のご住所（市町村郡なし）の頭に、あとから伺った市町村名をつなげる */
+export function joinCity(city: string, address: string): string {
+  const pref = address.match(/^(?:熊本県|福岡県)/)?.[0] ?? "";
+  const rest = address.slice(pref.length);
+  return `${city.startsWith(pref) ? "" : pref}${city}${rest}`;
 }
 
 /** エリアの外のときに、お客様に伝える一言（市区町村がわかれば、その名前を添える） */
