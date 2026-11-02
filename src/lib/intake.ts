@@ -129,6 +129,42 @@ export function asksForForm(text: string): boolean {
   return /(?:確認画面|入力画面|画面|フォーム).{0,6}(?:出して|だして|見せて|表示して|開いて|出ない|出てこない|出ません)/.test(text.normalize("NFKC"));
 }
 
+// ---------------- 見積依頼を送信したあと ----------------
+// 一畳屋様のご要望 2026-11-02「送信後には音声相談を切る旨を伝えて切る。送信後に再度音声やテキストで修正（内容や日程）などを
+// 求めてきたら、一畳屋から日程打合せの電話があった際に変更内容をお伝えください、とアナウンス」
+
+/** 別のご依頼（もう1件・別の場所）。送信したあとでも、新しいご依頼として伺う */
+export const ANOTHER_REQUEST = /もう一件|もう1件|もう一つ|もう1つ|別の(?:見積|依頼|場所|部屋|工事)|追加で|ほかにも(?:見積|お願い|依頼)|新しく(?:見積|依頼)/;
+/**
+ * 送信したご依頼の内容・日程を変えたい（「日程を変えたい」「住所を間違えました」「午後に変えてください」「キャンセルしたい」）。
+ * 「新調にしたいのですが、いくらですか」のようなご質問は、ふつうに答えるため、はっきり変更を言う言葉だけにする
+ */
+const CHANGE_REQUEST =
+  /変更|修正|訂正|直したい|直して(?:ほしい|もらえ|くだ|いただ)|変えたい|変えて(?:ほしい|もらえ|くだ|いただ)|間違|まちが|違って(?:い|ま)|違いました|ちがって|別の日|日を変え|日程を変|日にちを変|ずらし|キャンセル|取り消|取消/;
+/** 会話に残る、送信したご依頼の控え（receipt.ts の「受付番号：EST-…」） */
+const RECEIPT_ID = /受付番号[：:]\s*(EST-\d{8}-[A-Z0-9]+)/;
+
+/** 会話の中で送信済みのご依頼の受付番号（AI の発言に残した控えから。なければ空） */
+export function submittedEstimateId(messages: { role: string; content: string }[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const id = m.role === "assistant" ? m.content.match(RECEIPT_ID)?.[1] : undefined;
+    if (id) return id;
+  }
+  return "";
+}
+
+/** 送信したご依頼の内容・日程の変更を求めている（別のご依頼は除く） */
+export function asksChangeAfterSubmit(text: string): boolean {
+  const t = text.normalize("NFKC");
+  return CHANGE_REQUEST.test(t) && !ANOTHER_REQUEST.test(t);
+}
+
+/** 送信したあとの変更のご案内（文字の相談の答え・声の AI に伝える内容） */
+export function afterSubmitChangeText(id = ""): string {
+  return `ご依頼はすでに送信済みです${id ? `（受付番号：${id}）` : ""}。\nご依頼の内容やご希望日の変更は、一畳屋から日程の打ち合わせのお電話を差し上げた際に、担当者へお伝えください。`;
+}
+
 /** 項目の名前の一覧（name・address・phone・dates）だけを取り出す（AI の関数の引数・ブラウザから届いた状態） */
 export function intakeFields(v: unknown): IntakeField[] {
   return Array.isArray(v) ? [...new Set(v.filter((f): f is IntakeField => INTAKE_FIELDS.includes(f as IntakeField)))] : [];

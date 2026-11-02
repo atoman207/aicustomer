@@ -69,7 +69,7 @@
     '<div class="bar"><p class="title">一畳屋 AI相談<small>24時間受付</small></p>' +
     '<a class="icon ext" target="_blank" rel="noopener" title="新しいタブで開く" aria-label="新しいタブで開く">' + ICON_EXT + "</a>" +
     '<button type="button" class="icon close" title="閉じる" aria-label="閉じる">' + ICON_CLOSE + "</button></div>" +
-    '<iframe title="一畳屋 AI相談" allow="microphone; autoplay; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>' +
+    '<iframe title="一畳屋 AI相談" allow="microphone; autoplay; clipboard-write; screen-wake-lock" referrerpolicy="strict-origin-when-cross-origin"></iframe>' +
     "</div>";
 
   var fab = root.querySelector(".fab");

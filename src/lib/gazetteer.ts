@@ -63,6 +63,17 @@ export function kanaSimilarity(heard: string, kana: string): number {
   return Math.max(whole, head);
 }
 
+/**
+ * 聞いた読みが幾通りかあるとき（「こうやままち・たかやままち」）の、いちばん近い読みの近さ。文字起こしの漢字が聞き違いで
+ * （「紺屋町（こうやまち）」が「高山町」）、その漢字の読みが幾通りもあるため（一畳屋様のご指摘 2026-11-02「こうやま→大山・たかやま」）
+ */
+export function readingSimilarity(readings: string, kana: string): number {
+  return Math.max(0, ...readings.split(/[・、,，/／|｜\s]+/).filter(Boolean).map((r) => kanaSimilarity(r, kana)));
+}
+
+/** 町名の候補のうち、読みがとても近いもの（お客様に「〇〇町（よみ）でしょうか」と確かめる候補） */
+const LIKELY_SIMILARITY = 0.75;
+
 /** 漢字の重なり（0〜1） */
 function charSimilarity(a: string, b: string): number {
   if (!a || !b) return 0;
@@ -184,7 +195,7 @@ export function lookupAddress(address: string, reading = "", limit = 250): Addre
   }
   const rank = (list: AddressCandidate[], head: string) =>
     list
-      .map((t) => ({ t, score: Math.max(reading ? kanaSimilarity(reading, t.kana) : 0, charSimilarity(head, norm(t.town)) * 0.9) }))
+      .map((t) => ({ t, score: Math.max(reading ? readingSimilarity(reading, t.kana) : 0, charSimilarity(head, norm(t.town)) * 0.9) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
       .map((x) => x.t);
@@ -264,14 +275,23 @@ export function checkAddress(address: string, reading = ""): Record<string, stri
     const other = l.elsewhere?.length
       ? `なお「${l.head}」という町名は${l.elsewhere.map((t) => t.city).join("・")}にあります。市区町村の聞き違いかもしれないので、「${l.elsewhere[0].city}${l.elsewhere[0].town}でしょうか」とお客様に確かめてください。`
       : "";
+    // 読みがとても近い町名（「こうやまち」→ 紺屋町）。読みの難しい町名は、文字起こしで別の漢字になりやすい（一畳屋様のご指摘 2026-11-02）
+    // いちばん近い読みとほとんど同じ近さのものだけ（読みがぴったりの町名があれば、それだけを確かめる）
+    const scored = reading ? l.candidates.map((t) => ({ t, s: readingSimilarity(reading, t.kana) })) : [];
+    const best = Math.max(0, ...scored.map((x) => x.s));
+    const likely = scored.filter((x) => x.s >= Math.max(LIKELY_SIMILARITY, best - 0.1)).slice(0, 3).map((x) => x.t);
+    const likelyNote = likely.length
+      ? `お客様の言った音に近いのは ${formatTowns(likely, l.cities.length > 1)} です。合えば、「${likely[0].town}（${likely[0].kana}）でしょうか」と、町名の読み方も添えて確かめてください（文字起こしの漢字の読みで言い直さない）。`
+      : "";
     return {
       status: "town_unknown",
       address: shown,
       city,
       heard_town: l.head,
+      ...(likely.length ? { likely: formatTowns(likely, l.cities.length > 1) } : {}),
       towns: formatTowns(l.candidates, l.cities.length > 1),
       ...(l.elsewhere?.length ? { elsewhere: formatTowns(l.elsewhere, true) } : {}),
-      note: `${fixedCity}「${l.head}」という町名は${l.cities.map((c) => c.name).join("・")}の一覧にありません（聞き違いの可能性があります）。お客様の発音に合う町名を towns から1つ選び、町名をその漢字に置き換えた住所で復唱してください（番地は変えない）。${other}合う町名がなければ、町名をもう一度伺ってください。`,
+      note: `${fixedCity}「${l.head}」という町名は${l.cities.map((c) => c.name).join("・")}の一覧にありません（聞き違いの可能性があります）。${likelyNote}お客様の発音に合う町名を towns から1つ選び、町名をその漢字に置き換えた住所で、町名の読み方も添えて復唱してください（番地は変えない）。${other}合う町名がなければ、町名をもう一度伺ってください。`,
     };
   }
   return {

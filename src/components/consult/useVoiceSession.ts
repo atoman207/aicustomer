@@ -9,7 +9,20 @@
 import { useEffect, useRef, useState } from "react";
 import { LINKS } from "@/lib/brand";
 import { transcriptForAi, type StoredMessage } from "@/lib/conversation-store";
-import { FIELD_LABEL, asksForForm, intakeFields, keepTouched, mergeDraft, missingFields, normalizeDraft, saysFormShown, type IntakeState } from "@/lib/intake";
+import {
+  ANOTHER_REQUEST,
+  FIELD_LABEL,
+  afterSubmitChangeText,
+  asksChangeAfterSubmit,
+  asksForForm,
+  intakeFields,
+  keepTouched,
+  mergeDraft,
+  missingFields,
+  normalizeDraft,
+  saysFormShown,
+  type IntakeState,
+} from "@/lib/intake";
 import { OFFER_AFTER_ANSWER, OFFER_NOT_YET_VOICE, offerDue, offerTooEarly } from "@/lib/offer";
 import {
   createRecognizer,
@@ -100,8 +113,15 @@ const FORM_ANNOUNCE = /(?:ご確認|ご覧|確かめ).{0,60}(?:送信|そうし�
 /** AI が確認画面の案内をくり返したときの知らせ */
 const FORM_HUSH_NOTICE =
   "確認画面の案内は、もうお伝えしています。同じ案内（画面の内容をご確認ください・送信ボタンを押してください）をくり返さないでください。お客様が送信されるか、話しかけられるまで、黙って待ってください。";
-/** 送信が済んだあとに、もう一件のご依頼をはっきり希望された（このときだけ確認画面を開き直す） */
-const ANOTHER_REQUEST = /もう一件|もう1件|もう一つ|もう1つ|別の(?:見積|依頼|場所|部屋|工事)|追加で|ほかにも(?:見積|お願い|依頼)|新しく(?:見積|依頼)/;
+/**
+ * 送信が済んだら、AI がお礼と「これで声の相談を終えます」を伝えたあとで通話を切る（一畳屋様のご要望 2026-11-02「送信後には音声相談を
+ * 切る旨を伝えて切る」）。AI の話し終わりを待って知らせを渡すまでの最長・話し始めを待つ時間（過ぎたら一度だけ渡し直す）・
+ * 話し終えてから切るまでの間・話が長くても切る時間
+ */
+const HANGUP_WAIT_MS = 12000;
+const HANGUP_START_MS = 6000;
+const HANGUP_GAP_MS = 1200;
+const HANGUP_MAX_MS = 45000;
 /** マイクの設定（回り込み・雑音を除く。声だけを拾う設定がある端末では、それも使う） */
 const MIC_CONSTRAINTS = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, voiceIsolation: true } as MediaTrackConstraints;
 
@@ -473,9 +493,13 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       // お客様が、もう一件のご依頼をはっきり希望されたときだけ開く
       const lastUser = [...hostRef.current.getConversation()].reverse().find((m) => m.role === "user")?.content ?? "";
       if (est.submittedId && !ANOTHER_REQUEST.test(lastUser.normalize("NFKC"))) {
+        // 送信したご依頼の内容・日程を変えたい：日程の打ち合わせのお電話の際にお伝えいただく（一畳屋様のご要望 2026-11-02）
+        const change = asksChangeAfterSubmit(lastUser)
+          ? `お客様は内容や日程の変更を希望されています。確認画面は出さず、「${afterSubmitChangeText().replace(/\n/g, "")}」と伝えてください。`
+          : "ほかにご質問がないかだけ、短く伺ってください。";
         return JSON.stringify({
           ok: false,
-          message: `見積依頼は、すでにお客様が送信済みです（受付番号 ${est.submittedId}）。確認画面を出し直したり、送信の案内をくり返したりしないでください。ほかにご質問がないかだけ、短く伺ってください。`,
+          message: `見積依頼は、すでにお客様が送信済みです（受付番号 ${est.submittedId}）。確認画面を出し直したり、送信の案内をくり返したりしないでください。${change}`,
         });
       }
       // AI が伺った内容を下書きに入れて確認画面を開く（足りない項目・ご相談内容の要約は会話全体から読み取って補う）
@@ -1214,16 +1238,103 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     void end();
   }
 
-  function toggleMute() {
-    const next = !mutedRef.current;
-    setMuted(next);
-    mutedRef.current = next;
-    streamRef.current?.getAudioTracks().forEach((t) => {
-      t.enabled = !next;
-    });
-    gateRef.current?.setMuted(next);
-    if (modeRef.current === "openai" && engineRef.current === "live") sendEvent({ type: next ? "session.input_audio.mute" : "session.input_audio.unmute", event_id: uid() });
+  /** マイクを止める・戻す。note：声の AI に一度だけ伝える状況（「お客様が確認画面で入力しています」など） */
+  function mute(next: boolean, note = "") {
+    if (next !== mutedRef.current) {
+      setMuted(next);
+      mutedRef.current = next;
+      streamRef.current?.getAudioTracks().forEach((t) => {
+        t.enabled = !next;
+      });
+      gateRef.current?.setMuted(next);
+      if (modeRef.current === "openai" && engineRef.current === "live") sendEvent({ type: next ? "session.input_audio.mute" : "session.input_audio.unmute", event_id: uid() });
+    }
+    if (note && liveRef.current) contextNote(note);
   }
+
+  function toggleMute() {
+    mute(!mutedRef.current);
+  }
+
+  /**
+   * 送信のお礼などを AI に一度だけ話してもらい、話し終えたら通話を切る（切ったら onDone）。
+   *   ・AI が話している途中に知らせを渡すと、その知らせを話さないことがあるため（2026-11-02 の試験：AI のあいさつの途中で送信すると、
+   *     お礼を話さずに切れた）、話し終えるのを待ってから渡す（HANGUP_WAIT_MS 待っても話し終えなければ渡す）
+   *   ・渡しても話し始めなければ、一度だけ渡し直す。話が長くても HANGUP_MAX_MS で切る。お客様がもう終えていれば何もしない
+   */
+  function sayThenHangUp(instruction: string, spoken: string, fact: string, onDone?: () => void) {
+    const t0 = performance.now();
+    const talking = () => aiAudioRef.current || speakingRef.current;
+    let sent = 0;
+    let sentAt = 0;
+    let spoke = false;
+    let quietSince = 0;
+    const deliver = () => {
+      notify(instruction, spoken, sent === 0 ? fact : "");
+      sent++;
+      sentAt = performance.now();
+    };
+    const timer = window.setInterval(() => {
+      if (!liveRef.current) {
+        window.clearInterval(timer);
+        return;
+      }
+      const now = performance.now();
+      if (!sent) {
+        if (!talking() || now - t0 >= HANGUP_WAIT_MS) deliver();
+      } else if (talking()) {
+        spoke = true;
+        quietSince = 0;
+      } else if (spoke && !quietSince) quietSince = now;
+      else if (!spoke && now - sentAt >= HANGUP_START_MS) {
+        if (sent < 2) deliver();
+        else spoke = true; // 2 回渡しても話さない：あきらめて切る（下の quietSince で）
+        if (spoke) quietSince = now - HANGUP_GAP_MS;
+      }
+      const done = (quietSince > 0 && now - quietSince >= HANGUP_GAP_MS) || now - t0 >= HANGUP_MAX_MS;
+      if (!done) return;
+      window.clearInterval(timer);
+      userEndedRef.current = true;
+      void end().then(() => {
+        // お礼の間に止めたマイクは戻しておく（次の声の相談は、マイクが入った状態から）
+        mute(false);
+        onDone?.();
+      });
+    }, PLAYBACK_POLL_MS);
+  }
+
+  // 通話中は画面を暗くしない（スマホの画面が消えると、話している間に出た確認画面が見えない。一畳屋様のご要望 2026-11-02
+  // 「音声でやり取り中にスマホ画面が暗くなる」）。画面を切り替えて戻ったときは取り直す（ほかのタブに移ると外れるため）
+  useEffect(() => {
+    if (status !== "live" || typeof navigator === "undefined" || !("wakeLock" in navigator)) return;
+    let lock: WakeLockSentinel | null = null;
+    let stopped = false;
+    const request = async () => {
+      if (stopped || lock || document.visibilityState !== "visible") return;
+      try {
+        const l = await navigator.wakeLock.request("screen");
+        if (stopped) {
+          void l.release().catch(() => undefined);
+          return;
+        }
+        lock = l;
+        l.addEventListener("release", () => {
+          if (lock === l) lock = null;
+        });
+      } catch {
+        // 省電力モード・埋め込みの窓で許可されていない など：使えなければ、ふつうに通話を続ける
+      }
+    };
+    const onVisible = () => void request();
+    void request();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      void lock?.release().catch(() => undefined);
+      lock = null;
+    };
+  }, [status]);
 
   /** 声で話している間に文字で入力した内容（会話には呼び出し側が入れる） */
   function sendText(text: string) {
@@ -1294,7 +1405,9 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     resumeAudio,
     start,
     stop,
+    mute,
     toggleMute,
+    sayThenHangUp,
     sendText,
     notify,
     interruptSpeech,

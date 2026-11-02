@@ -44,6 +44,11 @@ interface Props {
   onSubmitted?: (estimate: EstimateRequest) => void;
   onCancel?: () => void;
   onChange?: (edits: EstimateFormEdits) => void;
+  /**
+   * お客様が「修正」を押した・入力欄に入った（声の相談中は、入力の間マイクを止める。一畳屋様のご要望 2026-11-02
+   * 「確認画面の修正ボタンを押したら声を拾わない又は声に反応しないようにする」）
+   */
+  onEditStart?: () => void;
 }
 
 const SLOTS = ["午前", "午後", "指定なし"];
@@ -81,6 +86,7 @@ export default function EstimateForm({
   onSubmitted,
   onCancel,
   onChange,
+  onEditStart,
 }: Props) {
   const [step, setStep] = useState<0 | 1>(0);
   const [name, setName] = useState(initial?.name ?? "");
@@ -384,7 +390,10 @@ export default function EstimateForm({
                   ? "inline-flex shrink-0 items-center gap-1 rounded-full bg-ichi-red px-3 py-1.5 text-xs font-bold text-white shadow-sm transition hover:opacity-90"
                   : "inline-flex shrink-0 items-center gap-1 rounded-full border border-sumi-200 px-2.5 py-1 text-xs font-bold text-sumi-600 transition hover:border-ichi-green hover:text-ichi-green"
               }
-              onClick={() => setEditing((prev) => new Set(prev).add(f))}
+              onClick={() => {
+                setEditing((prev) => new Set(prev).add(f));
+                onEditStart?.();
+              }}
               aria-label={`${FIELD_LABEL[f]}を修正する`}
             >
               <PencilLine className="h-3 w-3" />
@@ -443,7 +452,13 @@ export default function EstimateForm({
           }}
         >
           {banner}
-          <div className="divide-y divide-sumi-100 rounded-xl border border-sumi-200 bg-white">
+          {/* 「修正」を押さずに入力欄に入ったとき（伺えなかった項目は最初から入力欄）も、入力の始まりとして知らせる */}
+          <div
+            className="divide-y divide-sumi-100 rounded-xl border border-sumi-200 bg-white"
+            onFocusCapture={(e) => {
+              if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) onEditStart?.();
+            }}
+          >
             {field(
               "name",
               <input

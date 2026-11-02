@@ -142,6 +142,11 @@ export default function ConsultConsole({
   // 確認画面が開いているか・この相談で送信した受付（声の AI が確認画面を開き直したり、送信の案内をくり返したりしないように。
   // 開く・閉じる・送信のときにすぐ書き換える：画面の書き換えを待たずに、声の AI の処理から読めるように）
   const estimateOpenRef = useRef(false);
+  // 声の相談中に、確認画面で入力・修正している間はマイクを止めている（閉じたら戻す。お客様が自分で止めていたときはそのまま）
+  const [formMuted, setFormMuted] = useState(false);
+  const formMutedRef = useRef(false);
+  // お客様が「マイクを戻す」を押した：この確認画面を閉じるまでは、入力欄に入っても止め直さない
+  const formMicKeptRef = useRef(false);
   const lastEstimateRef = useRef<EstimateRequest | null>(null);
   const messagesRef = useRef(messages);
   const sessionRef = useRef(sessionId);
@@ -242,6 +247,15 @@ export default function ConsultConsole({
       // noop
     }
   }, [voice.status]);
+
+  // 通話が終わったら、確認画面の入力の間のマイクの停止も終わり（次の通話は、マイクが入った状態から）
+  useEffect(() => {
+    if (voice.live || !formMutedRef.current) return;
+    formMutedRef.current = false;
+    setFormMuted(false);
+    voice.mute(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice.live]);
 
   // 通話が終わったら、次の通話はまた簡単な画面から
   const inCall = voice.live || voice.status === "connecting";
@@ -569,6 +583,25 @@ export default function ConsultConsole({
   function closeEstimate() {
     estimateOpenRef.current = false;
     setEstimateOpen(false);
+    formMicKeptRef.current = false;
+    if (formMutedRef.current) unmuteAfterForm("お客様が確認画面を閉じました（マイクを戻しました）。");
+  }
+
+  /**
+   * 確認画面で「修正」を押した・入力欄に入った：声の相談中なら、入力の間はマイクを止める（周りの声やつぶやきに AI が反応しない
+   * ように。一畳屋様のご要望 2026-11-02「確認画面の修正ボタンを押したら声を拾わない又は声に反応しないようにする」）
+   */
+  function onFormEdit() {
+    if (!voice.live || voice.muted || formMutedRef.current || formMicKeptRef.current) return;
+    formMutedRef.current = true;
+    setFormMuted(true);
+    voice.mute(true, "お客様が確認画面で入力・修正を始めました（入力の間はマイクを止めています）。話しかけずに、お客様が送信されるか、話しかけられるまで黙って待ってください。");
+  }
+
+  function unmuteAfterForm(note: string) {
+    formMutedRef.current = false;
+    setFormMuted(false);
+    if (voice.live) voice.mute(false, note);
   }
 
   function onSubmitted(est: EstimateRequest) {
@@ -581,11 +614,26 @@ export default function ConsultConsole({
     const thanks = `無料お見積りのご依頼を受け付けました。\n担当者より折り返しお電話し、お見積りに伺う日程を決めさせていただきます。ありがとうございました。\n\n${receipt}`;
     setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: thanks, at: Date.now() }]);
     if (voice.live) {
-      // 声で話している間：AI がひと言お礼を伝える（一度だけ。送信済みであることも伝え、確認画面の案内をくり返させない）
-      voice.notify(
-        `見積依頼フォームが送信され、受付番号 ${est.id} で登録されました。お客様に短くお礼を伝え、担当者より折り返しご連絡して日程を確定する旨を、一度だけ伝えてください。確認画面や送信ボタンの案内は、もうしないでください。`,
-        `見積依頼を受付しました。受付番号は ${est.id} です。担当者より折り返しご連絡し、日程を確定いたします。`,
+      // 声で話している間：AI がお礼と、変更は日程の打ち合わせのお電話で伺うこと、声の相談を終えることを一度だけ伝えて、話し終えたら
+      // 通話を切る（一畳屋様のご要望 2026-11-02「送信後には音声相談を切る旨を伝えて切る」）。お礼の間はマイクを止める（話しかけで
+      // お礼が止まったり、別の答えが始まったりしないように）
+      formMutedRef.current = false;
+      setFormMuted(false);
+      voice.mute(true);
+      voice.sayThenHangUp(
+        `見積依頼フォームが送信され、受付番号 ${est.id} で登録されました。お客様に短くお礼を伝え、担当者より折り返しお電話して日程を確定すること、ご依頼の内容や日程の変更はそのお電話の際にお伝えいただけること、これで声のご相談を終了することを、一度だけ伝えてください。確認画面や送信ボタンの案内は、もうしないでください。`,
+        `見積依頼を受付しました。受付番号は ${est.id} です。担当者より折り返しお電話し、日程を確定いたします。ご依頼の内容や日程の変更は、そのお電話の際にお伝えください。これで声のご相談を終了します。ありがとうございました。`,
         `見積依頼は、お客様が送信済みです（受付番号 ${est.id}）。確認画面・送信ボタンの案内は、もうしないでください。`,
+        () =>
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: uid(),
+              role: "assistant",
+              content: "声のご相談を終了しました。\nご依頼の内容やご希望日の変更は、一畳屋から日程の打ち合わせのお電話を差し上げた際に、担当者へお伝えください。",
+              at: Date.now(),
+            },
+          ]),
       );
     }
   }
@@ -1105,6 +1153,25 @@ export default function ConsultConsole({
       </aside>
 
       <Modal open={estimateOpen} onClose={closeEstimate} title="無料お見積りのご依頼">
+        {formMuted && voice.live ? (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ai-200 bg-ai-50 px-4 py-2.5 text-sm text-ai-700" data-form-muted>
+            <span className="flex items-center gap-1.5">
+              <MicOff className="h-4 w-4 shrink-0" />
+              入力の間は、AIが声に反応しないようマイクを止めています。
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                formMicKeptRef.current = true;
+                unmuteAfterForm("お客様がマイクを戻しました。話しかけられたら答えてください。");
+              }}
+              className="inline-flex min-h-9 items-center rounded-full border border-ai-300 bg-white px-3 text-xs font-bold text-ai-700 transition hover:bg-ai-100"
+              data-form-unmute
+            >
+              マイクを戻す
+            </button>
+          </div>
+        ) : null}
         <EstimateForm
           channel={messages.some((m) => m.channel === "voice") ? "web_voice" : "web_text"}
           sessionId={sessionId}
@@ -1117,6 +1184,7 @@ export default function ConsultConsole({
           onSubmitted={onSubmitted}
           onCancel={closeEstimate}
           onChange={onFormChange}
+          onEditStart={onFormEdit}
         />
       </Modal>
     </div>

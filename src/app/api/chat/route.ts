@@ -1,7 +1,7 @@
 import { answerModelFor, learnAnswer, learnedKeyFor, learnedReply, learnedSources, planAnswer, type AnswerPlan, type AnswerSource } from "@/lib/answer";
 import { logError } from "@/lib/errorlog";
 import { error, rateLimited, readJson } from "@/lib/http";
-import { sanitizeIntake } from "@/lib/intake";
+import { afterSubmitChangeText, asksChangeAfterSubmit, sanitizeIntake, submittedEstimateId } from "@/lib/intake";
 import { intakeApplies, intakeTurn } from "@/lib/intake-ai";
 import { env } from "@/lib/env";
 import { getKnowledge } from "@/lib/knowledge";
@@ -49,10 +49,14 @@ export async function POST(req: Request) {
   if (!last) return error("ユーザーメッセージがありません");
 
   const intake = sanitizeIntake(body.intake);
+  // 見積依頼を送信したあとで、内容・日程の変更を求められた：確認画面は出し直さず、一畳屋からの日程の打ち合わせのお電話の際に
+  // お伝えいただく（一畳屋様のご要望 2026-11-02）。別のご依頼（もう1件）はふつうに伺う
+  const submittedId = submittedEstimateId(conversation.slice(0, -1));
+  const changeAfterSubmit = Boolean(submittedId) && !intake.active && asksChangeAfterSubmit(last.content);
   // 直前の AI の発言（「よろしければ、ご都合のよい日にお伺いしましょうか？」への「お願いします」で、見積依頼の聞き取りを始める）
   const prevAi = [...messages.slice(0, -1)].reverse().find((m) => m.role === "assistant")?.content ?? "";
-  const useIntake = channel === "web_text" && intakeApplies(last.content, intake, prevAi);
-  const [settings, plan] = await Promise.all([getSettings(), useIntake ? null : planAnswer(last.content, messages.slice(0, -1), { channel })]);
+  const useIntake = channel === "web_text" && !changeAfterSubmit && intakeApplies(last.content, intake, prevAi);
+  const [settings, plan] = await Promise.all([getSettings(), useIntake || changeAfterSubmit ? null : planAnswer(last.content, messages.slice(0, -1), { channel })]);
 
   const headers = (sources: AnswerSource[], knowledgeSource: string, kind: string, mode: string): Record<string, string> => ({
     "Content-Type": "text/plain; charset=utf-8",
@@ -92,6 +96,13 @@ export async function POST(req: Request) {
       // ログ保存失敗は応答に影響させない
     }
   };
+
+  if (changeAfterSubmit) {
+    const reply = afterSubmitChangeText(submittedId);
+    const snapshot = await getKnowledge();
+    await persist(reply, "after-submit", snapshot.source, "after_submit");
+    return new Response(reply, { headers: headers([], snapshot.source, "after_submit", "template") });
+  }
 
   // 見積依頼の聞き取り（お名前・ご住所・お電話番号・ご希望日時を伺い、そろったら確認画面へ）。状態は X-Intake で返す
   if (useIntake || !plan) {
