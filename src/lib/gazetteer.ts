@@ -291,7 +291,7 @@ export function checkAddress(address: string, reading = ""): Record<string, stri
       ...(likely.length ? { likely: formatTowns(likely, l.cities.length > 1) } : {}),
       towns: formatTowns(l.candidates, l.cities.length > 1),
       ...(l.elsewhere?.length ? { elsewhere: formatTowns(l.elsewhere, true) } : {}),
-      note: `${fixedCity}「${l.head}」という町名は${l.cities.map((c) => c.name).join("・")}の一覧にありません（聞き違いの可能性があります）。${likelyNote}お客様の発音に合う町名を towns から1つ選び、町名をその漢字に置き換えた住所で、町名の読み方も添えて復唱してください（番地は変えない）。${other}合う町名がなければ、町名をもう一度伺ってください。`,
+      note: `${fixedCity}「${l.head}」という町名は${l.cities.map((c) => c.name).join("・")}の一覧にありません（聞き違いの可能性が高いので、「${l.head}」のまま復唱しない）。${likelyNote}お客様の発音に合う町名を towns から1つ選び、町名をその漢字に置き換えた住所で、町名の読み方も添えて復唱してください（番地は変えない）。${other}合う町名がなければ、町名をもう一度伺ってください。`,
     };
   }
   return {
