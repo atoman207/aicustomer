@@ -143,10 +143,11 @@ export async function sheetsAppendRow(sheetId: string, sheetName: string, row: (
 }
 
 /**
- * 見出しのすぐ下（2 行目）に 1 行入れる（新しい受付がいちばん上に来る。一畳屋様のご要望 2026-10-30「受付一覧の表示順を逆に
- * （新しいものが上）」）。値は書いたとおりの文字で記録する（RAW と同じ）。書式は下の行（前の受付）と同じにし、非表示にはしない
+ * 見出しのすぐ下に 1 行入れる（新しい受付がいちばん上に来る。一畳屋様のご要望 2026-10-30「受付一覧の表示順を逆に
+ * （新しいものが上）」）。at：入れる行（0 始まり。見出しが 1 行目なら 1、1 行目に「連絡済を隠す」を置いて見出しが 2 行目なら 2）。
+ * 値は書いたとおりの文字で記録する（RAW と同じ）。書式は下の行（前の受付）と同じにし、非表示にはしない
  */
-export async function sheetsInsertRowAtTop(sheetId: string, title: string, row: (string | number)[]): Promise<void> {
+export async function sheetsInsertRowAtTop(sheetId: string, title: string, row: (string | number)[], at = 1): Promise<void> {
   const { tabs } = await sheetsListTabs(sheetId);
   const tab = tabs.find((t) => t.title === title);
   if (!tab) throw new Error(`シート「${title}」がありません`);
@@ -156,11 +157,11 @@ export async function sheetsInsertRowAtTop(sheetId: string, title: string, row: 
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       requests: [
-        { insertDimension: { range: { sheetId: tab.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 2 }, inheritFromBefore: false } },
-        { updateDimensionProperties: { range: { sheetId: tab.sheetId, dimension: "ROWS", startIndex: 1, endIndex: 2 }, properties: { hiddenByUser: false }, fields: "hiddenByUser" } },
+        { insertDimension: { range: { sheetId: tab.sheetId, dimension: "ROWS", startIndex: at, endIndex: at + 1 }, inheritFromBefore: false } },
+        { updateDimensionProperties: { range: { sheetId: tab.sheetId, dimension: "ROWS", startIndex: at, endIndex: at + 1 }, properties: { hiddenByUser: false }, fields: "hiddenByUser" } },
         {
           updateCells: {
-            start: { sheetId: tab.sheetId, rowIndex: 1, columnIndex: 0 },
+            start: { sheetId: tab.sheetId, rowIndex: at, columnIndex: 0 },
             rows: [{ values: row.map((v) => ({ userEnteredValue: { stringValue: String(v ?? "") } })) }],
             fields: "userEnteredValue",
           },
@@ -182,8 +183,8 @@ export async function sheetsReadHeader(sheetId: string, title: string): Promise<
   return (await sheetsGetValues(sheetId, `${quoteTab(title)}!1:1`))[0] ?? [];
 }
 
-/** 列（0 始まり）の 2 行目から下を、options から選ぶプルダウンにする（ほかの値は入れられない。あとから増えた行も含む） */
-export async function sheetsSetDropdown(sheetId: string, title: string, col: number, options: string[]): Promise<void> {
+/** 列（0 始まり）の fromRow 行目（0 始まり。既定は 2 行目）から下を、options から選ぶプルダウンにする（ほかの値は入れられない。あとから増えた行も含む） */
+export async function sheetsSetDropdown(sheetId: string, title: string, col: number, options: string[], fromRow = 1): Promise<void> {
   const { tabs } = await sheetsListTabs(sheetId);
   const tab = tabs.find((t) => t.title === title);
   if (!tab) throw new Error(`シート「${title}」がありません`);
@@ -195,7 +196,7 @@ export async function sheetsSetDropdown(sheetId: string, title: string, col: num
       requests: [
         {
           setDataValidation: {
-            range: { sheetId: tab.sheetId, startRowIndex: 1, startColumnIndex: col, endColumnIndex: col + 1 },
+            range: { sheetId: tab.sheetId, startRowIndex: fromRow, startColumnIndex: col, endColumnIndex: col + 1 },
             rule: { condition: { type: "ONE_OF_LIST", values: options.map((v) => ({ userEnteredValue: v })) }, strict: true, showCustomUi: true },
           },
         },

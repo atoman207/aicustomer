@@ -21,7 +21,8 @@
  * 共有する文は管理画面の「LINE共有」と同じ（src/lib/line-share.ts）。変えるときは両方を直す
  *
  * 【連絡済の行を隠す】（一畳屋様のご要望 2026-10-30「連絡済の行がボタン一つで隠れるようにする」）
- *  ・「受付一覧」の 1 行目の右の「連絡済を隠す」の横のチェックボックスを入れる → 連絡済の行が隠れる／外す → すべて表示
+ *  ・「受付一覧」の A1 のチェックボックス（「連絡済を隠す」）を入れる → 連絡済の行が隠れる／外す → すべて表示
+ *    （2026-11-02 のご要望で A1 に移し、見出しは 2 行目になりました。前の形（1 行目の右の「連絡済を隠す」の横）でも動きます）
  *    （スマホのスプレッドシートのアプリでも使えます）
  *  ・メニューの「LINE共有」→「連絡済を隠す」「すべて表示」でも同じ
  *  ・隠すのはフィルタ（行は消えません）。隠している間に対応状況を「連絡済」にした行も、すぐ隠れます
@@ -141,13 +142,41 @@ function receptionSheet_() {
   return ss.getSheetByName(RECEPTION_TAB) || ss.getActiveSheet();
 }
 
-/** 1 行目の「連絡済を隠す」の右のセル（チェックボックス）。なければ null */
+/**
+ * 見出しの行（「受付番号」のある行。上から 5 行の中。なければ 1）。一畳屋様のご要望 2026-11-02「連絡済を隠すボタンは A1 に
+ * もってきていただいて、全体を 1 段下げてほしい」で、1 行目がボタン・2 行目が見出しになった（前の形の 1 行目の見出しでも動く）
+ */
+function receptionHeaderRow_(sheet) {
+  var lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return 1;
+  var top = sheet.getRange(1, 1, Math.min(Math.max(sheet.getLastRow(), 1), 5), lastCol).getDisplayValues();
+  for (var r = 0; r < top.length; r++) {
+    for (var i = 0; i < top[r].length; i++) {
+      if (String(top[r][i]).trim() === "受付番号") return r + 1;
+    }
+  }
+  return 1;
+}
+
+/** 見出しの行の値 */
+function receptionHeader_(sheet) {
+  return sheet.getRange(receptionHeaderRow_(sheet), 1, 1, Math.max(sheet.getLastColumn(), 1)).getDisplayValues()[0];
+}
+
+/**
+ * 「連絡済を隠す」のチェックボックス。見出しの行より上（なければ見出しの行）の「連絡済を隠す」の文字の左（A1 のボタン）か右
+ * （前の形の L1・M1）のチェックボックス。なければ null
+ */
 function receptionToggleCell_(sheet) {
   var lastCol = sheet.getLastColumn();
   if (lastCol < 1) return null;
-  var head = sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
-  for (var i = 0; i < head.length; i++) {
-    if (String(head[i]).trim() === RECEPTION_HIDE_LABEL) return sheet.getRange(1, i + 2);
+  var top = sheet.getRange(1, 1, receptionHeaderRow_(sheet), Math.min(lastCol + 1, sheet.getMaxColumns())).getValues();
+  for (var r = 0; r < top.length; r++) {
+    for (var i = 0; i < top[r].length; i++) {
+      if (String(top[r][i]).replace(/^[←◀\s]+/, "").trim() !== RECEPTION_HIDE_LABEL) continue;
+      if (i > 0 && typeof top[r][i - 1] === "boolean") return sheet.getRange(r + 1, i);
+      return sheet.getRange(r + 1, i + 2);
+    }
   }
   return null;
 }
@@ -156,15 +185,21 @@ function receptionToggleCell_(sheet) {
 function receptionApplyHide_(sheet, hide) {
   var lastCol = sheet.getLastColumn();
   if (lastCol < 1) return;
-  var cols = lineShareColumns_(sheet.getRange(1, 1, 1, lastCol).getDisplayValues()[0]);
+  var headRow = receptionHeaderRow_(sheet);
+  var cols = lineShareColumns_(sheet.getRange(headRow, 1, 1, lastCol).getDisplayValues()[0]);
   if (cols.status < 0) return;
   // フィルタをかけるのは受付の欄（見出しのある欄）だけ。「連絡済を隠す」のチェックボックスの欄は入れない
   var known = [cols.status, cols.id, cols.name, cols.address, cols.phone, cols.summary].concat(cols.dates);
   var width = Math.max.apply(null, known) + 1;
   var filter = sheet.getFilter();
+  // フィルタは見出しの行から（1 行目のボタンの行から始まるフィルタは、見出しの行からにかけ直す）
+  if (filter && filter.getRange().getRow() !== headRow) {
+    filter.remove();
+    filter = null;
+  }
   if (!filter) {
     if (!hide) return;
-    filter = sheet.getRange(1, 1, sheet.getMaxRows(), width).createFilter();
+    filter = sheet.getRange(headRow, 1, sheet.getMaxRows() - headRow + 1, width).createFilter();
   }
   if (!hide) {
     filter.removeColumnFilterCriteria(cols.status + 1);
@@ -172,9 +207,9 @@ function receptionApplyHide_(sheet, hide) {
   }
   // 隠す値：「連絡済」と、整理前の「連絡済み」「日程確定」「完了」
   var hidden = ["連絡済"];
-  if (sheet.getLastRow() >= 2) {
+  if (sheet.getLastRow() > headRow) {
     sheet
-      .getRange(2, cols.status + 1, sheet.getLastRow() - 1, 1)
+      .getRange(headRow + 1, cols.status + 1, sheet.getLastRow() - headRow, 1)
       .getDisplayValues()
       .forEach(function (r) {
         var v = String(r[0]).trim();
@@ -197,8 +232,8 @@ function receptionOnEdit_(e) {
     return;
   }
   // 隠している間に対応状況を変えた：フィルタをかけ直して、連絡済にした行もすぐ隠す
-  if (toggle.getValue() !== true || r.getRow() < 2) return;
-  var cols = lineShareColumns_(sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0]);
+  if (toggle.getValue() !== true || r.getRow() <= receptionHeaderRow_(sheet)) return;
+  var cols = lineShareColumns_(receptionHeader_(sheet));
   if (cols.status >= 0 && r.getColumn() <= cols.status + 1 && r.getLastColumn() >= cols.status + 1) receptionApplyHide_(sheet, true);
 }
 
@@ -305,7 +340,8 @@ function lineShareSelected() {
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
   var values = lastRow > 0 && lastCol > 0 ? sheet.getRange(1, 1, lastRow, lastCol).getDisplayValues() : [];
-  var cols = lineShareColumns_(values[0] || []);
+  var headRow = lastCol > 0 ? receptionHeaderRow_(sheet) : 1;
+  var cols = lineShareColumns_(values[headRow - 1] || []);
   if (cols.id < 0) {
     ui.alert("LINE共有", "「受付一覧」のタブで、共有したい受付の行を選んでから、もう一度お試しください。", ui.ButtonSet.OK);
     return;
@@ -314,7 +350,7 @@ function lineShareSelected() {
   var list = sheet.getActiveRangeList();
   var ranges = list ? list.getRanges() : [];
   for (var k = 0; k < ranges.length && rows.length <= LINE_SHARE_MAX; k++) {
-    for (var n = Math.max(ranges[k].getRow(), 2); n <= Math.min(ranges[k].getLastRow(), lastRow) && rows.length <= LINE_SHARE_MAX; n++) {
+    for (var n = Math.max(ranges[k].getRow(), headRow + 1); n <= Math.min(ranges[k].getLastRow(), lastRow) && rows.length <= LINE_SHARE_MAX; n++) {
       if (rows.indexOf(n) >= 0 || !String(values[n - 1][cols.id] || "").trim()) continue;
       // フィルタや非表示で隠れている行は、範囲で選んでいても共有しない
       if (sheet.isRowHiddenByFilter(n) || sheet.isRowHiddenByUser(n)) continue;
@@ -322,7 +358,7 @@ function lineShareSelected() {
     }
   }
   if (!rows.length) {
-    ui.alert("LINE共有", "共有したい受付の行（2 行目から下の、受付番号がある行）を選んでから、もう一度お試しください。", ui.ButtonSet.OK);
+    ui.alert("LINE共有", "共有したい受付の行（見出しの下の、受付番号がある行）を選んでから、もう一度お試しください。", ui.ButtonSet.OK);
     return;
   }
   if (rows.length > LINE_SHARE_MAX) {
@@ -357,10 +393,11 @@ function lineShareMarkContacted(sheetId, ids) {
   var lastCol = sheet.getLastColumn();
   if (lastRow < 2 || lastCol < 1) return 0;
   var values = sheet.getRange(1, 1, lastRow, lastCol).getDisplayValues();
-  var cols = lineShareColumns_(values[0]);
+  var headRow = receptionHeaderRow_(sheet);
+  var cols = lineShareColumns_(values[headRow - 1]);
   if (cols.status < 0 || cols.id < 0) throw new Error("「対応状況」または「受付番号」の列が見つかりません");
   var done = 0;
-  for (var n = 2; n <= lastRow; n++) {
+  for (var n = headRow + 1; n <= lastRow; n++) {
     if (ids.indexOf(String(values[n - 1][cols.id] || "").trim()) < 0) continue;
     sheet.getRange(n, cols.status + 1).setValue("連絡済");
     done++;

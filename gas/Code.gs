@@ -3,7 +3,7 @@
  *
  * 【役割】
  *  - doGet  : ナレッジシート（社内総合マニュアル › 指定1シート）を JSON で返す
- *  - doPost : 受付情報（3窓口＋LINE）を受付一覧シートに記録する（新しい受付は見出しのすぐ下＝いちばん上）
+ *  - doPost : 受付情報（3窓口＋LINE）を受付一覧シートに記録する（新しい受付は見出しのすぐ下＝いちばん上。見出しは「受付番号」のある行）
  *
  * 【セットアップ】
  *  1. 「社内総合マニュアル」スプレッドシートを開き、拡張機能 › Apps Script でこのコードを貼り付け
@@ -67,7 +67,16 @@ function doPost(e) {
       }
       // 値は見出しで列を探して入れる（担当者が列を足したり並べ替えたりしても正しい欄に入る。11 項目に整理する前の見出しも探す）
       var legacy = { "対応状況": "ステータス", "相談内容（AI要約）": "相談内容（AI要約・お客様確認済み）" };
-      var head = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getDisplayValues()[0].map(function (c) {
+      // 見出しの行：「受付番号」のある行（上から 5 行の中。1 行目に「連絡済を隠す」を置いたときは 2 行目。一畳屋様のご要望 2026-11-02）
+      var top = sheet.getRange(1, 1, Math.min(Math.max(sheet.getLastRow(), 1), 5), Math.max(sheet.getLastColumn(), 1)).getDisplayValues();
+      var headRow = 1;
+      for (var k = 0; k < top.length; k++) {
+        if (top[k].some(function (c) { return String(c).trim() === "受付番号"; })) {
+          headRow = k + 1;
+          break;
+        }
+      }
+      var head = top[headRow - 1].map(function (c) {
         return String(c).trim();
       });
       var src = payload.row || [];
@@ -85,26 +94,27 @@ function doPost(e) {
       // 新しい受付は見出しのすぐ下（いちばん上）に入れる（一畳屋様のご要望 2026-10-30「新しいものが上」）。
       // 値は書いたとおりの文字で（電話番号の先頭の 0 が消えないように）。書式は下の行（前の受付）と同じにする
       var width = Math.max(row.length, 1);
-      if (sheet.getLastRow() >= 2) {
-        sheet.insertRowBefore(2);
-        if (sheet.getLastRow() >= 3) sheet.getRange(3, 1, 1, width).copyFormatToRange(sheet, 1, width, 2, 2);
+      var first = headRow + 1;
+      if (sheet.getLastRow() >= first) {
+        sheet.insertRowBefore(first);
+        if (sheet.getLastRow() >= first + 1) sheet.getRange(first + 1, 1, 1, width).copyFormatToRange(sheet, 1, width, first, first);
       }
-      var cells = sheet.getRange(2, 1, 1, width);
+      var cells = sheet.getRange(first, 1, 1, width);
       cells.setNumberFormat("@");
       cells.setValues([
         row.map(function (v) {
           return v == null ? "" : String(v);
         }),
       ]);
-      sheet.showRows(2);
+      sheet.showRows(first);
       // 「対応状況」の欄は 2 択のプルダウン（未連絡・連絡済）
       var statusCol = head.indexOf("対応状況") + 1;
-      if (statusCol > 0 && sheet.getMaxRows() > 1) {
+      if (statusCol > 0 && sheet.getMaxRows() > headRow) {
         var options = payload.statusOptions || ["未連絡", "連絡済"];
         var rule = SpreadsheetApp.newDataValidation().requireValueInList(options, true).setAllowInvalid(false).build();
-        sheet.getRange(2, statusCol, sheet.getMaxRows() - 1, 1).setDataValidation(rule);
+        sheet.getRange(first, statusCol, sheet.getMaxRows() - headRow, 1).setDataValidation(rule);
       }
-      return json_({ ok: true, sheet: sheetName, row: 2 });
+      return json_({ ok: true, sheet: sheetName, row: first });
     }
     return json_({ ok: false, error: "unknown action: " + action });
   } catch (err) {

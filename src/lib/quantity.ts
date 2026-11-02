@@ -152,7 +152,11 @@ function tatamiExamples(t: PriceTable, cols: number[], n: number, nq: string, he
     const row = name ? t.rows.find((r) => rowName(r).normalize("NFKC").startsWith(name)) : undefined;
     return row ? [{ row, note }] : [];
   };
-  const targets = named.length ? named.map((row) => ({ row, note: "" })) : [...pick(/一番人気は\s*([^\s、。・,]+)/, "一番人気"), ...pick(/迷ったら\s*([^\s、。・,]+)/, "迷ったら")];
+  // 種類を言われていなければ、資料の「おすすめしたいのは〜」（概算のルール「おすすめ品で出す」。一畳屋様のご要望 2026-11-02）、
+  // 続けて「一番人気は〜」「迷ったら〜」の種類で
+  const targets = named.length
+    ? named.map((row) => ({ row, note: "" }))
+    : [...pick(/おすすめしたいのは\s*([^\s、。・,(]+)/, "おすすめ"), ...pick(/一番人気は\s*([^\s、。・,]+)/, "一番人気"), ...pick(/迷ったら\s*([^\s、。・,]+)/, "迷ったら")];
   const popular = [...(text.match(/よく選ばれるのは([\d,円と\s]+)のグレード/)?.[1] ?? "").matchAll(/([\d,]+)円/g)]
     .map((m) => amount(m[1]))
     .filter((v) => Number.isFinite(v) && heri.rows.some((r) => rowAmount(r) === v))
@@ -200,6 +204,8 @@ export function quantityReference(question: string, history: ChatMessage[], tabl
   const ranges: string[] = [];
   // 標準の目安（畳は「合計の例」があるので、畳を含む質問では作らない）
   const standards: Standard[] = [];
+  // おすすめ品の目安（資料の「網戸のおすすめは〜」「障子のおすすめは〜」の種類。概算のルール「おすすめ品で出す」）
+  const recommended: Standard[] = [];
   let hasTatami = false;
   for (const f of found) {
     if (f.n < 2) continue;
@@ -232,6 +238,8 @@ export function quantityReference(question: string, history: ChatMessage[], tabl
           if (expenses && all.length) ranges.push(`・諸経費込みの合計（${t.title}だけの場合）：${yen(Math.min(...all) * f.n + expenses)}〜${yen(Math.max(...all) * f.n + expenses)}`);
           const std = standardPart(t, cols, nq);
           if (std) standards.push({ ...std, title: t.title, n: f.n, unitWord });
+          const rec = recommendedPart(t, cols, nq, sheetText);
+          if (rec) recommended.push({ ...rec, title: t.title, n: f.n, unitWord });
         }
         blocks.push(`■ ${t.title}${unit ? `（${unit}の単価）` : ""} × ${f.n}${unitWord}（安い順）\n${lines.join("\n")}`);
       }
@@ -241,6 +249,8 @@ export function quantityReference(question: string, history: ChatMessage[], tabl
   return [
     "## 数量の計算表（システムが料金表の単価×数量で計算した金額。質問の品目・作業・種類に合う行だけを使い、合計はこの数字のとおりに伝える）",
     ...blocks,
+    // おすすめ品は、品目のすべてにおすすめがあるときだけ（網戸と襖のように一部だけなら、品目ごとの行は出さずに標準の目安で）
+    ...(hasTatami || recommended.length !== standards.length ? [] : standardLines(recommended, expenses, "おすすめ品の目安")),
     ...(hasTatami ? [] : standardLines(standards, expenses)),
     ...(ranges.length === 1 ? ranges : []),
     expenses ? `・諸経費：工事全体に一式 ${yen(expenses)}（数量によらない）` : "",
@@ -274,17 +284,35 @@ function standardPart(t: PriceTable, cols: number[], nq: string): { name: string
   return best ? { name: rowName(best.r), col: t.columns[col], unit: best.v } : null;
 }
 
-/** 標準の目安の行（品目が 1 つなら諸経費込みの合計、複数なら品目ごとの金額と、諸経費を一式で 1 回足した合計） */
-function standardLines(list: Standard[], expenses: number | null): string[] {
+/**
+ * おすすめ品の目安：資料の「網戸のおすすめは〜」「障子のおすすめは〜」「襖の…お勧め順 1.〜」の種類（料金表の行の名前がその言葉で始まるもの）を、
+ * 標準の目安と同じ列で。資料に書かれていない・料金表に見つからなければ作らない
+ */
+function recommendedPart(t: PriceTable, cols: number[], nq: string, sheetText: string): { name: string; col: string; unit: number } | null {
+  const item = t.title.normalize("NFKC").match(/^(網戸|障子|襖)/)?.[1];
+  // 「網戸のおすすめは虫が嫌がる網」「襖の問い合わせ時にお勧め順 1.ちどり 2.のぞみ…」
+  const name = item
+    ? sheetText.normalize("NFKC").match(new RegExp(`${item}[^\\n。]{0,12}?(?:おすすめ|お勧め|オススメ)(?:は|順\\s*1[.．、]?)\\s*([^\\s、。・,()/／]+)`))?.[1]
+    : undefined;
+  if (!name || !t.columns.length) return null;
+  const col = cols[0] ?? 0;
+  const wantNew = /新調|新しく|作り替|作りかえ|丸ごと/.test(nq);
+  const row = t.rows.find((r) => /新調/.test(r.label) === wantNew && rowName(r).normalize("NFKC").startsWith(name));
+  const unit = row ? amount((row.values[col] ?? "").trim()) : Number.NaN;
+  return row && Number.isFinite(unit) ? { name: rowName(row), col: t.columns[col], unit } : null;
+}
+
+/** 標準の目安・おすすめ品の目安の行（品目が 1 つなら諸経費込みの合計、複数なら品目ごとの金額と、諸経費を一式で 1 回足した合計） */
+function standardLines(list: Standard[], expenses: number | null, label = "標準の目安"): string[] {
   if (!list.length) return [];
   const exp = expenses ? `＋諸経費 ${yen(expenses)}` : "";
   const total = list.reduce((s, x) => s + x.unit * x.n, 0) + (expenses ?? 0);
   if (list.length === 1) {
     const x = list[0];
-    return [`・標準の目安（${x.name}・${x.col}×${x.n}${x.unitWord}${expenses ? "・諸経費込み" : ""}）：${yen(x.unit)}×${x.n}＝${yen(x.unit * x.n)}${exp}＝${yen(total)}`];
+    return [`・${label}（${x.name}・${x.col}×${x.n}${x.unitWord}${expenses ? "・諸経費込み" : ""}）：${yen(x.unit)}×${x.n}＝${yen(x.unit * x.n)}${exp}＝${yen(total)}`];
   }
   return [
-    ...list.map((x) => `・標準の目安（${x.title}：${x.name}・${x.col}）：${yen(x.unit)}×${x.n}${x.unitWord}＝${yen(x.unit * x.n)}`),
-    `・標準の目安の合計（諸経費は工事全体で1回）：${list.map((x) => yen(x.unit * x.n)).join("＋")}${exp}＝${yen(total)}`,
+    ...list.map((x) => `・${label}（${x.title}：${x.name}・${x.col}）：${yen(x.unit)}×${x.n}${x.unitWord}＝${yen(x.unit * x.n)}`),
+    `・${label}の合計（諸経費は工事全体で1回）：${list.map((x) => yen(x.unit * x.n)).join("＋")}${exp}＝${yen(total)}`,
   ];
 }

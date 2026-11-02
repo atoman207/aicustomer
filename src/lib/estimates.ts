@@ -6,7 +6,6 @@ import {
   sheetsAppendRow,
   sheetsEnsureTab,
   sheetsInsertRowAtTop,
-  sheetsReadHeader,
   sheetsReadRange,
   sheetsReadTabByName,
   sheetsSetDropdown,
@@ -104,7 +103,10 @@ async function recordToSheet(e: EstimateRequest): Promise<void> {
   const id = env.receptionSheetId;
   const name = env.receptionSheetName;
   await sheetsEnsureTab(id, name, [...RECEPTION_HEADER]);
-  let head = await sheetsReadHeader(id, name);
+  // 見出しの行（1 行目に「連絡済を隠す」を置いたときは 2 行目）を上の数行から探す
+  const top = await sheetsReadRange(id, name, "A1:Z5");
+  const h = receptionHeaderIndex(top);
+  let head = top[h] ?? [];
   if (!head.some((c) => c.trim())) {
     // タブはあるが空（見出しが消された）：見出しから書き直す
     await sheetsAppendRow(id, name, [...RECEPTION_HEADER]);
@@ -116,10 +118,10 @@ async function recordToSheet(e: EstimateRequest): Promise<void> {
   RECEPTION_HEADER.forEach((h, i) => {
     if (cols[h] >= 0) row[cols[h]] = values[i];
   });
-  await sheetsInsertRowAtTop(id, name, Array.from(row, (v) => v ?? ""));
+  await sheetsInsertRowAtTop(id, name, Array.from(row, (v) => v ?? ""), h + 1);
   if (head[cols["対応状況"]]?.trim() === "対応状況") {
     // プルダウンを付けられなくても、受付の記録は済んでいる（理由は管理画面のエラー履歴に）
-    await sheetsSetDropdown(id, name, cols["対応状況"], Object.values(ESTIMATE_STATUS_LABEL)).catch((err) =>
+    await sheetsSetDropdown(id, name, cols["対応状況"], Object.values(ESTIMATE_STATUS_LABEL), h + 1).catch((err) =>
       logError("sheet", `受付一覧の「対応状況」のプルダウン（${e.id}）`, err),
     );
   }
@@ -317,13 +319,23 @@ interface SheetReceptions {
   items: { row: number; estimate: EstimateRequest }[];
 }
 
+/**
+ * 受付一覧の見出しの行（0 始まり）：「受付番号」のある行（上から 5 行の中。なければ 0）。一畳屋様のご要望 2026-11-02
+ * 「連絡済を隠すボタンは A1 にもってきていただいて、全体を 1 段下げてほしい」で、見出しは 2 行目になった（前の形の 1 行目でも読める）
+ */
+export function receptionHeaderIndex(rows: string[][]): number {
+  const i = rows.slice(0, 5).findIndex((r) => (r ?? []).some((c) => String(c ?? "").trim() === "受付番号"));
+  return i < 0 ? 0 : i;
+}
+
 export function parseReceptionRows(rows: string[][]): SheetReceptions {
-  const head = rows[0] ?? [];
+  const h = receptionHeaderIndex(rows);
+  const head = rows[h] ?? [];
   const hasHeader = head.some((c) => c.trim() === "受付番号");
   const cols = receptionColumns(head);
   const items: SheetReceptions["items"] = [];
   rows.forEach((r, row) => {
-    if (hasHeader && row === 0) return;
+    if (hasHeader && row <= h) return;
     const cell = (h: ReceptionColumn) => (cols[h] >= 0 ? (r[cols[h]] ?? "") : "").toString().trim();
     const id = cell("受付番号").normalize("NFKC").toUpperCase();
     if (!RECEPTION_ID.test(id)) return;
