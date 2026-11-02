@@ -5,7 +5,7 @@ import { afterSubmitChangeText, asksChangeAfterSubmit, sanitizeIntake, submitted
 import { intakeApplies, intakeTurn } from "@/lib/intake-ai";
 import { env } from "@/lib/env";
 import { getKnowledge } from "@/lib/knowledge";
-import { OFFER_LINE, OFFER_NOT_YET, OFFER_NOW, hasOffer, offerDue, offerTooEarly } from "@/lib/offer";
+import { OFFER_LINE, OFFER_NOT_YET, OFFER_NOW, OFFER_SUBMITTED, hasOffer, offerDue, offerTooEarly } from "@/lib/offer";
 import { canRetryWithChatModel, streamChatCompletion } from "@/lib/openai";
 import { ANSWER_MARKER, buildChatSystemPrompt, splitEvidence, usesEvidence } from "@/lib/prompts";
 import { getConversation, getSettings, upsertConversation } from "@/lib/store";
@@ -114,9 +114,11 @@ export async function POST(req: Request) {
   }
   const planHeaders = (p: AnswerPlan, mode: string) => headers(p.sources, p.snapshot.source, p.kind, mode);
 
-  // 2回目以降の答えで、まだ提案していなければ、無料の訪問見積もりを提案する。最初の答えでは提案しない（ご状況を伺ってから。offer.ts）
-  const offer = offerDue(messages.slice(0, -1), last.content, intake.active || intake.ready);
-  const tooEarly = !offer && offerTooEarly(messages.slice(0, -1), last.content, intake.active || intake.ready);
+  // 2回目以降の答えで、まだ提案していなければ、無料の訪問見積もりを提案する。最初の答えでは提案しない（ご状況を伺ってから。offer.ts）。
+  // ご依頼を送信したあとも提案しない（声の相談と同じ。送信済みのお客様に、もう一度お見積りをすすめない）
+  const offerBusy = intake.active || intake.ready || Boolean(submittedId);
+  const offer = offerDue(messages.slice(0, -1), last.content, offerBusy);
+  const tooEarly = !offer && offerTooEarly(messages.slice(0, -1), last.content, offerBusy);
 
   // OpenAI を使わずに答えられる質問（料金表・会社情報・学習済み・定型文・該当なし・デモ）
   if (plan.mode !== "openai") {
@@ -126,7 +128,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const system = `${buildChatSystemPrompt(settings.companyName, plan.context, channel, plan.snapshot.staffNotes?.text)}${offer ? `\n\n${OFFER_NOW}` : tooEarly ? `\n\n${OFFER_NOT_YET}` : ""}`;
+    const system = `${buildChatSystemPrompt(settings.companyName, plan.context, channel, plan.snapshot.staffNotes?.text)}${offer ? `\n\n${OFFER_NOW}` : tooEarly ? `\n\n${OFFER_NOT_YET}` : submittedId ? `\n\n${OFFER_SUBMITTED}` : ""}`;
     const history = recentHistory(messages);
     const { model, effort } = answerModelFor(plan);
     // 同じ質問（AI に渡す内容とお客様の質問がまったく同じ）には、前に AI が作った回答をそのまま返す（AI を使わない）。
