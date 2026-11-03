@@ -119,7 +119,8 @@ await check("POST /api/chat（料金：AI があれば資料の全文から・�
   });
   const text = (await res.text()).normalize("NFKC");
   const mode = res.headers.get("x-mode");
-  if (!res.ok || !["local", "openai"].includes(mode ?? "") || !/23,100円/.test(text) || /枠交換/.test(text)) throw new Error(`mode=${mode} ${text.slice(0, 120)}`);
+  // cache＝同じ質問に AI が前に答えた学習済みの回答（同じサーバーで 2 回目に流したとき）
+  if (!res.ok || !["local", "openai", "cache"].includes(mode ?? "") || !/23,100円/.test(text) || /枠交換/.test(text)) throw new Error(`mode=${mode} ${text.slice(0, 120)}`);
   return `mode=${mode} ${text.replace(/\s+/g, " ").slice(0, 50)}`;
 });
 await check("POST /api/knowledge/answer（営業時間はスプレッドシートの内容で回答）", async () => {
@@ -170,7 +171,12 @@ await check("POST /api/summarize", async () => {
 await check("POST /api/chat（見積依頼の聞き取り：まとめて答えたお名前・ご住所・お電話番号 → ご希望日 → 確認画面）", async () => {
   const messages = [];
   let intake = { active: false, draft: { dates: [] } };
-  const turns = ["6畳の和室の表替えを考えています", "見積をお願いします", "疎通花子、熊本市中央区水前寺1-2-3、090-1234-5678", "11月2日の午前か11月4日の午後"];
+  // ご希望日は今日より先の日（過ぎた日は受け付けないため、決まった日付にすると日がたつと落ちる）
+  const ahead = (n) => {
+    const d = new Date(Date.now() + 9 * 3600e3 + n * 86400e3);
+    return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`;
+  };
+  const turns = ["6畳の和室の表替えを考えています", "見積をお願いします", "疎通花子、熊本市中央区水前寺1-2-3、090-1234-5678", `${ahead(10)}の午前か${ahead(12)}の午後`];
   let reply = "";
   for (const t of turns) {
     messages.push({ role: "user", content: t });
@@ -211,7 +217,8 @@ await check("声の相談（簡易音声）：そろったら確認画面を表�
   const start = await json("/api/agent/start", { method: "POST", body: JSON.stringify({ channel: "web_voice" }) });
   if (!start.res.ok) throw new Error(`start ${start.res.status}`);
   const sid = start.body.sessionId;
-  const turns = ["見積をお願いします", "疎通三郎です", "熊本市東区保田窪2-1-21", "09011112222", "11月5日の午前", "なし", "なし", "はい"];
+  // ご相談の中身（工事）も言う（言わないと AI が工事内容を伺い、続く「なし」を「見積は不要」と受け取ることがある）
+  const turns = ["畳6枚の表替えの見積をお願いします", "疎通三郎です", "熊本市東区保田窪2-1-21", "09011112222", "11月5日の午前", "なし", "なし", "はい"];
   let last;
   let session = start.body.session;
   for (const t of turns) {

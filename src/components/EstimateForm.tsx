@@ -253,6 +253,8 @@ export default function EstimateForm({
           preferredDates: dates,
           confirmed: true,
           autofill: { filled, edited: filled.filter((f) => touched.has(f)) },
+          // 正しく聞き取れなかった可能性があり、直さずに送った項目：受付一覧に「要確認」と書く
+          unsure,
         }),
       });
       const j = (await res.json()) as { ok: boolean; error?: string; estimate?: EstimateRequest; sinkLabel?: string; duplicate?: boolean };

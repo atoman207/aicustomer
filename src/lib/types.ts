@@ -198,6 +198,8 @@ export interface AgentTurnResult {
   estimate?: EstimateRequest;
   /** HP の声の相談：項目がそろったので画面に確認画面を表示する */
   formReady?: boolean;
+  /** 電話：担当者へつなぐ番号（人と話したいとおっしゃった・営業時間内。agent.ts の handOff） */
+  transfer?: string;
   mode: "openai" | "demo";
   sources?: SearchHit[];
   /** 回答の出どころ（local / cache は OpenAI を使わずに回答） */

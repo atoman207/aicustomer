@@ -9,7 +9,8 @@ import { env } from "./env";
 import { logError } from "./errorlog";
 import { createEstimate } from "./estimates";
 import { BYE, INTENT_ESTIMATE, fallbackTurn } from "./fallback";
-import { japanNow } from "./hours";
+import { AGREES, AI_REASK, ASKS_CALLBACK, ASKS_PERSON, CUSTOMER_STUCK, REASK_LIMIT, reaskStreak } from "./handoff";
+import { japanNow, resolvePhoneRouting } from "./hours";
 import { normalizeDraft } from "./intake";
 import { getKnowledge } from "./knowledge";
 import { canRetryWithChatModel, chatCompletionJson } from "./openai";
@@ -17,8 +18,8 @@ import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt, isFullDocumentContext } from
 import { SALES_DECLINE, SalesPitchError } from "./sales";
 import { getSession, getSettings, saveSession, upsertConversation } from "./store";
 import { summarizeConversation } from "./summarize";
-import type { AgentSession, AgentStage, AgentTurnResult, Channel, IntakeDraft, SearchHit } from "./types";
-import { domesticPhone, fillTemplate, headTail, readDigits, truncate, uid } from "./utils";
+import type { AgentSession, AgentStage, AgentTurnResult, Channel, EstimateRequest, IntakeDraft, SearchHit } from "./types";
+import { domesticPhone, fillTemplate, headTail, isLikelyPhone, normalizePhone, readDigits, truncate, uid } from "./utils";
 
 const CHANNEL_WHERE: Record<string, string> = { phone: "AI電話", line: "LINE", web_voice: "声の相談", web_text: "文字の相談" };
 
@@ -169,6 +170,164 @@ async function openaiTurn(session: AgentSession, company: string, context: strin
   return { reply: out.reply.trim(), stage, draft, done: out.end_call, mode: "openai", sources: hits, answeredBy: "openai" };
 }
 
+// ── 電話の会話が続かないとき（一畳屋様のご意見 2026-11-02「修正点など」9 行目「会話が成立しない時点で電話から離脱の可能性が高い」）
+//   2 回続けて聞き取れない・聞き直しが続く・「通じない」・「人と話したい」：通話を切って終わりにせず、折り返しの受付にする
+//   （営業時間内で転送先があり、人と話したいとおっしゃったら担当者へつなぐ）。途中で切れた通話も、見積の聞き取り中なら折り返しの受付にする
+
+export type HandOffReason = "unheard" | "stuck" | "person" | "hangup";
+
+const HANDOFF_LABEL: Record<HandOffReason, string> = {
+  unheard: "折り返しのお願い：AI電話でお声が聞き取れず、受付できませんでした",
+  stuck: "折り返しのお願い：AI電話でお話がうまく伺えず、折り返しをご希望",
+  person: "折り返しのお願い：担当者との会話をご希望",
+  hangup: "折り返しのお願い：AI電話が見積のお話の途中で切れました",
+};
+const TRANSFER_LABEL = "担当者へおつなぎしたお電話（つながらなかったときは折り返しをお願いします）";
+const UNHEARD_BYE = "お電話が聞き取れませんでした。恐れ入りますが、改めておかけ直しください。お電話ありがとうございました。";
+const NO_NUMBER_BYE =
+  "恐れ入りますが、お電話番号が通知されていないため、こちらから折り返しのお電話ができません。お手数ですが、営業時間内に改めてお電話ください。お電話ありがとうございました。";
+const RECORD_FAILED_BYE = "申し訳ございません、ただいま受付ができませんでした。恐れ入りますが、営業時間内に改めてお電話ください。お電話ありがとうございました。";
+export const TRANSFER_REPLY = "かしこまりました。担当者におつなぎしますので、そのままお待ちください。";
+/** 担当者へつないだが出られなかった（受付一覧に折り返しを記録したとき・できなかったとき） */
+export const TRANSFER_FAILED = "申し訳ございません、ただいま担当者が電話に出られません。担当者より、折り返しお電話いたします。お電話ありがとうございました。";
+export const TRANSFER_FAILED_RETRY = "申し訳ございません、ただいま担当者が電話に出られません。恐れ入りますが、改めておかけ直しください。お電話ありがとうございました。";
+
+interface CallbackNumber {
+  number: string;
+  /** お客様がおっしゃった番号（発信者番号ではない） */
+  told: boolean;
+}
+
+/** 折り返し先：お客様がおっしゃった番号 → 発信者番号（非通知なら null） */
+function callbackNumber(session: AgentSession): CallbackNumber | null {
+  const told = session.draft.phone && isLikelyPhone(session.draft.phone) ? normalizePhone(session.draft.phone) : undefined;
+  const caller = domesticPhone(session.meta?.callerNumber);
+  if (told) return { number: told, told: !sameNumber(told, caller) };
+  return caller ? { number: caller, told: false } : null;
+}
+
+/** 同じ電話番号か（ハイフン・+81 の書き方の違いは見ない） */
+function sameNumber(a: string | undefined, b: string | undefined): boolean {
+  const digits = (s: string | undefined) => (domesticPhone(s) ?? "").replace(/\D/g, "");
+  return Boolean(digits(a)) && digits(a) === digits(b);
+}
+
+function numberLabel(n: CallbackNumber): string {
+  return `${n.told ? "お伺いした" : "いまおかけの"}、末尾${readDigits(n.number.replace(/\D/g, "").slice(-4))}の番号`;
+}
+
+/** お客様が何かご用件を話したか（無言・「もしもし」だけの通話は、折り返しの受付にしない） */
+function spokeAboutSomething(session: AgentSession): boolean {
+  return session.messages.some(
+    (m) =>
+      m.role === "user" &&
+      m.content
+        .replace(/[\s、。,.!！?？ー〜…]/g, "")
+        .replace(/^(はい|もしもし|あの|えっと|えーと|えー)+/u, "").length >= 4,
+  );
+}
+
+/** 聞き直しが続いた・「通じない」とおっしゃったときのご提案（「はい」で折り返しの受付） */
+function handOffOffer(n: CallbackNumber): string {
+  return `うまくお話を伺えず、申し訳ございません。担当者から、${numberLabel(n)}へ、折り返しお電話いたしましょうか？`;
+}
+
+/** 折り返しの受付を受付一覧に記録する（伺えたところまで。営業の売り込みは受け付けない） */
+async function recordCallback(session: AgentSession, label: string, n: CallbackNumber): Promise<EstimateRequest | "sales" | null> {
+  const [whole, fixed] = await Promise.all([summarizeConversation(session.messages), fixAddress(session.draft.address, session.messages, { spoken: true })]);
+  const body = (whole.mode === "openai" && whole.summary) || session.draft.summary || summaryFromMessages(session);
+  const d = session.draft;
+  try {
+    const { duplicate: _dup, ...estimate } = await createEstimate({
+      channel: "phone",
+      name: d.name || "（お名前は伺えませんでした）",
+      address: fixed?.address ?? d.address ?? "（ご住所は伺えませんでした）",
+      phone: n.number,
+      summary: `【${label}】${body}`,
+      preferredDates: d.dates.length ? d.dates : ["（折り返しの際にご相談）"],
+      sessionId: session.id,
+      confirmedByCustomer: false,
+      unsure: [d.name ? "name" : "", d.address ? "address" : "", n.told ? "phone" : ""].filter(Boolean),
+    });
+    return estimate;
+  } catch (e) {
+    if (e instanceof SalesPitchError) return "sales";
+    await logError("phone", "AI電話（折り返しの受付の記録）", e);
+    return null;
+  }
+}
+
+/** 電話の会話が続かないとき：折り返しの受付にして、お礼を伝えて通話を終える（人と話したい・営業時間内・転送先あり：担当者へつなぐ） */
+async function handOff(session: AgentSession, why: HandOffReason): Promise<AgentTurnResult> {
+  const settings = await getSettings();
+  const routing = resolvePhoneRouting(settings.phone);
+  const n = callbackNumber(session);
+  const spoke = spokeAboutSomething(session);
+  const base = { stage: session.stage, draft: session.draft, done: true, mode: env.hasOpenAI ? "openai" : "demo" } as const;
+  const transfer = why === "person" && routing.inBusinessHours && settings.phone.forwardNumber ? settings.phone.forwardNumber : undefined;
+  if (transfer) {
+    // つながらなかったときも折り返せるように、先に受付一覧へ（つながったら、担当者が「連絡済」にする）
+    const created = n && spoke ? await recordCallback(session, TRANSFER_LABEL, n) : null;
+    if (created && created !== "sales") session.estimateId = created.id;
+    session.meta = { ...(session.meta ?? {}), handoff: "transfer" };
+    return { ...base, stage: "completed", reply: TRANSFER_REPLY, transfer, ...(created && created !== "sales" ? { estimate: created } : {}) };
+  }
+  if (!n) return { ...base, reply: spoke ? NO_NUMBER_BYE : UNHEARD_BYE };
+  if (!spoke) return { ...base, reply: UNHEARD_BYE };
+  const created = await recordCallback(session, HANDOFF_LABEL[why], n);
+  if (created === "sales") return { ...base, stage: "consult", reply: SALES_DECLINE };
+  if (!created) return { ...base, reply: RECORD_FAILED_BYE };
+  session.estimateId = created.id;
+  session.meta = { ...(session.meta ?? {}), handoff: why };
+  const sorry =
+    why === "unheard" ? "お声が聞き取りにくく、申し訳ございません。" : why === "person" && !routing.inBusinessHours ? "かしこまりました。ただいま営業時間外のため、" : "かしこまりました。";
+  return {
+    ...base,
+    stage: "completed",
+    estimate: created,
+    reply: `${sorry}担当者より、${numberLabel(n)}へ、${routing.inBusinessHours ? "このあと" : "営業時間内に"}折り返しお電話いたします。お電話ありがとうございました。`,
+  };
+}
+
+/** 2 回続けて聞き取れなかった電話（Twilio の音声認識が空）：折り返しの受付にして終える */
+export async function handOffTurn(session: AgentSession, why: HandOffReason): Promise<{ result: AgentTurnResult; session: AgentSession }> {
+  const result = await handOff(session, why);
+  return { result, session: await finishTurn(session, result) };
+}
+
+/**
+ * 通話が途中で切れた（Twilio の通話ステータスのお知らせ）：見積のお話の途中・聞き取りがうまくいっていない途中で切れたら、折り返しの受付にする。
+ * お客様が「ありがとうございました」などで終えた・相談だけで終えた・営業の売り込み・非通知は記録しない
+ */
+export async function recordDroppedCall(session: AgentSession): Promise<EstimateRequest | null> {
+  if (session.channel !== "phone" || session.estimateId || session.meta?.handoff) return null;
+  const n = callbackNumber(session);
+  if (!n || !spokeAboutSomething(session)) return null;
+  const lastUser = [...session.messages].reverse().find((m) => m.role === "user");
+  const lastAi = [...session.messages].reverse().find((m) => m.role === "assistant");
+  if (lastUser && BYE.test(lastUser.content)) return null;
+  if (lastAi && lastAi.content.trim() === SALES_DECLINE.trim()) return null;
+  const wanted = session.stage === "collecting" || session.stage === "confirming";
+  const failing = session.meta?.handoffOffered === "1" || Boolean(lastAi && AI_REASK.test(lastAi.content.normalize("NFKC")));
+  if (!wanted && !failing) return null;
+  const created = await recordCallback(session, HANDOFF_LABEL.hangup, n);
+  if (!created || created === "sales") return null;
+  session.estimateId = created.id;
+  session.meta = { ...(session.meta ?? {}), handoff: "hangup" };
+  session.updatedAt = new Date().toISOString();
+  await saveSession(session);
+  await upsertConversation({
+    id: session.id,
+    channel: session.channel,
+    startedAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    messages: session.messages,
+    estimateId: session.estimateId,
+    meta: session.meta,
+  });
+  return created;
+}
+
 /** 1ターン処理：ユーザー発話 → 応答。受付完了時はスプレッドシート等へ記録 */
 export async function runTurn(
   session: AgentSession,
@@ -181,6 +340,17 @@ export async function runTurn(
   session.messages.push({ role: "user", content: text, at });
   const aiMode = env.hasOpenAI ? "openai" : "demo";
   const fallback = async () => fallbackTurn(session, text, (await getKnowledge()).entries);
+
+  // 電話：人と話したい・折り返しのご提案に「はい」→ 折り返しの受付（営業時間内で転送先があれば担当者へ）
+  if (session.channel === "phone" && !session.estimateId) {
+    const offered = session.meta?.handoffOffered === "1";
+    if (offered) session.meta = { ...(session.meta ?? {}), handoffOffered: "" };
+    const person = ASKS_PERSON.test(text) || (session.stage === "consult" && ASKS_CALLBACK.test(text));
+    if (person || (offered && AGREES.test(text.replace(/^[\s、。]+/, "")))) {
+      const result = await handOff(session, person ? "person" : "stuck");
+      return { result, session: await finishTurn(session, result) };
+    }
+  }
 
   let result: AgentTurnResult;
   const consulting = session.stage === "consult" && !INTENT_ESTIMATE.test(text) && !BYE.test(text);
@@ -251,6 +421,11 @@ export async function runTurn(
           preferredDates: result.draft.dates,
           sessionId: session.id,
           confirmedByCustomer: true,
+          // 電話は画面で確かめられない：お名前（漢字）・ご住所（と、発信者番号ではないお電話番号）は、日程の打ち合わせのお電話で確かめていただく
+          unsure:
+            session.channel === "phone"
+              ? ["name", "address", ...(sameNumber(result.draft.phone, session.meta?.callerNumber) ? [] : ["phone"])]
+              : undefined,
         });
       } catch (e) {
         if (!(e instanceof SalesPitchError)) throw e;
@@ -299,6 +474,25 @@ export async function runTurn(
     }
   }
 
+  // 電話：聞き直しが続いた（3 回目）・「通じない」とおっしゃった：同じことを聞き直さず、折り返しをご提案する（「はい」で折り返しの受付）
+  if (session.channel === "phone" && !result.done && !result.estimate && !session.estimateId) {
+    const n = callbackNumber(session);
+    const prevAi = history.filter((m) => m.role === "assistant").map((m) => m.content);
+    const reasking = AI_REASK.test(result.reply.normalize("NFKC")) && reaskStreak(prevAi) >= REASK_LIMIT;
+    // 「何回も言ってるでしょ、山田です」のように、言い直しで伺えたときはそのまま進める
+    const fields = (d: IntakeDraft) => JSON.stringify([d.name, d.address, d.phone, d.dates]);
+    const progressed = fields(result.draft) !== fields(session.draft);
+    if (n && (reasking || (CUSTOMER_STUCK.test(text) && !progressed))) {
+      result.reply = handOffOffer(n);
+      session.meta = { ...(session.meta ?? {}), handoffOffered: "1" };
+    }
+  }
+
+  return { result, session: await finishTurn(session, result) };
+}
+
+/** ターンの結果をセッションに入れて保存する（会話の記録も更新） */
+async function finishTurn(session: AgentSession, result: AgentTurnResult): Promise<AgentSession> {
   session.stage = result.stage;
   session.draft = result.draft;
   session.messages.push({ role: "assistant", content: result.reply, at: new Date().toISOString() });
@@ -315,5 +509,5 @@ export async function runTurn(
     estimateId: session.estimateId,
     meta: { ...(session.meta ?? {}), mode: result.mode, stage: session.stage, answer: result.answeredBy ?? "" },
   });
-  return { result, session };
+  return session;
 }

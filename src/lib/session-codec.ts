@@ -71,6 +71,9 @@ interface CompactSession {
   t: string;
   n?: string;
   x: number;
+  /** 折り返しをご提案した（handoffOffered）・折り返しの受付にした（handoff） */
+  o?: string;
+  h?: string;
 }
 
 function b64url(buf: Buffer): string {
@@ -96,6 +99,8 @@ export function encodeCallCookie(s: AgentSession): string {
     t: s.createdAt,
     n: s.meta?.callerNumber,
     x: s.emptyTurns,
+    o: s.meta?.handoffOffered || undefined,
+    h: s.meta?.handoff || undefined,
   };
   let payload = b64url(deflateRawSync(Buffer.from(JSON.stringify(compact), "utf8")));
   if (payload.length > 3800) {
@@ -122,7 +127,7 @@ export function decodeCallCookie(value: string | null, expectId: string): AgentS
       estimateId: c.e,
       emptyTurns: typeof c.x === "number" ? c.x : 0,
       fallbackStep: c.f,
-      meta: { callerNumber: c.n ?? "", restoredFrom: "cookie" },
+      meta: { callerNumber: c.n ?? "", restoredFrom: "cookie", ...(c.o ? { handoffOffered: c.o } : {}), ...(c.h ? { handoff: c.h } : {}) },
     };
   } catch {
     return null;

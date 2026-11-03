@@ -770,6 +770,25 @@ export default function ConsultConsole({
               </p>
               {call.hint ? <p className={`max-w-xs text-[13px] leading-snug text-sumi-500 ${call.act ? "" : "hidden sm:block"}`}>{call.hint}</p> : null}
               {voice.live ? <p className="text-sm tabular-nums text-sumi-400">{clockLabel}</p> : null}
+              {/* 聞き直しが続いた・「通じない」：文字でもお伝えいただけることを案内する（一畳屋様のご意見 2026-11-02「会話が成立しない時点で離脱の可能性が高い」） */}
+              {voice.live && voice.hearingTrouble && !typing ? (
+                <div className="w-full max-w-xs rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3 text-left text-[13px] leading-relaxed text-amber-900" data-hearing-trouble>
+                  <p>声が届きにくいようです。お名前やご住所などは、文字でもお伝えいただけます（声のご相談はこのまま続きます）。</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      voice.dismissHearingTrouble();
+                      setTyping(true);
+                      window.setTimeout(() => textareaRef.current?.focus(), 50);
+                    }}
+                    className="btn-secondary mt-2.5 w-full"
+                    data-hearing-type
+                  >
+                    <Keyboard className="h-4 w-4" />
+                    文字で入力する
+                  </button>
+                </div>
+              ) : null}
               {/* AI の声を流せなかった・聞こえない：押した操作の中で流し直す（一畳屋様のご指摘 2026-10-30「音が出ない（エクスペリア）」） */}
               {voice.live && voice.audioBlocked ? (
                 <button
@@ -993,6 +1012,7 @@ export default function ConsultConsole({
                   icon: Keyboard,
                   onClick: () => {
                     setTyping((v) => !v);
+                    voice.dismissHearingTrouble();
                     window.setTimeout(() => textareaRef.current?.focus(), 50);
                   },
                   pressed: typing,

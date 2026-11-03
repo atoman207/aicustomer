@@ -21,6 +21,8 @@ interface Body {
   confirmed?: boolean;
   /** 確認画面：AI が会話から入力した項目・お客様が修正した項目 */
   autofill?: { filled?: unknown; edited?: unknown };
+  /** 確認画面：正しく聞き取れなかった可能性があり、お客様がまだ直していない項目（受付一覧に「要確認」と書く） */
+  unsure?: unknown;
 }
 
 const AUTOFILL_KEYS = ["name", "address", "phone", "dates", "summary"];
@@ -51,6 +53,7 @@ export async function POST(req: Request) {
     sessionId: body.sessionId ? String(body.sessionId).slice(0, 80) : undefined,
     confirmedByCustomer: true,
     autofill: body.autofill ? { filled: keys(body.autofill.filled), edited: keys(body.autofill.edited) } : undefined,
+    unsure: keys(body.unsure).filter((k) => k !== "summary"),
   };
   const errors = validateEstimateInput(input);
   if (errors.length > 0) return error(errors.join("、"), 400, { errors });

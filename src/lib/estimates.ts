@@ -11,6 +11,7 @@ import {
   sheetsSetDropdown,
   sheetsUpdateCell,
 } from "./google";
+import { withCheckNote } from "./handoff";
 import { SalesPitchError, isSalesPitch } from "./sales";
 import { addEstimate, listEstimates, updateEstimate } from "./store";
 import { CHANNEL_LABEL, ESTIMATE_STATUS_LABEL, RECEPTION_HEADER, type Channel, type EstimateRequest, type EstimateStatus, type ReceptionColumn } from "./types";
@@ -26,6 +27,8 @@ export interface EstimateInput {
   sessionId?: string;
   confirmedByCustomer?: boolean;
   autofill?: EstimateRequest["autofill"];
+  /** 声で聞き取り、お客様が画面で確かめていない項目（name / address / phone / dates）。相談内容の頭に「要確認」と書く（handoff.ts） */
+  unsure?: string[];
 }
 
 export function validateEstimateInput(input: Partial<EstimateInput>): string[] {
@@ -217,6 +220,8 @@ const inflight = globalThis as unknown as { __estimateInflight?: Map<string, Pro
  * その受付を返す（duplicate: true。同時に 2 回届いたときも 1 件だけ記録する）
  */
 export async function createEstimate(input: EstimateInput): Promise<EstimateRequest & { duplicate?: boolean }> {
+  // 声で聞き取った項目でお客様が確かめていないもの：日程の打ち合わせのお電話で確かめていただく（一畳屋様のご意見 2026-11-02 9 行目）
+  if (input.unsure?.length) input = { ...input, summary: withCheckNote(input.summary, input.unsure, input.channel) };
   // 同時に 2 回届いた（2 回押し）のは同じ内容。内容の違うご依頼は待たせない
   const key = [nameKey(input.name), phoneKey(normalizePhone(input.phone)), textKey(input.address), textKey(input.preferredDates[0]), textKey(input.summary)].join("|");
   const map = (inflight.__estimateInflight ??= new Map());

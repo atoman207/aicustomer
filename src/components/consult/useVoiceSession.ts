@@ -23,6 +23,7 @@ import {
   saysFormShown,
   type IntakeState,
 } from "@/lib/intake";
+import { AI_REASK, CUSTOMER_STUCK, REASK_LIMIT } from "@/lib/handoff";
 import { OFFER_AFTER_ANSWER, OFFER_NOT_YET_VOICE, offerDue, offerTooEarly } from "@/lib/offer";
 import {
   createRecognizer,
@@ -201,6 +202,9 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
   const [reconnecting, setReconnecting] = useState(false);
   // AI の声を流せなかった（ブラウザが音を出すのを止めた）：画面の「音を出す」を押していただく（一畳屋様のご指摘 2026-10-30「音が出ない（エクスペリア）」）
   const [audioBlocked, setAudioBlocked] = useState(false);
+  // 聞き直しが続いた・「通じない」とおっしゃった：画面に「文字で入力する」の案内を出す（一畳屋様のご意見 2026-11-02「会話が成立しない時点で離脱の可能性が高い」）
+  const [hearingTrouble, setHearingTrouble] = useState(false);
+  const reaskRef = useRef(0);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
@@ -617,6 +621,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
           h.upsert(ev.item_id, "user", text, true);
           // 「画面を出して」：AI の返事を待たずに、アプリが確認画面を開く
           if (asksForForm(text)) openFormByApp();
+          noteUserTurn(text);
         } else dropUserItem(ev.item_id);
         break;
       }
@@ -638,6 +643,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       case "response.audio_transcript.done":
         if (ev.item_id) h.upsert(ev.item_id, "assistant", ev.transcript ?? "", true);
         staffLink(ev.transcript ?? "");
+        noteAiTurn(ev.transcript ?? "");
         break;
       case "output_audio_buffer.started":
         setAiAudio(true);
@@ -785,6 +791,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     hostRef.current.upsert(u.id, "user", "", true, true);
     // 「画面を出して」：AI の返事を待たずに、アプリが確認画面を開く
     if (asksForForm(userTextRef.current.get(u.id) ?? "")) openFormByApp();
+    noteUserTurn(userTextRef.current.get(u.id) ?? "");
   }
 
   /**
@@ -821,6 +828,18 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     if (!hostRef.current.getIntake().ready) openFormByApp();
   }
 
+  /** AI の発言：聞き直しが続いたら（2 回）、画面に「文字で入力する」の案内を出す */
+  function noteAiTurn(text: string) {
+    if (!text.trim()) return;
+    reaskRef.current = AI_REASK.test(text.normalize("NFKC")) ? reaskRef.current + 1 : 0;
+    if (reaskRef.current >= REASK_LIMIT) setHearingTrouble(true);
+  }
+
+  /** お客様の発言：「通じない」「何回も言っている」とおっしゃったら、画面に「文字で入力する」の案内を出す */
+  function noteUserTurn(text: string) {
+    if (CUSTOMER_STUCK.test(text.normalize("NFKC"))) setHearingTrouble(true);
+  }
+
   /** AI の発言の吹き出しを確定する（お客様が話している間の相づちだけなら残さない） */
   function finishLiveAi() {
     const t = liveTurnRef.current;
@@ -835,6 +854,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     lastAiRef.current = { id: a.id, text: a.text, endedAt: performance.now() };
     hostRef.current.upsert(a.id, "assistant", "", true, true);
     staffLink(shown);
+    noteAiTurn(shown);
     // 「確認画面を表示しました」「画面に表示しますね」と話したのに、確認画面の表示の依頼がなかった：会話から読み取って確認画面を開く
     // （「後ほど画面でご確認いただく」のような、これから先の話では開かない。案内をくり返したら、くり返さないよう知らせる）
     if (saysFormShown(liveCaption(a.text))) onFormTalk(liveCaption(a.text));
@@ -1166,6 +1186,10 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     audioCtxRef.current = unlockAudioContext(audioCtxRef.current);
     primeAudio();
     setAudioBlocked(false);
+    if (!auto) {
+      setHearingTrouble(false);
+      reaskRef.current = 0;
+    }
     staffLinkRef.current = false;
     if (conversationId) conversationIdRef.current = conversationId;
     lastBargeRef.current = -1e9;
@@ -1403,6 +1427,11 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     reconnecting,
     audioBlocked,
     resumeAudio,
+    hearingTrouble,
+    dismissHearingTrouble: () => {
+      setHearingTrouble(false);
+      reaskRef.current = 0;
+    },
     start,
     stop,
     mute,
