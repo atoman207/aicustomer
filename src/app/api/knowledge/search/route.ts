@@ -1,7 +1,7 @@
 import { composeAnswer, planAnswer } from "@/lib/answer";
 import { logError } from "@/lib/errorlog";
 import { error, json, rateLimited, readJson } from "@/lib/http";
-import { speakableYen } from "@/lib/jnum";
+import { speakableYen, speakableYenLive } from "@/lib/jnum";
 import { OFFER_NOT_YET } from "@/lib/offer";
 import { getSettings } from "@/lib/store";
 import { truncate } from "@/lib/utils";
@@ -20,7 +20,8 @@ export async function POST(req: Request) {
   const limited = rateLimited(req, "search", 60);
   if (limited) return limited;
   // offer："not_yet"＝会話の最初の答え（無料の訪問見積もりはまだ提案しない。ご状況を伺ってから。offer.ts）
-  const body = await readJson<{ query?: string; k?: number; style?: "text" | "voice"; offer?: string }>(req);
+  // engine："live"＝GPT-Live に渡す答え（金額はひらがなの読みにする。jnum.ts の speakableYenLive）
+  const body = await readJson<{ query?: string; k?: number; style?: "text" | "voice"; offer?: string; engine?: string }>(req);
   // query は声の AI が作るお客様の質問の一文（言葉を削ったり足したりしない：「1枚あたり」などの聞き方も、資料の全文を読む AI が読み取る）
   const query = (body?.query ?? "").toString().trim().slice(0, 500);
   if (!query) return error("query が必要です");
@@ -40,7 +41,8 @@ export async function POST(req: Request) {
   // 読み間違えやすい言葉（見積り・畳床・承る・スプレッドシートの読み方の一覧）はひらがなにする（voice-words.ts）
   const voice = body?.style !== "text";
   const readings = plan.snapshot.readings ?? [];
-  const speak = (s: string) => (voice ? speakableWords(speakableYen(s), readings) : s);
+  const yen = body?.engine === "live" ? speakableYenLive : speakableYen;
+  const speak = (s: string) => (voice ? speakableWords(yen(s), readings) : s);
   return json({
     ok: true,
     mode: plan.mode,

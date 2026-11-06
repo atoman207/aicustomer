@@ -184,6 +184,7 @@ export default function ConsultConsole({
   const voiceModeRef = useRef<string>(mode);
   // スプレッドシートの読み方の一覧（声の AI がひらがなで書いた字幕を漢字に戻す。声を始めるときに届く）
   const readingsRef = useRef<[string, string][]>([]);
+  const addressWordsRef = useRef<[string, string][]>([]);
 
   const host: VoiceHost = {
     company,
@@ -204,7 +205,7 @@ export default function ConsultConsole({
         const next = append ? base + text : text;
         // 声の AI は金額をひらがなの読み（いちまんさんぜんにひゃく円）で話すので、画面には数字（13,200円）で出す。
         // 読み間違えないようにひらがなで渡した言葉（おみつもり・たたみどこ など）も、画面では漢字に戻す
-        copy[idx] = { ...cur, content: role === "assistant" ? captionWords(yenDigits(next), readingsRef.current) : next, pending: !final };
+        copy[idx] = { ...cur, content: role === "assistant" ? captionWords(yenDigits(next), readingsRef.current, addressWordsRef.current) : next, pending: !final };
         return copy;
       });
       if (final) {
@@ -230,6 +231,9 @@ export default function ConsultConsole({
     },
     onSettled: () => {
       if (logDirtyRef.current) void saveLog();
+    },
+    onCaptionWords: (words) => {
+      addressWordsRef.current = [...addressWordsRef.current, ...words];
     },
     onReadings: (readings) => {
       readingsRef.current = readings;
@@ -621,9 +625,10 @@ export default function ConsultConsole({
       setFormMuted(false);
       voice.mute(true);
       voice.sayThenHangUp(
-        `見積依頼フォームが送信され、受付番号 ${est.id} で登録されました。お客様に短くお礼を伝え、担当者より折り返しお電話して日程を確定すること、ご依頼の内容や日程の変更はそのお電話の際にお伝えいただけること、これで声のご相談を終了することを、一度だけ伝えてください。確認画面や送信ボタンの案内は、もうしないでください。`,
-        `見積依頼を受付しました。受付番号は ${est.id} です。担当者より折り返しお電話し、日程を確定いたします。ご依頼の内容や日程の変更は、そのお電話の際にお伝えください。これで声のご相談を終了します。ありがとうございました。`,
-        `見積依頼は、お客様が送信済みです（受付番号 ${est.id}）。確認画面・送信ボタンの案内は、もうしないでください。`,
+        // 受付番号は読み上げない（画面の控えに出ている。一畳屋様のご指摘 2026-11-04「送信完了後の受付番号の読み上げは不要」）
+        "見積依頼フォームが送信されました。お客様に短くお礼を伝え、担当者より折り返しお電話して日程を確定すること、ご依頼の内容や日程の変更はそのお電話の際にお伝えいただけること、これで声のご相談を終了することを、一度だけ伝えてください。受付番号は読み上げないでください。確認画面や送信ボタンの案内は、もうしないでください。",
+        "見積依頼を受付しました。担当者より折り返しお電話し、日程を確定いたします。ご依頼の内容や日程の変更は、そのお電話の際にお伝えください。これで声のご相談を終了します。ありがとうございました。",
+        "見積依頼は、お客様が送信済みです。確認画面・送信ボタンの案内は、もうしないでください。",
         () =>
           setMessages((prev) => [
             ...prev,

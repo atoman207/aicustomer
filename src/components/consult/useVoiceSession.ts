@@ -24,6 +24,7 @@ import {
   type IntakeState,
 } from "@/lib/intake";
 import { AI_REASK, CUSTOMER_STUCK, REASK_LIMIT } from "@/lib/handoff";
+import { yenDigits } from "@/lib/jnum";
 import { OFFER_AFTER_ANSWER, OFFER_NOT_YET_VOICE, offerDue, offerTooEarly } from "@/lib/offer";
 import {
   createRecognizer,
@@ -38,6 +39,7 @@ import {
 import { isPromptEcho } from "@/lib/transcribe";
 import type { EstimateRequest, IntakeDraft } from "@/lib/types";
 import { uid } from "@/lib/utils";
+import { captionWords, speakableWords } from "@/lib/voice-words";
 import { createVoiceGate, unlockAudioContext, type VoiceGate } from "@/lib/voice-gate";
 
 /** 割り込んだ直後に始まった発話は、割り込み（AI を止めて話した）として扱う */
@@ -74,6 +76,8 @@ export interface VoiceHost {
   onSettled: () => void;
   /** スプレッドシートの読み方の一覧（声の AI がひらがなで書いた字幕を、画面では漢字に戻す） */
   onReadings?: (readings: [string, string][]) => void;
+  /** 声で読む住所の読み（「こせん」→ 壺川）。AI がひらがなで話した字幕を、画面では漢字に戻す */
+  onCaptionWords?: (words: [string, string][]) => void;
 }
 
 interface SessionInfo {
@@ -205,6 +209,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
   // 聞き直しが続いた・「通じない」とおっしゃった：画面に「文字で入力する」の案内を出す（一畳屋様のご意見 2026-11-02「会話が成立しない時点で離脱の可能性が高い」）
   const [hearingTrouble, setHearingTrouble] = useState(false);
   const reaskRef = useRef(0);
+  const readingsRef = useRef<[string, string][]>([]);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
@@ -280,7 +285,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
    */
   function contextNote(text: string) {
     if (modeRef.current !== "openai") return;
-    if (engineRef.current === "live") sendEvent({ type: "session.thinking.append", event_id: uid(), delegation_id: null, content: text });
+    if (engineRef.current === "live") sendEvent({ type: "session.thinking.append", event_id: uid(), delegation_id: null, content: speakableWords(text, readingsRef.current) });
     else sendEvent({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text }] } });
   }
 
@@ -457,7 +462,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
         const res = await fetch("/api/knowledge/search", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: args.query ?? "", k: 4, ...(early ? { offer: "not_yet" } : {}) }),
+          body: JSON.stringify({ query: args.query ?? "", k: 4, engine: engineRef.current, ...(early ? { offer: "not_yet" } : {}) }),
         });
         const j = (await res.json()) as { answer?: string; hits?: { title: string; content: string; from?: string }[]; sources?: { title: string }[] };
         const hits = j.hits ?? [];
@@ -486,7 +491,10 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ address: args.address ?? "", town_reading: args.town_reading ?? null }),
         });
-        return JSON.stringify(await res.json());
+        // caption_words は字幕を漢字に戻すためのもの（声の AI には渡さない）
+        const { caption_words: words, ...checked } = (await res.json()) as { caption_words?: [string, string][] };
+        if (words?.length) hostRef.current.onCaptionWords?.(words);
+        return JSON.stringify(checked);
       } catch (e) {
         return JSON.stringify({ error: (e as Error).message, note: "確かめられなかったので、聞き取ったご住所のまま復唱してください" });
       }
@@ -503,11 +511,13 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
           : "ほかにご質問がないかだけ、短く伺ってください。";
         return JSON.stringify({
           ok: false,
-          message: `見積依頼は、すでにお客様が送信済みです（受付番号 ${est.submittedId}）。確認画面を出し直したり、送信の案内をくり返したりしないでください。${change}`,
+          message: `見積依頼は、すでにお客様が送信済みです。確認画面を出し直したり、送信の案内をくり返したりしないでください。受付番号は読み上げないでください。${change}`,
         });
       }
       // AI が伺った内容を下書きに入れて確認画面を開く（足りない項目・ご相談内容の要約は会話全体から読み取って補う）
-      const heard = normalizeDraft({ name: args.name, address: args.address, phone: args.phone, dates: args.preferred_dates, summary: args.summary });
+      // ご相談内容は担当者が読む文なので、声のためにひらがなにした言葉・金額を、漢字と数字に戻す（受付一覧に「しょうじ6枚」と入っていた）
+      const summary = args.summary ? captionWords(yenDigits(args.summary), readingsRef.current) : args.summary;
+      const heard = normalizeDraft({ name: args.name, address: args.address, phone: args.phone, dates: args.preferred_dates, summary });
       const cur = hostRef.current.getIntake();
       // 2 回聞き直しても聞き取れなかった項目：確認画面で「修正」から入力していただく（お客様がもう直した項目は除く）
       const unsure = intakeFields(args.unsure_fields).filter((f) => !cur.touched?.includes(f));
@@ -1215,6 +1225,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       let info = (await res.json()) as SessionInfo;
       setReason(info.reason ?? "");
       hostRef.current.onReadings?.(info.readings ?? []);
+      readingsRef.current = info.readings ?? [];
       // GPT-Live（既定）。つながらなければ Realtime API、それも使えなければ簡易音声モード
       if (info.mode === "openai" && info.engine === "live") {
         modeRef.current = "openai";
@@ -1394,7 +1405,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       // 状況（送信済み など）は一度だけの知らせで渡し、話す内容は一度だけ話してもらう（session.instructions.append は、
       // そのあともずっと指示として残り、同じことを何度も話す原因になるため使わない）
       if (fact) contextNote(fact);
-      sendEvent({ type: "session.commentary.append", event_id: uid(), delegation_id: null, content: instruction });
+      sendEvent({ type: "session.commentary.append", event_id: uid(), delegation_id: null, content: speakableWords(instruction, readingsRef.current) });
     } else if (modeRef.current === "openai") sendUserText(`（システム通知）${instruction}`);
     else
       void (async () => {

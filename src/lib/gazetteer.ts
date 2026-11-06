@@ -250,11 +250,37 @@ export function formatCities(): string {
   return PLACE_CITIES.map((c) => `${c.name}（${c.kana}）`).join("、");
 }
 
+/** check_address の結果（caption_words は声の AI には渡さず、ブラウザが字幕を漢字に戻すのに使う） */
+export type AddressCheck = { status: string; address: string; caption_words?: [string, string][] } & Record<string, unknown>;
+
+const PREF_KANA: Record<string, string> = { 熊本県: "くまもとけん", 福岡県: "ふくおかけん" };
+
+/**
+ * 声で読む住所：都道府県・市区町村・町名をひらがなにする（番地はそのまま。「くまもとしちゅうおうく、こせん、1丁目2の3」）。
+ * 一畳屋様のご指摘 2026-11-04：お客様が「こせん」と言い、字幕も「壺川」と正しいのに、声の AI は「つぼかわ」と読んだ
+ * （声の AI は漢字を自分の判断で読み、漢字のあとに添えた読みを使わないことがある。2026-11-05 の試験でも再現）
+ */
+function readAloud(l: AddressLookup, town?: AddressCandidate): string {
+  const pick = town ?? l.town;
+  const city = (town && l.cities.find((c) => c.name === town.city)) || (l.cities.length === 1 ? l.cities[0] : undefined);
+  const cityKana = city?.kana ?? (l.cities.length ? commonPrefix(l.cities.map((c) => c.kana)) : "");
+  const head = `${PREF_KANA[l.pref] ?? l.pref}${cityKana}`;
+  return [head, pick?.kana ?? l.head, l.tail].filter(Boolean).join("、");
+}
+
+/** 字幕で漢字に戻す読み（声で読む住所の、市区町村・町名）。[言葉, 読み] */
+function addressWords(l: AddressLookup, towns: (AddressCandidate | undefined)[]): [string, string][] {
+  const out: [string, string][] = [];
+  for (const c of l.cities) out.push([c.name, c.kana]);
+  for (const t of towns) if (t) out.push([t.town, t.kana]);
+  return out;
+}
+
 /**
  * 声の AI の check_address の結果（/api/address/check）。一覧にあればその町名と読み、なければ市区町村の町名を読みの近い順に、
  * 委任先のモデルがそのまま使える案内（note）を付けて返す
  */
-export function checkAddress(address: string, reading = ""): Record<string, string> {
+export function checkAddress(address: string, reading = ""): AddressCheck {
   const l = lookupAddress(address, reading);
   const city = l.cities.map((c) => `${c.name}（${c.kana}）`).join("・");
   // 「玉名市中央区坪井」→「熊本市中央区坪井」のように、市区町村を直した
@@ -268,7 +294,9 @@ export function checkAddress(address: string, reading = ""): Record<string, stri
       address: shown,
       ...(city ? { city } : {}),
       ...(l.town ? { town: `${l.town.town}（${l.town.kana}）` } : {}),
-      note: `${fixedCity}町名は熊本県・大牟田市の町名の一覧にあります。この住所（町名の漢字と読み方）のとおりに復唱してください。`,
+      read_aloud: readAloud(l),
+      caption_words: addressWords(l, [l.town]),
+      note: `${fixedCity}町名は熊本県・大牟田市の町名の一覧にあります。復唱は read_aloud のとおり、ひらがなのまま読んでください（漢字を渡すと、別の読みで読むことがあります）。`,
     };
   }
   if (l.status === "town_unknown") {
@@ -281,14 +309,15 @@ export function checkAddress(address: string, reading = ""): Record<string, stri
     const best = Math.max(0, ...scored.map((x) => x.s));
     const likely = scored.filter((x) => x.s >= Math.max(LIKELY_SIMILARITY, best - 0.1)).slice(0, 3).map((x) => x.t);
     const likelyNote = likely.length
-      ? `お客様の言った音に近いのは ${formatTowns(likely, l.cities.length > 1)} です。合えば、「${likely[0].town}（${likely[0].kana}）でしょうか」と、町名の読み方も添えて確かめてください（文字起こしの漢字の読みで言い直さない）。`
+      ? `お客様の言った音に近いのは ${formatTowns(likely, l.cities.length > 1)} です。合えば、likely_read_aloud のとおり、ひらがなのまま「${readAloud(l, likely[0])}でしょうか」と確かめてください（漢字を渡さない。文字起こしの漢字の読みで言い直さない）。`
       : "";
     return {
       status: "town_unknown",
       address: shown,
       city,
       heard_town: l.head,
-      ...(likely.length ? { likely: formatTowns(likely, l.cities.length > 1) } : {}),
+      ...(likely.length ? { likely: formatTowns(likely, l.cities.length > 1), likely_read_aloud: readAloud(l, likely[0]) } : {}),
+      caption_words: addressWords(l, likely),
       towns: formatTowns(l.candidates, l.cities.length > 1),
       ...(l.elsewhere?.length ? { elsewhere: formatTowns(l.elsewhere, true) } : {}),
       note: `${fixedCity}「${l.head}」という町名は${l.cities.map((c) => c.name).join("・")}の一覧にありません（聞き違いの可能性が高いので、「${l.head}」のまま復唱しない）。${likelyNote}お客様の発音に合う町名を towns から1つ選び、町名をその漢字に置き換えた住所で、町名の読み方も添えて復唱してください（番地は変えない）。${other}合う町名がなければ、町名をもう一度伺ってください。`,

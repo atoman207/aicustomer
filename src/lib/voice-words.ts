@@ -57,6 +57,19 @@ const BASE: Reading[] = [
   ["畳縁", "たたみべり"],
   ["紋縁", "もんべり"],
   ["障子", "しょうじ"],
+  // 一畳屋様のご指摘 2026-11-04「普通の日本語はちゃんと発音してほしい 承る 嫌がる 網戸」。2026-11-05 の試験で、字幕は正しいのに
+  // 「虫が嫌がる網」を「きらわる」「きらいな」、「網戸」を「あみと」と読んだ。声の AI は字幕の漢字を自分の判断で読むので、ひらがなで渡す
+  ["嫌がる", "いやがる"],
+  ["網戸", "あみど"],
+  ["アミ戸", "あみど"],
+  ["襖", "ふすま"],
+  ["建具", "たてぐ"],
+  ["新調", "しんちょう"],
+  ["寸法", "すんぽう"],
+  ["鴨居", "かもい"],
+  ["裏返し", "うらがえし"],
+  ["畳替え", "たたみがえ"],
+  ["琉球畳", "りゅうきゅうだたみ"],
 ];
 
 /** 「承る」「承ります」「承っております」（「承知」はそのまま） */
@@ -106,6 +119,34 @@ const CAPTION: [RegExp, string][] = [
   [/じゅうはちメッシュ/g, "18メッシュ"],
   [/にじゅうよんメッシュ/g, "24メッシュ"],
   [/だいサイズ/g, "大サイズ"],
+  [/いやがる/g, "嫌がる"],
+  [/あみど/g, "網戸"],
+  [/たてぐ/g, "建具"],
+  [/しんちょう/g, "新調"],
+  [/すんぽう/g, "寸法"],
+  [/かもい/g, "鴨居"],
+  [/うらがえし/g, "裏返し"],
+  [/たたみがえ/g, "畳替え"],
+  [/りゅうきゅうだたみ/g, "琉球畳"],
+  [/ひきて/g, "引手"],
+  [/はりかえ/g, "張替え"],
+  [/おしいれ/g, "押入れ"],
+  // 数の言い方（金額を読みで話すと、「1まい」「いちじょう」のように、ほかの数もひらがなで書くことがある）
+  [/(\d+)まい/g, "$1枚"],
+  [/(\d+)じょう/g, "$1畳"],
+  [/(\d+)かしょ/g, "$1か所"],
+  [/(\d+)こ(?![ぁ-ん])/g, "$1個"],
+  [/いちじょう/g, "1畳"],
+  [/ろくじょう/g, "6畳"],
+  [/はちじょう/g, "8畳"],
+  [/ろくまい/g, "6枚"],
+  [/よんまい/g, "4枚"],
+  [/にまい/g, "2枚"],
+  [/いっこ/g, "1個"],
+  [/いっかしょ/g, "1か所"],
+  [/(何|なん)かしょ/g, "何か所"],
+  [/(何|なん)じょう/g, "何畳"],
+  [/(何|なん)まい/g, "何枚"],
 ];
 
 /** スプレッドシートの読み方のうち、字幕で漢字に戻すもの（4 文字以上の読み。「おおめ」（多め）のような短い読みはほかの言葉と取り違えるので戻さない） */
@@ -126,7 +167,7 @@ export function parseReadings(text: string): Reading[] {
     const rest = line.replace(PAIR, "").replace(/[\s　・、，,。：:※*＊\-ー]/g, "");
     if (rest.length > Math.max(4, line.length * 0.1)) continue;
     for (const [, word, kana] of pairs) {
-      if (KANA.test(word) || word.length < 2) continue; // ひらがなだけ・1 文字の言葉（「浮」「燦」）はほかの言葉の中にも出るので使わない
+      if (KANA.test(word)) continue;
       if (!out.has(word)) out.set(word, kana);
     }
   }
@@ -155,7 +196,8 @@ function replaceWord(text: string, word: string, kana: string): string {
 
 /** 声の AI に渡す文：読み間違えやすい言葉をひらがなにする（readings はスプレッドシートの読み方の一覧） */
 export function speakableWords(text: string, readings: Reading[] = []): string {
-  const all = [...readings, ...BASE].sort((a, b) => b[0].length - a[0].length);
+  // 一覧の 1 文字の言葉（「浮」「燦」「縁」）はほかの言葉の中にも出るので置き換えない（AI の指示の読み方の一覧にだけ入る：readingsLine）
+  const all = [...readings.filter(([w]) => w.length >= 2), ...BASE].sort((a, b) => b[0].length - a[0].length);
   const seen = new Set<string>();
   let s = text.replace(UKETAMAWARU, "うけたまわ");
   for (const [word, kana] of all) {
@@ -168,8 +210,10 @@ export function speakableWords(text: string, readings: Reading[] = []): string {
 }
 
 /** 画面に出す字幕：ひらがなにした言葉を漢字に戻す（声の AI がひらがなのまま書いたとき。readings はスプレッドシートの読み方の一覧） */
-export function captionWords(text: string, readings: Reading[] = []): string {
-  let s = CAPTION.reduce((acc, [re, word]) => acc.replace(re, word), text);
+export function captionWords(text: string, readings: Reading[] = [], exact: Reading[] = []): string {
+  // exact：この会話で声で読んだ住所の市区町村・町名（「こせん」→ 壺川。短い読みでも戻す）
+  let s = [...exact].sort((a, b) => b[1].length - a[1].length).reduce((acc, [word, kana]) => (kana && acc.includes(kana) ? acc.split(kana).join(word) : acc), text);
+  s = CAPTION.reduce((acc, [re, word]) => acc.replace(re, word), s);
   for (const [word, kana] of [...readings].sort((a, b) => b[1].length - a[1].length)) {
     if (kana.length >= CAPTION_MIN_KANA && s.includes(kana)) s = s.split(kana).join(word);
   }

@@ -8,6 +8,7 @@ import { createLiveSession } from "@/lib/openai";
 import { LIVE_BACKEND_TOOLS, LIVE_GREETING, buildLiveBackendInstructions, buildLiveInstructions } from "@/lib/prompts";
 import { getSettings } from "@/lib/store";
 import type { IntakeDraft } from "@/lib/types";
+import { speakableWords } from "@/lib/voice-words";
 import { truncate } from "@/lib/utils";
 
 export const runtime = "nodejs";
@@ -57,19 +58,19 @@ export async function POST(req: Request) {
     draft.phone ? `${FIELD_LABEL.phone}：${draft.phone}` : "",
     draft.dates.length ? `${FIELD_LABEL.dates}：${draft.dates.join("、")}` : "",
   ].filter(Boolean);
-  const greeting = prior.length ? CONTINUE_GREETING : LIVE_GREETING;
-  const developer = [
-    greeting,
+  const greetingText = prior.length ? CONTINUE_GREETING : LIVE_GREETING;
+  const developerRest = [
     known.length ? `見積依頼のために以前に伺った内容（同じことは聞き直さない。お客様がいま違う内容をおっしゃったら、必ずそちらに置き換え、以前の内容は使わない）：${known.join("／")}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].filter(Boolean);
   try {
     // スタッフの修正点・要望（スプレッドシートの「修正点など」）と読み方の一覧も指示に入れる（読めなければ入れずに続ける）
     const [settings, snapshot] = await Promise.all([getSettings(), getKnowledge().catch(() => null)]);
     const today = japanNow().display;
     const notes = snapshot?.staffNotes?.text;
     const readings = snapshot?.readings ?? [];
+    // あいさつの言葉も、読み間違えやすいものはひらがなで渡す（障子・網戸 など）
+    const greeting = speakableWords(greetingText, readings);
+    const developer = [greeting, ...developerRest].join("\n");
     const result = await createLiveSession({
       sdp,
       instructions: buildLiveInstructions(settings.companyName, today, notes, readings),

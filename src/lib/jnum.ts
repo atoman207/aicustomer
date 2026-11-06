@@ -24,6 +24,23 @@ export function speakableYen(text: string): string {
   });
 }
 
+/**
+ * GPT-Live に渡す文：金額をひらがなの読みにする（「880円」→「はっぴゃくはちじゅうえん」）。
+ * 一畳屋様のご指摘 2026-11-04「文字：880円〜 音声：8800円〜」。GPT-Live は字幕は数字のまま正しく、声だけを読み違える。
+ * 2026-11-05 の試験（同じ答えを話させて声を文字起こし）：数字のまま→答え 32 回のうち約 10 回で違う金額（990円→9,900円、880円→7,800円、
+ * 11万8800円→1万8800円）、ひらがな→104 回で多くて 3 回（ゼロにはならない）。gpt-realtime-2.1 は逆にひらがなが苦手なので（上の試験）、Realtime には使わない
+ */
+export function speakableYenLive(text: string): string {
+  // 「880〜4,400円」のように前の金額に円がないとき：「880円から4,400円」にして、どちらも読みにする
+  const ranged = text.normalize("NFKC").replace(/(\d{1,3}(?:,\d{3})+|\d+)\s*[〜~]\s*(?=(?:\d{1,3}(?:,\d{3})+|\d+)\s*円)/g, "$1円から");
+  return speakableYen(ranged).replace(/(\d+)万(\d*)円|(\d+)円/g, (m, man: string | undefined, rest: string | undefined, plain: string | undefined, at: number, all: string) => {
+    const n = man ? Number(man) * 10000 + Number(rest || 0) : Number(plain);
+    if (!(n > 0 && n < 1e8)) return m;
+    // 「1枚23,100円」：数の言い方のあとは区切る（ひらがなで続くと「いちまいにまん…」になり、読み違える）
+    return `${/[枚畳個所本組]/.test(all[at - 1] ?? "") ? "、" : ""}${yenReading(n)}えん`;
+  });
+}
+
 // ---- 声の AI が話した文を画面に出すとき：万の位の書き方・ひらがなの読みを 3桁区切りの数字に戻す ----
 const DIGIT = ["", "いち", "に", "さん", "よん", "ご", "ろく", "なな", "はち", "きゅう"];
 
@@ -154,9 +171,15 @@ export function yenDigits(text: string): string {
     })
     .replace(PLAIN_AMOUNT, (d: string) => Number(d).toLocaleString("ja-JP"))
     .replace(READ_AMOUNT, (m, k: string) => {
-      // 位（まん・せん・ひゃく・じゅう）のない読み（「ごえん」＝ご縁 など）は金額とみなさない
-      if (!/まん|せん|ぜん|ひゃく|びゃく|ぴゃく|じゅう/.test(k)) return m;
-      const n = parseYenReading(k.replace(/[、,\s]+/g, ""));
-      return n ? `${n.toLocaleString("ja-JP")}円` : m;
+      // 金額の前のひらがなも一緒に当たることがある（「いちまい、よんせんよんひゃくえん」「へりは、きゅうせんえん」）：読めるところから金額にする
+      for (let i = 0; i < k.length; i++) {
+        if (/[、,\s]/.test(k[i])) continue;
+        const part = k.slice(i).replace(/[、,\s]+/g, "");
+        // 位（まん・せん・ひゃく・じゅう）のない読み（「ごえん」＝ご縁 など）は金額とみなさない
+        if (!/まん|せん|ぜん|ひゃく|びゃく|ぴゃく|じゅう/.test(part)) return m;
+        const n = parseYenReading(part);
+        if (n) return `${k.slice(0, i)}${n.toLocaleString("ja-JP")}円`;
+      }
+      return m;
     });
 }
