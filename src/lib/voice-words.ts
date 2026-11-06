@@ -70,6 +70,8 @@ const BASE: Reading[] = [
   ["裏返し", "うらがえし"],
   ["畳替え", "たたみがえ"],
   ["琉球畳", "りゅうきゅうだたみ"],
+  // 2026-11-06 の本番の試験で「とうもんさっき」と読んだ
+  ["訪問先", "ほうもんさき"],
 ];
 
 /** 「承る」「承ります」「承っております」（「承知」はそのまま） */
@@ -131,6 +133,8 @@ const CAPTION: [RegExp, string][] = [
   [/ひきて/g, "引手"],
   [/はりかえ/g, "張替え"],
   [/おしいれ/g, "押入れ"],
+  [/ほうもんさき/g, "訪問先"],
+  [/いっしき/g, "一式"],
   // 数の言い方（金額を読みで話すと、「1まい」「いちじょう」のように、ほかの数もひらがなで書くことがある）
   [/(\d+)まい/g, "$1枚"],
   [/(\d+)じょう/g, "$1畳"],
@@ -148,6 +152,15 @@ const CAPTION: [RegExp, string][] = [
   [/(何|なん)じょう/g, "何畳"],
   [/(何|なん)まい/g, "何枚"],
 ];
+
+const KANA_NUMBER: Record<string, number> = { いち: 1, いっ: 1, に: 2, さん: 3, よん: 4, ご: 5, ろく: 6, なな: 7, はち: 8, はっ: 8, きゅう: 9, じゅう: 10, じゅっ: 10 };
+
+/** 住所の丁目・番地の読みを、字幕では数字に戻す（「いっちょうめにのさん」→「1丁目2の3」。番地は 丁目 のすぐあとだけ。ほかの「にのさん」は変えない） */
+function captionChome(text: string): string {
+  return text
+    .replace(/(いっ|に|さん|よん|ご|ろく|なな|はっ|きゅう|じゅっ)ちょうめ/g, (_, n: string) => `${KANA_NUMBER[n]}丁目`)
+    .replace(/丁目[、,\s]*(いち|に|さん|よん|ご|ろく|なな|はち|きゅう|じゅう)の(いち|に|さん|よん|ご|ろく|なな|はち|きゅう|じゅう)/g, (_, a: string, b: string) => `丁目${KANA_NUMBER[a]}の${KANA_NUMBER[b]}`);
+}
 
 /** スプレッドシートの読み方のうち、字幕で漢字に戻すもの（4 文字以上の読み。「おおめ」（多め）のような短い読みはほかの言葉と取り違えるので戻さない） */
 const CAPTION_MIN_KANA = 4;
@@ -212,8 +225,10 @@ export function speakableWords(text: string, readings: Reading[] = []): string {
 /** 画面に出す字幕：ひらがなにした言葉を漢字に戻す（声の AI がひらがなのまま書いたとき。readings はスプレッドシートの読み方の一覧） */
 export function captionWords(text: string, readings: Reading[] = [], exact: Reading[] = []): string {
   // exact：この会話で声で読んだ住所の市区町村・町名（「こせん」→ 壺川。短い読みでも戻す）
-  let s = [...exact].sort((a, b) => b[1].length - a[1].length).reduce((acc, [word, kana]) => (kana && acc.includes(kana) ? acc.split(kana).join(word) : acc), text);
-  s = CAPTION.reduce((acc, [re, word]) => acc.replace(re, word), s);
+  // 「べっ…と」：ひらがなを読む途中で言いよどんだ書き方。つなげないと「別途」に戻らない（2026-11-06 の本番の試験）
+  const joined = text.replace(/っ…+(?=[ぁ-ん])/g, "っ");
+  let s = [...exact].sort((a, b) => b[1].length - a[1].length).reduce((acc, [word, kana]) => (kana && acc.includes(kana) ? acc.split(kana).join(word) : acc), joined);
+  s = captionChome(CAPTION.reduce((acc, [re, word]) => acc.replace(re, word), s));
   for (const [word, kana] of [...readings].sort((a, b) => b[1].length - a[1].length)) {
     if (kana.length >= CAPTION_MIN_KANA && s.includes(kana)) s = s.split(kana).join(word);
   }

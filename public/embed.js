@@ -2,7 +2,7 @@
  * 一畳屋 AI相談窓口：今のホームページに「AIに相談」ボタンを付ける
  *
  * 使い方（ホームページの </body> の直前に 1 行貼るだけ）：
- *   <script src="https://ichijoya.netlify.app/embed.js" async></script>
+ *   <script src="https://aicustomer-one.vercel.app/embed.js" async></script>
  * 任意の設定（script タグに書く）：
  *   data-position="left"   … ボタンを左下に出す（既定は右下）
  *   data-bottom="80"       … ボタンを下から何 px 上げるか（ほかの固定ボタンと重なるとき。既定 16）

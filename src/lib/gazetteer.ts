@@ -271,7 +271,15 @@ function readAloud(l: AddressLookup, town?: AddressCandidate): string {
 /** 字幕で漢字に戻す読み（声で読む住所の、市区町村・町名）。[言葉, 読み] */
 function addressWords(l: AddressLookup, towns: (AddressCandidate | undefined)[]): [string, string][] {
   const out: [string, string][] = [];
-  for (const c of l.cities) out.push([c.name, c.kana]);
+  for (const c of l.cities) {
+    out.push([c.name, c.kana]);
+    // 声の AI は「くまもとし中央区」「熊本市ちゅうおうく」のように、半分だけひらがなで書くことがある（2026-11-06 の本番の試験）。
+    // 区だけの読み（きたく・にしく）は単独では戻さない（「行きたくない」が「行北区ない」になる）
+    if (c.name.startsWith("熊本市") && c.kana.startsWith("くまもとし")) {
+      out.push([c.name, `熊本市${c.kana.slice("くまもとし".length)}`], ["熊本市", "くまもとし"]);
+    }
+  }
+  if (PREF_KANA[l.pref]) out.push([l.pref, PREF_KANA[l.pref]]);
   for (const t of towns) if (t) out.push([t.town, t.kana]);
   return out;
 }
