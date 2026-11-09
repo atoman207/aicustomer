@@ -130,7 +130,8 @@ npm run smoke
 | `STAFF_NOTES_TAB` | | スタッフが AI の応対への修正点・要望を書くタブ（既定 `修正点など`。回答用と同じスプレッドシート。`off` で使わない） |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | 電話 | 署名検証・発信者番号 |
 | `TWILIO_TTS_VOICE` | | 既定 `Polly.Kazuha-Neural`（日本語の女性のニューラル音声。`Polly.Tomoko-Neural`, `Google.ja-JP-Neural2-B` なども可） |
-| `STAFF_FORWARD_NUMBER` | 電話 | 営業時間内の転送先（管理画面でも変更可） |
+| `STAFF_FORWARD_NUMBER` | 電話 | 営業時間内の転送先（管理画面でも変更可。「096-…」の書き方でも可） |
+| `PHONE_HOLD_AFTER_MS` | | 既定 `6000`（電話で答えに時間がかかるとき「少々お待ちください」を伝えるまでの時間・ミリ秒。§5） |
 | `PUBLIC_BASE_URL` | 電話/LINE | 公開 URL（Webhook 署名検証に使用） |
 | `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN` | LINE | Messaging API |
 | `NEXT_PUBLIC_LINE_ADD_FRIEND_URL` | | 見積受付後の「LINEでもご連絡を受け取れます」（友だち追加）の遷移先（既定は一畳屋の公式 LINE） |
@@ -333,25 +334,40 @@ git add database && git commit -m "保存版の更新" && git push
 
 ```
 お客様 → NTT 0120番号（転送設定）→ Twilio 番号 → POST /api/twilio/voice
-   ├ 営業時間内 かつ「営業時間外のみAI」設定 → <Dial> スタッフ転送
+   ├ 営業時間内 かつ「営業時間外のみAI」設定 → <Dial> スタッフ転送 → 出なければ POST /api/twilio/dial → AI が代わりに受付
    └ それ以外 → <Gather input="speech"> ⇄ POST /api/twilio/gather（AI 応答ループ）→ 受付完了で <Hangup>
+                  └ 答えに 6 秒以上かかるとき：「少々お待ちください」→ <Redirect> POST /api/twilio/gather?resume=1（続き）
 ```
 
-1. Twilio で日本の番号を取得し、0120 番号の転送先に設定（0120 番号は継続利用）
-2. Twilio 番号の Voice Webhook に `https://<公開URL>/api/twilio/voice`、Status Callback に `/api/twilio/status`
-3. `.env` に Twilio 各種・`STAFF_FORWARD_NUMBER`・`PUBLIC_BASE_URL` を設定
-4. 管理画面「電話・営業時間」で **常時AI／営業時間外のみAI／常にスタッフ** を切替、営業時間・休業日・転送先を設定（既定：営業時間外のみAI・月〜金 8:00〜17:00。土日・時間外は AI が受付。年末年始・GW・お盆休みは休業日に日付を登録。祝日は営業日が多いため、休む祝日だけ登録）
+**設定の手順（本番 https://aicustomer-one.vercel.app の場合）**：
+1. Twilio で日本の番号（050 など）を取得し、0120 番号の転送先に設定（0120 番号は継続利用）。日本の番号は Twilio の「Regulatory Compliance」（住所・本人確認の書類）の承認が必要です
+2. Twilio の番号の設定（Phone Numbers → Manage → Active numbers → 番号 → Voice Configuration）。管理画面「接続状況」の「Twilio（AI電話受付）」からコピーできます：
+   - **A call comes in**：Webhook・`https://aicustomer-one.vercel.app/api/twilio/voice`・HTTP POST
+   - **Primary handler fails**：`https://aicustomer-one.vercel.app/api/twilio/fallback`・HTTP POST（サーバーが応答しないときに、英語のエラーの代わりに日本語でおわびします）
+   - **Call status changes**：`https://aicustomer-one.vercel.app/api/twilio/status`・HTTP POST（途中で切れた通話の折り返しの受付に使います）
+3. Vercel の環境変数（Settings → Environment Variables）に `TWILIO_ACCOUNT_SID`・`TWILIO_AUTH_TOKEN`・`TWILIO_PHONE_NUMBER`（+81… の形）を設定して、再デプロイ。`TWILIO_AUTH_TOKEN` があれば、Twilio からのリクエストかを署名で確かめます（届いた URL のホスト名と `PUBLIC_BASE_URL` のどちらでも合えば通します）。署名が合わないときは 403 を返し、管理画面の「エラー履歴」に記録します
+4. **Redis（Upstash）を接続する**（Vercel の Storage → Upstash for Redis）：Twilio は「通話の状態のお知らせ」に通話の Cookie を付けないため、Redis がないと、そのお知らせが会話を覚えていないサーバーに届いたときに、途中で切れた通話の折り返しの受付を記録できません（会話そのものは Cookie で続きます）
+5. 管理画面「電話・営業時間」で **常時AI／営業時間外のみAI／常にスタッフ** を切替、営業時間・休業日・転送先を設定（既定：営業時間外のみAI・月〜金 8:00〜17:00。土日・時間外は AI が受付。年末年始・GW・お盆休みは休業日に日付を登録。祝日は営業日が多いため、休む祝日だけ登録）。転送先は「096-123-4567」の書き方でも入力でき、つなぐときに国際形式（+8196…）に直します（Twilio の `<Dial>` は国内の書き方の番号を米国の番号と読むため）。転送先が電話番号として読めないときは、営業時間内も AI が受けます
+6. 試し方：管理画面の「電話受付のテストを開く」（`/phone`。同じ応答の仕組み）で会話を確かめてから、Twilio の番号に実際に電話をかけます。Twilio の Console → Monitor → Logs → Errors に警告・エラーが出ていないかも確かめます
 
 AI 電話受付では、折り返し先の電話番号を伺う際に「いまおかけの番号でよろしいでしょうか」と確認し、お客様が同意すれば発信者番号を使います（非通知の場合は番号を伺います）。
+
+**エラーなく動かすための作り（2026-11-09）**：
+- **音声認識の設定**：`<Gather speechModel="phone_call" speechTimeout="2">`（電話の音声向けのモデル。日本語に対応）。以前は `speechTimeout="auto"` でしたが、Twilio は音声認識のモデルを指定したときに `auto` を使えず（警告 13335）、音声認識が数字・短い指示向けのモデルに切り替わっていました。廃止予定の `enhanced` も外しました
+- **15 秒の時間切れ**：Twilio は Webhook の答えを 15 秒しか待たず、間に合わないと英語の「An application error has occurred」を流して通話を切ります。答えに 6 秒以上かかるときは「ただいまお調べしております。少々お待ちください」と伝えて `<Redirect>` で続きを取りに来てもらい、その間も答えを作り続けます（`src/lib/phone-call.ts`。2 回お待たせしても間に合わなければ、おわびしてもう一度お話しいただきます）。続きの要求が別のインスタンスに届いたときは、通話の Cookie（答えを作る前の会話とお客様の発言）から作り直します
+- **問題が起きても英語のエラーにしない**：応答の途中で問題が起きたときは「うまくお話を伺えませんでした。もう一度お話しいただけますか」と日本語でおわびして続け（同じ通話で 2 回目は、おわびして終える）、管理画面の「エラー履歴」に記録します
+- **担当者へつないだあと**：`<Dial action>` で結果を受け取り、担当者が出たら（話し終えたら）そのまま終え、出なかったら AI が代わりにご用件を伺います（以前は、担当者と話し終えたあとにも「担当者が電話に出られません」と流れていました）。その通話では担当者へつなぎ直さず、折り返しの受付にします
+- **ご相談への答えは HP と同じ仕組み**：電話のご質問にも、文字・声の相談と同じ回答の仕組み（`composeAnswer`：同じ指示・資料の全文・学習済みの回答・お見積りの提案の時機）で答えます。以前は電話だけ別の指示で答えていて、「畳の表替えを6枚お願いしたいんですが、いくらぐらいかかりますか」に、声の相談では「さくらで6枚 13万2000円が目安」と答えるのに、電話では「この場では正確にお答えできかねます」と答えていました（「お願いしたい」で見積の聞き取りに入り、資料を渡さずに答えていたため）。見積のご希望と一緒のご質問は、先に答えてから「それでは、無料のお見積りのご依頼を伺います。まず、お名前をお聞かせください」と続けます。AI の「お伺いしましょうか？」への「はい」で、お名前から伺います
+- **通話の Cookie**：最初のご相談（あいさつのあとの 2 件）と直近の 6 件の会話を持たせます（Redis がなくても、受付の要約に最初のご相談が入るように）。サーバーの保存と Cookie の新しいほうを使います
 
 **会話が続かないとき・画面で確かめられないこと（2026-11-03。一畳屋様のご意見「修正点など」9 行目「電話ではテキストの確認ができないため名前や住所など間違った情報が送られるおそれ。会話が成立しない時点で電話から離脱の可能性が高い」）**：
 - **切って終わりにしない**：2 回続けて聞き取れない（音声認識が空）ときは、ご用件を伺えていれば「担当者より、いまおかけの、末尾〇〇〇〇の番号へ、営業時間内に折り返しお電話いたします」と伝えて、**折り返しの受付**にします（受付一覧の相談内容の頭に【折り返しのお願い：…】。お名前・ご住所・ご希望日は伺えたところまで、なければ「（お名前は伺えませんでした）」など）。無言・「もしもし」だけの通話は受付にしません
 - **聞き直しが続いたら折り返しをご提案**：AI の聞き直し（「もう一度お願いできますか」など）が 3 回目になるとき・お客様が「何回も言ってるでしょ」「通じない」とおっしゃったとき（言い直しで伺えたときは除く）は、同じことを聞き直さず「担当者から、いまおかけの番号へ、折り返しお電話いたしましょうか？」と伺い、「はい」で折り返しの受付にします（「いいえ」ならそのまま続けます）
 - **「人と話したい」「担当者に代わって」「折り返してください」**：営業時間内で転送先があれば担当者へつなぎ（つながらなかったときのために、受付一覧にも先に記録）、それ以外は折り返しの受付にします
-- **途中で切れた通話**：見積のお話の途中・聞き直しの途中で切れたら（Twilio の通話ステータスのお知らせ `/api/twilio/status`）、折り返しの受付にします。相談だけで終えた・「ありがとうございました」で終えた・営業の売り込み・非通知は記録しません。会話は Redis（Upstash）にあればそこから、なければ通話の Cookie（直近の会話と伺った内容）から戻します
+- **途中で切れた通話**：見積のお話の途中・聞き直しの途中で切れたら（Twilio の通話ステータスのお知らせ `/api/twilio/status`）、折り返しの受付にします。相談だけで終えた・「ありがとうございました」で終えた・営業の売り込み・非通知は記録しません。会話は Redis（Upstash）から戻します（Twilio はこのお知らせに通話の Cookie を付けないため、Redis がないときは、その通話を受けたサーバーに届いたときだけ記録できます）
 - **非通知**：折り返せないため、「お電話番号が通知されていないため、こちらから折り返しのお電話ができません。営業時間内に改めてお電話ください」と伝えます
 - **受付一覧の「要確認」**：電話で伺ったお名前（漢字）・ご住所は画面で確かめられないため、相談内容の頭に【要確認：お名前・ご住所（AI電話の聞き取り）】と書き、日程の打ち合わせのお電話で確かめていただきます（発信者番号ではないお電話番号も）。電話では、お名前の漢字は伺いません。HP の確認画面で「要確認」のまま直さずに送られた項目も、【要確認：ご住所（声の聞き取り）】のように書きます
-- 見分け方は `src/lib/handoff.ts`、電話の流れは `src/lib/agent.ts`（`handOff`・`recordDroppedCall`）
+- 見分け方は `src/lib/handoff.ts`、電話の流れは `src/lib/agent.ts`（`handOff`・`recordDroppedCall`）と `src/lib/phone-call.ts`（Webhook の 1 ターン・時間切れ・担当者へつないだあと）
 - **声のモデル**：2026-11-03 に API で使えるモデルの一覧を確かめたところ、声の相談の `gpt-live-1` が最新でした（ChatGPT の声の会話の GPT-Live-1.1 は API にありません）。電話を声の相談と同じ GPT-Live で受けるには、OpenAI の SIP 接続（`live.transport.incoming` の Webhook → `/v1/live/sessions/{id}/accept` → 通話の間 `wss://api.openai.com/v1/live/sessions/{id}/attach` につなぎ続ける）と Twilio Elastic SIP Trunking が要ります。通話の間つなぎ続けるサーバーは Netlify の関数ではできないため、別のサーバーが必要です
 
 お客様向けの画面では、電話はふつうの電話ボタン（`tel:` リンク）に「営業時間外・土日はAIが受付」と添えて案内するだけです（文言は `src/lib/brand.ts` の `phoneAiNote`）。
@@ -396,7 +412,7 @@ src/app                 ページと API Route（App Router）
   api/chat              テキスト相談（ストリーミング）
   api/realtime/session  音声相談用 ephemeral key（Realtime API）
   api/agent/*           電話シミュレーター／音声フォールバック用エージェント
-  api/twilio/*          Twilio Webhook（voice / gather / status）
+  api/twilio/*          Twilio Webhook（voice 着信 / gather 発言 / dial 担当者へつないだ結果 / status 通話の状態 / fallback 予備）
   api/line/webhook      LINE Webhook
   api/estimates         見積受付（confirmed=true 必須）／draft：確認画面を開くときに会話から内容を読み取る
   api/knowledge/*       ナレッジ取得・再読込・検索（音声相談のツール）・回答テスト（ホームページの再学習は廃止）
@@ -416,6 +432,7 @@ src/lib
   retrieval.ts          ハイブリッド検索（埋め込み＋日本語バイグラム）
   prompts.ts            ナレッジ限定の回答ルール（全窓口共通・短い指示）
   agent.ts / fallback.ts 相談＋見積受付エージェント（OpenAI 構造化出力／ルールベース）
+  phone-call.ts         AI電話（Twilio）の 1 ターン（15 秒の時間切れの前に「少々お待ちください」・担当者へつないだあと・おわび）
   intake.ts / intake-ai.ts 見積依頼の聞き取り（会話からお名前・ご住所・お電話番号・ご希望日時を読み取る規則／OpenAI での読み取りと文字の相談の 1 ターン）
   estimates.ts          受付レコード作成とスプレッドシート（受付一覧タブ・11 項目）への記録・管理画面の一覧と対応状況のシートとの読み書き
   line-share.ts         受付を LINE で担当店舗・営業担当に共有する文（管理画面の「LINE共有」。gas/LineShare.gs と同じ文）

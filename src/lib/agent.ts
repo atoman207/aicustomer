@@ -4,22 +4,23 @@
 //   ・見積受付の聞き取り・復唱は OpenAI（構造化出力）で行い、そのときはナレッジを渡さない（トークン節約）
 import { fixAddress } from "./address-ai";
 import { CITY_ASKED, CITY_ASK_TEXT, areaCheck, outOfAreaNote, serviceAreaFrom } from "./area";
-import { learnAnswer, planAnswer } from "./answer";
+import { type AnswerPlan, composeAnswer, learnAnswer, planAnswer } from "./answer";
 import { env } from "./env";
 import { logError } from "./errorlog";
 import { createEstimate } from "./estimates";
 import { BYE, INTENT_ESTIMATE, fallbackTurn } from "./fallback";
 import { AGREES, AI_REASK, ASKS_CALLBACK, ASKS_PERSON, CUSTOMER_STUCK, REASK_LIMIT, reaskStreak } from "./handoff";
 import { japanNow, resolvePhoneRouting } from "./hours";
-import { normalizeDraft } from "./intake";
+import { acceptsOffer, normalizeDraft } from "./intake";
 import { getKnowledge } from "./knowledge";
+import { OFFER_NOT_YET, OFFER_NOW, offerDue, offerTooEarly } from "./offer";
 import { canRetryWithChatModel, chatCompletionJson } from "./openai";
 import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt, isFullDocumentContext } from "./prompts";
 import { SALES_DECLINE, SalesPitchError } from "./sales";
 import { getSession, getSettings, saveSession, upsertConversation } from "./store";
 import { summarizeConversation } from "./summarize";
-import type { AgentSession, AgentStage, AgentTurnResult, Channel, EstimateRequest, IntakeDraft, SearchHit } from "./types";
-import { domesticPhone, fillTemplate, headTail, isLikelyPhone, normalizePhone, readDigits, truncate, uid } from "./utils";
+import type { AgentSession, AgentStage, AgentTurnResult, Channel, ChatMessage, EstimateRequest, IntakeDraft, SearchHit } from "./types";
+import { domesticPhone, e164Japan, fillTemplate, headTail, isLikelyPhone, normalizePhone, readDigits, truncate, uid } from "./utils";
 
 const CHANNEL_WHERE: Record<string, string> = { phone: "AI電話", line: "LINE", web_voice: "声の相談", web_text: "文字の相談" };
 
@@ -170,6 +171,33 @@ async function openaiTurn(session: AgentSession, company: string, context: strin
   return { reply: out.reply.trim(), stage, draft, done: out.end_call, mode: "openai", sources: hits, answeredBy: "openai" };
 }
 
+// ── 電話のご相談への答え（2026-11-09）：HP の文字・声の相談と同じ回答の仕組み（composeAnswer：同じ指示・同じ資料・学習済みの回答・
+//   お見積りの提案の時機 offer.ts）で答える。以前は電話だけ受付用の JSON の指示で答えていて、「畳の表替えを6枚お願いしたいんですが、
+//   いくらぐらい？」に、声の相談では「さくらで6枚 13万2000円が目安」と答えるのに、電話では「この場では正確にお答えできかねます」と答えていた
+//   （「お願いしたい」で見積の聞き取りに入り、資料を渡さずに答えていたため）
+
+/** 電話：質問の形の発言（電話の音声認識は「？」を付けないことが多いので、言い方で見る） */
+const PHONE_QUESTION = /[?？]|いくら|料金|値段|金額|費用|ますか|ですか|でしょうか|ませんか|どのくらい|どれくらい|どんな/;
+/** ご依頼の品物・作業の言葉（電話の音声認識はひらがなで返すこともある） */
+const PHONE_JOB = /畳|たたみ|襖|ふすま|障子|しょうじ|網戸|あみど|アミ戸|クロス|壁紙|カーテン|ブラインド|ガラス|床|外壁|屋根|塗装|リフォーム|トイレ|浴室|キッチン|水まわり|水回り/;
+/** 電話の答えの書き方（声の相談の書き方に足す） */
+const PHONE_ANSWER_NOTE = `# この窓口：AI電話（お客様は電話で聞いている）
+- 答えは電話で読み上げる。記号・箇条書き・URL・英字略語は使わない。画面・ボタン・ホームページの操作の案内はしない。`;
+/** 見積のご希望と一緒にご質問があった：先に答え、そのあとシステムがお名前から伺う */
+const PHONE_START_INTAKE = `# この答えについて
+お客様は、無料のお見積りをご希望です（この答えのあとに、システムがお名前などを伺います）。この答えでは、お見積りの提案・個人情報の質問・お客様への質問はしない。ご相談の内容を短く受け止めて、料金の目安などのご質問に答えるだけにする。`;
+export const PHONE_INTAKE_START_ASK = "それでは、無料のお見積りのご依頼を伺います。まず、お名前をお聞かせください。";
+
+/** 電話のご相談に、HP の相談と同じ仕組みで答える（start：答えのあとにお名前から伺う・wanted：お見積りに関心がある） */
+async function phoneAnswer(plan: AnswerPlan, company: string, history: ChatMessage[], text: string, start: boolean, wanted: boolean): Promise<string> {
+  const turns = history
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .slice(-6)
+    .map((m) => ({ role: m.role as "user" | "assistant", content: truncate(m.content, 500) }));
+  const offer = start ? PHONE_START_INTAKE : wanted || offerDue(history, text) ? OFFER_NOW : offerTooEarly(history, text) ? OFFER_NOT_YET : "";
+  return composeAnswer(plan, company, [...turns, { role: "user", content: text }], "phone_answer", [PHONE_ANSWER_NOTE, offer].filter(Boolean).join("\n\n"));
+}
+
 // ── 電話の会話が続かないとき（一畳屋様のご意見 2026-11-02「修正点など」9 行目「会話が成立しない時点で電話から離脱の可能性が高い」）
 //   2 回続けて聞き取れない・聞き直しが続く・「通じない」・「人と話したい」：通話を切って終わりにせず、折り返しの受付にする
 //   （営業時間内で転送先があり、人と話したいとおっしゃったら担当者へつなぐ）。途中で切れた通話も、見積の聞き取り中なら折り返しの受付にする
@@ -264,13 +292,17 @@ async function handOff(session: AgentSession, why: HandOffReason): Promise<Agent
   const n = callbackNumber(session);
   const spoke = spokeAboutSomething(session);
   const base = { stage: session.stage, draft: session.draft, done: true, mode: env.hasOpenAI ? "openai" : "demo" } as const;
-  const transfer = why === "person" && routing.inBusinessHours && settings.phone.forwardNumber ? settings.phone.forwardNumber : undefined;
+  // 転送先は国際形式で（Twilio の <Dial>）。この通話で担当者が出なかったあとは、つなぎ直さずに折り返しの受付にする
+  const forward = e164Japan(settings.phone.forwardNumber);
+  const transfer = why === "person" && routing.inBusinessHours && forward && session.meta?.staffUnanswered !== "1" ? forward : undefined;
   if (transfer) {
     // つながらなかったときも折り返せるように、先に受付一覧へ（つながったら、担当者が「連絡済」にする）
     const created = n && spoke ? await recordCallback(session, TRANSFER_LABEL, n) : null;
     if (created && created !== "sales") session.estimateId = created.id;
     session.meta = { ...(session.meta ?? {}), handoff: "transfer" };
-    return { ...base, stage: "completed", reply: TRANSFER_REPLY, transfer, ...(created && created !== "sales" ? { estimate: created } : {}) };
+    // 記録できなかったときは、担当者が出なければ AI が続けて伺う（/api/twilio/dial の then=retry）ので、会話の段階はそのまま
+    const estimate = created && created !== "sales" ? created : undefined;
+    return { ...base, stage: estimate ? "completed" : session.stage, reply: TRANSFER_REPLY, transfer, ...(estimate ? { estimate } : {}) };
   }
   if (!n) return { ...base, reply: spoke ? NO_NUMBER_BYE : UNHEARD_BYE };
   if (!spoke) return { ...base, reply: UNHEARD_BYE };
@@ -353,20 +385,38 @@ export async function runTurn(
   }
 
   let result: AgentTurnResult;
-  const consulting = session.stage === "consult" && !INTENT_ESTIMATE.test(text) && !BYE.test(text);
+  // 電話：AI の「ご都合のよい日にお伺いしましょうか？」への「はい」も見積のご希望。見積のご希望と一緒のご質問（「6枚お願いしたいんですが、
+  // いくらぐらい？」）は、先に答えてからお名前を伺う（文字の相談と同じ。答えずに伺い始めると、資料を見ずに「お答えできかねます」になる）
+  const phone = session.channel === "phone";
+  const prevAi = [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+  const wantsEstimate = INTENT_ESTIMATE.test(text) || (phone && acceptsOffer(text, prevAi));
+  const phoneAsks = phone && PHONE_QUESTION.test(text.normalize("NFKC"));
+  const consulting = session.stage === "consult" && !BYE.test(text) && (!wantsEstimate || phoneAsks);
+  // （デモモード＝OpenAI なしは、これまでどおり「お願いします」から規則で伺う）
+  const startIntake = phone && env.hasOpenAI && consulting && wantsEstimate && PHONE_JOB.test(text);
   if (consulting) {
     // 相談中の質問：学習済みのナレッジで答えられるものは OpenAI を使わない
     const plan = await planAnswer(text, history, { channel: session.channel, style: session.channel === "line" ? "text" : "voice" });
+    const consultResult = (reply: string, answeredBy: AgentTurnResult["answeredBy"]): AgentTurnResult => ({
+      reply: startIntake ? `${reply.trim()}\n${PHONE_INTAKE_START_ASK}` : reply,
+      stage: startIntake ? "collecting" : "consult",
+      draft: { ...session.draft, dates: [...session.draft.dates], summary: appendSummary(session.draft.summary, text) },
+      done: false,
+      mode: aiMode,
+      sources: plan.hits,
+      answeredBy,
+    });
     if (plan.mode !== "openai") {
-      result = {
-        reply: plan.reply,
-        stage: "consult",
-        draft: { ...session.draft, dates: [...session.draft.dates], summary: appendSummary(session.draft.summary, text) },
-        done: false,
-        mode: aiMode,
-        sources: plan.hits,
-        answeredBy: plan.mode,
-      };
+      result = consultResult(plan.reply, plan.mode);
+    } else if (phone) {
+      // 電話：HP の文字・声の相談と同じ仕組みで答える（同じ質問には学習済みの回答をそのまま使うので、すぐ答えられる）
+      try {
+        result = consultResult(await phoneAnswer(plan, settings.companyName, history, text, startIntake, wantsEstimate), "openai");
+      } catch (e) {
+        session.meta = { ...(session.meta ?? {}), lastError: truncate((e as Error).message, 200) };
+        await logError("phone", "AI電話（相談への回答）", e);
+        result = await fallback();
+      }
     } else {
       try {
         result = await openaiTurn(session, settings.companyName, plan.context, plan.hits);

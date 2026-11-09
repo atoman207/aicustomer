@@ -74,6 +74,20 @@ interface CompactSession {
   /** 折り返しをご提案した（handoffOffered）・折り返しの受付にした（handoff） */
   o?: string;
   h?: string;
+  /** 最後に保存した時刻（サーバーの保存と Cookie のどちらが新しいかを比べる） */
+  u?: string;
+  /** 答えを作っている途中のお客様の発言と、「少々お待ちください」を伝えた回数（AI の答えに時間がかかっているとき。twilio/gather） */
+  p?: string;
+  w?: number;
+  /** この通話で担当者へつないだが出なかった（つなぎ直さない）・続けて起きた問題の回数 */
+  k?: string;
+  z?: string;
+}
+
+/** Cookie に入れる会話：短い会話はすべて、長い会話は最初のご相談（あいさつのあとの 2 件）と直近の 6 件 */
+function cookieMessages(messages: AgentSession["messages"], tail: number): [string, string][] {
+  const keep = messages.length <= 2 + tail ? messages : [...messages.slice(1, 3), ...messages.slice(-tail)];
+  return keep.map((m) => [m.role === "user" ? "u" : "a", m.content.slice(0, 140)]);
 }
 
 function b64url(buf: Buffer): string {
@@ -85,8 +99,9 @@ function fromB64url(s: string): Buffer {
   return Buffer.from(b + "=".repeat((4 - (b.length % 4)) % 4), "base64");
 }
 
-/** Twilio Cookie 用に圧縮（4KB 制限に収まるよう直近の会話のみ保持） */
+/** Twilio Cookie 用に圧縮（4KB 制限に収まるよう、最初のご相談と直近の会話のみ保持） */
 export function encodeCallCookie(s: AgentSession): string {
+  const holds = Number(s.meta?.holds ?? 0);
   const compact: CompactSession = {
     v: 1,
     i: s.id,
@@ -95,17 +110,27 @@ export function encodeCallCookie(s: AgentSession): string {
     f: s.fallbackStep,
     d: { ...s.draft, summary: s.draft.summary?.slice(0, 160) },
     e: s.estimateId,
-    m: s.messages.slice(-6).map((m) => [m.role === "user" ? "u" : "a", m.content.slice(0, 140)]),
+    m: cookieMessages(s.messages, 6),
     t: s.createdAt,
     n: s.meta?.callerNumber,
     x: s.emptyTurns,
     o: s.meta?.handoffOffered || undefined,
     h: s.meta?.handoff || undefined,
+    u: s.updatedAt,
+    p: s.meta?.pendingSpeech ? s.meta.pendingSpeech.slice(0, 300) : undefined,
+    w: holds > 0 ? holds : undefined,
+    k: s.meta?.staffUnanswered || undefined,
+    z: s.meta?.turnErrors || undefined,
   };
-  let payload = b64url(deflateRawSync(Buffer.from(JSON.stringify(compact), "utf8")));
+  const pack = () => b64url(deflateRawSync(Buffer.from(JSON.stringify(compact), "utf8")));
+  let payload = pack();
+  if (payload.length > 3800) {
+    compact.m = cookieMessages(s.messages, 4);
+    payload = pack();
+  }
   if (payload.length > 3800) {
     compact.m = compact.m.slice(-3);
-    payload = b64url(deflateRawSync(Buffer.from(JSON.stringify(compact), "utf8")));
+    payload = pack();
   }
   return payload;
 }
@@ -123,11 +148,20 @@ export function decodeCallCookie(value: string | null, expectId: string): AgentS
       draft: sanitizeDraft(c.d),
       messages: (c.m ?? []).map(([r, text]) => ({ role: r === "u" ? "user" : "assistant", content: text })),
       createdAt: c.t || now,
-      updatedAt: now,
+      updatedAt: c.u || now,
       estimateId: c.e,
       emptyTurns: typeof c.x === "number" ? c.x : 0,
       fallbackStep: c.f,
-      meta: { callerNumber: c.n ?? "", restoredFrom: "cookie", ...(c.o ? { handoffOffered: c.o } : {}), ...(c.h ? { handoff: c.h } : {}) },
+      meta: {
+        callerNumber: c.n ?? "",
+        restoredFrom: "cookie",
+        ...(c.o ? { handoffOffered: c.o } : {}),
+        ...(c.h ? { handoff: c.h } : {}),
+        ...(c.p ? { pendingSpeech: c.p } : {}),
+        ...(typeof c.w === "number" && c.w > 0 ? { holds: String(c.w) } : {}),
+        ...(c.k ? { staffUnanswered: c.k } : {}),
+        ...(c.z ? { turnErrors: c.z } : {}),
+      },
     };
   } catch {
     return null;

@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { isAdminAuthenticated } from "./auth";
 import { env } from "./env";
+import { requestOrigin } from "./origin";
 import { rateLimit } from "./ratelimit";
 
 export function json<T>(data: T, init?: ResponseInit): NextResponse {
@@ -21,11 +22,7 @@ export function xml(body: string, headers: Record<string, string> = {}): NextRes
 
 /** 公開URL（Webhook 生成用）。PUBLIC_BASE_URL 優先、なければリクエストヘッダから推定 */
 export function getBaseUrl(req: Request): string {
-  if (env.publicBaseUrl) return env.publicBaseUrl;
-  const h = req.headers;
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
-  const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") || host.startsWith("127.") ? "http" : "https");
-  return `${proto}://${host}`;
+  return env.publicBaseUrl || requestOrigin(req);
 }
 
 export async function readJson<T>(req: Request): Promise<T | null> {

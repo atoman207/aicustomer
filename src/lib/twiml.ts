@@ -1,5 +1,7 @@
 // Twilio 用 TwiML 生成と署名検証（SDK 非依存）
 import crypto from "crypto";
+import { env } from "./env";
+import { requestOrigin } from "./origin";
 import { speakableYen } from "./jnum";
 
 export function escapeXml(s: string): string {
@@ -16,23 +18,27 @@ export function twimlResponse(inner: string): string {
 }
 
 export function say(text: string, voice: string): string {
-  // 金額はひらがなの読みにしてから読み上げる（桁の読み違えをしないように）
+  // 金額は万の位で区切ってから読み上げる（桁の読み違えをしないように。jnum.ts）
   return `<Say voice="${escapeXml(voice)}" language="ja-JP">${escapeXml(speakableYen(text))}</Say>`;
 }
 
 const SPEECH_HINTS =
   "一畳屋,畳,襖,ふすま,障子,網戸,アミ戸,見積,表替え,新調,張替え,琉球畳,へり無し,古都,さくら,やすらぎ,きずな,なごみ,めぐみ,極み,熊本市,合志市,菊池市,菊陽町,大津町,山鹿市,玉名市,阿蘇,午前,午後,はい,いいえ";
 
-export function gather(
-  text: string,
-  actionUrl: string,
-  voice: string,
-  opts: { timeout?: number; speechTimeout?: string } = {},
-): string {
+/**
+ * 話し終わってから音声認識を締めるまでの秒数。
+ * Twilio は speechModel を指定したとき speechTimeout="auto" を使えない（警告 13335 が出て、
+ * 音声認識が数字・短い指示向けのモデルに切り替わる）ため、秒数で指定する。
+ * 50〜70代の方が文の途中で息をつく間（1 秒ほど）では締めない長さ
+ */
+export const SPEECH_TIMEOUT_SECONDS = 2;
+
+export function gather(text: string, actionUrl: string, voice: string, opts: { timeout?: number; speechTimeout?: number } = {}): string {
+  // speechModel="phone_call"：電話の音声（8kHz）向けのモデル。日本語（ja-JP）に対応（Twilio の Gather の資料）
   return (
     `<Gather input="speech" language="ja-JP" action="${escapeXml(actionUrl)}" method="POST"` +
-    ` speechTimeout="${escapeXml(opts.speechTimeout ?? "auto")}" timeout="${opts.timeout ?? 6}"` +
-    ` actionOnEmptyResult="true" speechModel="phone_call" enhanced="true" hints="${escapeXml(SPEECH_HINTS)}">` +
+    ` speechTimeout="${opts.speechTimeout ?? SPEECH_TIMEOUT_SECONDS}" timeout="${opts.timeout ?? 6}"` +
+    ` actionOnEmptyResult="true" speechModel="phone_call" hints="${escapeXml(SPEECH_HINTS)}">` +
     `${say(text, voice)}</Gather>`
   );
 }
@@ -41,10 +47,19 @@ export function hangup(text: string, voice: string): string {
   return `${say(text, voice)}<Hangup/>`;
 }
 
-export function dial(number: string, text: string, voice: string, callerId?: string, fallbackText?: string): string {
-  const cid = callerId ? ` callerId="${escapeXml(callerId)}"` : "";
-  const after = fallbackText ? `${say(fallbackText, voice)}<Hangup/>` : "";
-  return `${say(text, voice)}<Dial${cid} timeout="25">${escapeXml(number)}</Dial>${after}`;
+/** 別の URL に続きを取りに行く（AI の答えに時間がかかっているとき。お客様には先に「少々お待ちください」を伝える） */
+export function redirect(url: string): string {
+  return `<Redirect method="POST">${escapeXml(url)}</Redirect>`;
+}
+
+/**
+ * 担当者へつなぐ。number は国際形式（+81…。utils.ts の e164Japan）。
+ * 終わったら action に Twilio が結果（DialCallStatus）を送る（出なかったときの案内はそこで返す。
+ * <Dial> のあとに続けて書くと、担当者と話し終えたあとにも「出られません」と流れてしまうため）
+ */
+export function dial(number: string, text: string, voice: string, opts: { action: string; callerId?: string }): string {
+  const cid = opts.callerId ? ` callerId="${escapeXml(opts.callerId)}"` : "";
+  return `${say(text, voice)}<Dial action="${escapeXml(opts.action)}" method="POST" timeout="25"${cid}><Number>${escapeXml(number)}</Number></Dial>`;
 }
 
 /** X-Twilio-Signature の検証（URL + ソート済みPOSTパラメータを HMAC-SHA1） */
@@ -65,4 +80,18 @@ export function validateTwilioSignature(
   const a = Buffer.from(expected);
   const b = Buffer.from(signature);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/**
+ * Twilio からのリクエストか（TWILIO_AUTH_TOKEN があるときだけ確かめる）。
+ * Twilio は、Twilio に設定した URL（クエリを含む）で署名する。その URL は、届いたリクエストのホスト名か
+ * PUBLIC_BASE_URL のどちらか（独自ドメイン・Vercel のドメインのどちらで設定しても通るように、両方で確かめる）
+ */
+export function twilioRequestOk(req: Request, params: Record<string, string>): boolean {
+  if (!env.twilioAuthToken) return true;
+  const u = new URL(req.url);
+  const rest = `${u.pathname}${u.search}`;
+  const bases = [...new Set([requestOrigin(req), env.publicBaseUrl].filter(Boolean))];
+  const sig = req.headers.get("x-twilio-signature");
+  return bases.some((b) => validateTwilioSignature(env.twilioAuthToken, `${b}${rest}`, params, sig));
 }

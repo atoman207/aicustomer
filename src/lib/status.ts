@@ -3,8 +3,9 @@ import { env } from "./env";
 import { receptionSink, receptionSinkLabel } from "./estimates";
 import { getKnowledge } from "./knowledge";
 import { verifyOpenAI } from "./openai";
-import { storageInfo } from "./store";
+import { getSettings, storageInfo } from "./store";
 import type { IntegrationStatus } from "./types";
+import { e164Japan } from "./utils";
 
 export async function getIntegrationStatus(baseUrl: string, check = false): Promise<IntegrationStatus> {
   const [knowledge, openaiCheck] = await Promise.all([
@@ -39,6 +40,10 @@ export async function getIntegrationStatus(baseUrl: string, check = false): Prom
       configured: env.hasTwilio,
       number: env.twilioPhoneNumber,
       webhookUrl: `${baseUrl}/api/twilio/voice`,
+      statusUrl: `${baseUrl}/api/twilio/status`,
+      fallbackUrl: `${baseUrl}/api/twilio/fallback`,
+      // 担当者へつなぐ番号が国際形式にできるか（できなければ、営業時間内も AI が受ける）
+      forwardOk: e164Japan((await getSettings()).phone.forwardNumber) !== "",
     },
     line: {
       configured: env.hasLine,

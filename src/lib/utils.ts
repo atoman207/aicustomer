@@ -68,6 +68,17 @@ export function domesticPhone(raw: string | undefined): string | undefined {
   return isLikelyPhone(p) ? p : undefined;
 }
 
+/**
+ * 電話をかける先の番号を国際形式（+81…）にする（Twilio の <Dial> は国内形式「096-…」を米国の番号と読むため）。
+ * もう国際形式（+…）ならそのまま。電話番号として使えなければ空文字
+ */
+export function e164Japan(raw: string | undefined): string {
+  const p = normalizePhone(raw ?? "").replace(/-/g, "");
+  if (/^\+\d{8,15}$/.test(p)) return p;
+  if (/^0\d{9,10}$/.test(p)) return `+81${p.slice(1)}`;
+  return "";
+}
+
 const DIGIT_READING = ["ゼロ", "イチ", "ニ", "サン", "ヨン", "ゴ", "ロク", "ナナ", "ハチ", "キュウ"];
 
 /** 電話番号の数字を読み上げ用のカタカナに（例：4444 → ヨンヨンヨンヨン） */

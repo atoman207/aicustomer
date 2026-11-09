@@ -719,7 +719,7 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
           <div>
             <label className="label">スタッフ転送先の電話番号</label>
             <input className="input" value={s.phone.forwardNumber} onChange={(e) => setS({ ...s, phone: { ...s.phone, forwardNumber: e.target.value } })} placeholder="例：+8196XXXXXXX" />
-            <p className="mt-1 text-xs text-sumi-400">Twilio から転送するため国際形式（+81…）を推奨</p>
+            <p className="mt-1 text-xs text-sumi-400">「096-123-4567」のような書き方でも、国際形式（+81…）でも入力できます（つなぐときに国際形式に直します）。担当者が出なかったときは、AI が代わりにご用件を伺います。</p>
           </div>
         </div>
 
@@ -883,8 +883,18 @@ export function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus 
         </Card>
         <Card title="Twilio（AI電話受付）" ok={status.twilio.configured}>
           <p>Twilio 番号：{status.twilio.number || "未設定"}</p>
-          <p className="text-xs text-sumi-400">着信 Webhook（A call comes in）：</p>
+          <p className="text-xs text-sumi-400">着信 Webhook（A call comes in・HTTP POST）：</p>
           <CopyRow value={status.twilio.webhookUrl} />
+          <p className="text-xs text-sumi-400">予備の URL（Primary handler fails・HTTP POST）：</p>
+          <CopyRow value={status.twilio.fallbackUrl} />
+          <p className="text-xs text-sumi-400">通話の状態のお知らせ（Call status changes・HTTP POST）：</p>
+          <CopyRow value={status.twilio.statusUrl} />
+          {!status.storage.persistent ? (
+            <p className="text-xs text-amber-700">Redis が未設定のため、途中で切れた電話の折り返しの受付は、記録できないことがあります（通話の終わりのお知らせが、会話を覚えていないサーバーに届くため）。</p>
+          ) : null}
+          {status.twilio.configured && !status.twilio.forwardOk ? (
+            <p className="text-xs text-amber-700">担当者へつなぐ電話番号が未設定、または電話番号として読めないため、営業時間内も AI が受けます（「電話・営業時間」で設定）。</p>
+          ) : null}
         </Card>
         <Card title="LINE Messaging API" ok={status.line.configured}>
           <p>友だち追加URL：{status.line.addFriendUrl || "未設定"}</p>
