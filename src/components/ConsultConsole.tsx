@@ -40,7 +40,7 @@ import { Modal } from "./ui";
 import { BUSINESS } from "@/lib/company";
 import { CONSULT_EVENT, type ConsultCommand } from "@/lib/consult-events";
 import { clearConversation, loadConversation, saveConversation, type StoredMessage } from "@/lib/conversation-store";
-import { emptyDraft, keepTouched, missingFields, sanitizeIntake, unsureFromTalk, type IntakeField, type IntakeState } from "@/lib/intake";
+import { emptyDraft, keepTouched, mergeDraft, missingFields, phoneCaption, sanitizeIntake, unsureFromTalk, type IntakeField, type IntakeState } from "@/lib/intake";
 import { yenDigits } from "@/lib/jnum";
 import { receiptText } from "@/lib/receipt";
 import type { ChatMessage, EstimateRequest } from "@/lib/types";
@@ -205,7 +205,8 @@ export default function ConsultConsole({
         const next = append ? base + text : text;
         // 声の AI は金額をひらがなの読み（いちまんさんぜんにひゃく円）で話すので、画面には数字（13,200円）で出す。
         // 読み間違えないようにひらがなで渡した言葉（おみつもり・たたみどこ など）も、画面では漢字に戻す
-        copy[idx] = { ...cur, content: role === "assistant" ? captionWords(yenDigits(next), readingsRef.current, addressWordsRef.current) : next, pending: !final };
+        // 声で読んだ電話番号（「ゼロきゅうゼロ、いちさんよんさん…」）も、画面と会話の記録では数字にする
+        copy[idx] = { ...cur, content: phoneCaption(role === "assistant" ? captionWords(yenDigits(next), readingsRef.current, addressWordsRef.current) : next), pending: !final };
         return copy;
       });
       if (final) {
@@ -545,6 +546,7 @@ export default function ConsultConsole({
     const fresh = Boolean(cur.draft.summary) && (cur.summaryAt ?? -1) >= history.length - 1;
     if (missingFields(cur.draft).length === 0 && fresh) return;
     setDraftLoading(true);
+    const sent = cur.draft;
     try {
       // 発言が声か文字か（声で伺ったご住所だけ、町名の聞き違いを直す。文字で入力されたご住所は書かれたとおり）
       const withVia = settled(messagesRef.current).map((m) => ({ role: m.role, content: m.content, via: m.channel === "voice" ? "voice" : "text" }));
@@ -559,7 +561,10 @@ export default function ConsultConsole({
         // ご住所の町名が熊本県・大牟田市の一覧になく直せなかった：確認画面で「修正」をお願いする（声の AI が伝えた項目と合わせる）
         setIntake((prev) => {
           const unsure = [...new Set([...(prev.unsure ?? []), ...(j.unsure ?? [])])].filter((f) => !prev.touched?.includes(f));
-          return { ...prev, draft: keepTouched(read, prev.draft, prev.touched), summaryAt: history.length, unsure };
+          // 読み取りの間に下書きが新しくなった（声の AI が確認画面に入れた内容・お客様がおっしゃったお電話番号）：新しい内容を残し、
+          // 空の項目だけ読み取りで補う（古い会話からの読み取りで、確認画面のお電話番号・ご住所が消えたり古くなったりしないように）
+          const base = prev.draft === sent ? read : mergeDraft(read, prev.draft);
+          return { ...prev, draft: keepTouched(base, prev.draft, prev.touched), summaryAt: history.length, unsure };
         });
       }
     } catch {

@@ -57,9 +57,18 @@ export function normalizePhone(s: string): string {
     .replace(/[^\d+\-]/g, "");
 }
 
+/**
+ * 日本の電話番号の桁の数か：携帯（090・080・070）・IP 電話（050）・0800 などは 11 桁、固定電話・0120・0570 は 10 桁。
+ * 桁の数は声の AI には数えさせず、ここで確かめる（一畳屋様のご指摘 2026-11-10「正しく電話番号聞き取れているのに何度も聞いてくる」：
+ * 声の AI が桁の数を数え違えて、正しい番号を聞き直していた）
+ */
+export function phoneDigitsOk(digits: string): boolean {
+  if (!/^0\d{9,10}$/.test(digits)) return false;
+  return /^0[256789]0/.test(digits) ? digits.length === 11 : digits.length === 10;
+}
+
 export function isLikelyPhone(s: string): boolean {
-  const digits = normalizePhone(s).replace(/\D/g, "");
-  return digits.length >= 10 && digits.length <= 11;
+  return phoneDigitsOk(normalizePhone(s).replace(/^\+81-?/, "0").replace(/\D/g, ""));
 }
 
 /** 発信者番号（+81 形式も）を国内形式にする。非通知など電話番号として使えない場合は undefined */

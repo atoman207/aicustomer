@@ -214,7 +214,7 @@ export default function EstimateForm({
     if (!name.trim()) e.name = "お名前を入力してください";
     if (!address.trim()) e.address = "ご住所を入力してください";
     if (!phone.trim()) e.phone = "お電話番号を入力してください";
-    else if (!isLikelyPhone(phone)) e.phone = "お電話番号は市外局番から10〜11桁で入力してください";
+    else if (!isLikelyPhone(phone)) e.phone = "お電話番号の桁の数をご確認ください（携帯電話は11桁、固定電話は市外局番から10桁）";
     if (dates.length === 0) e.dates = "ご希望日時を1つ以上入力してください（「指定なし」でもかまいません）";
     if (!summary.trim()) e.summary = "ご相談内容を入力してください";
     return e;

@@ -12,14 +12,17 @@ import { transcriptForAi, type StoredMessage } from "@/lib/conversation-store";
 import {
   ANOTHER_REQUEST,
   FIELD_LABEL,
+  FORM_GUIDE,
   afterSubmitChangeText,
   asksChangeAfterSubmit,
   asksForForm,
   intakeFields,
   keepTouched,
+  latestPhone,
   mergeDraft,
   missingFields,
   normalizeDraft,
+  phoneIn,
   saysFormShown,
   type IntakeState,
 } from "@/lib/intake";
@@ -38,7 +41,7 @@ import {
 } from "@/lib/speech-client";
 import { isPromptEcho } from "@/lib/transcribe";
 import type { EstimateRequest, IntakeDraft } from "@/lib/types";
-import { uid } from "@/lib/utils";
+import { isLikelyPhone, uid } from "@/lib/utils";
 import { captionWords, speakableWords } from "@/lib/voice-words";
 import { createVoiceGate, unlockAudioContext, type VoiceGate } from "@/lib/voice-gate";
 
@@ -111,13 +114,12 @@ const SENTENCE_END = /[。？！?!」]\s*$/;
  * 一度だけの知らせとして渡す（GPT-Live の session.instructions.append は、そのあともずっと指示として残るので、
  * 「送信ボタンを押してください」の案内を何度もくり返した。一畳屋様のご指摘 2026-10-30「このアナウンスが 10 回ぐらい繰り返された」）
  */
-const FORM_OPENED_NOTICE =
-  "お客様の画面に確認画面を表示しました（会話から読み取った内容が入っています。足りない項目は、お客様が画面で入力できます）。最初から聞き直さないでください。まだ伝えていなければ、画面の内容を確認して送信ボタンを押していただくよう一度だけ短く伝え、そのあとは同じ案内をくり返さずに、お客様が送信されるか話しかけられるまで待ってください。";
+const FORM_OPENED_NOTICE = `お客様の画面に確認画面を表示しました（会話から読み取った内容が入っています。足りない項目は、お客様が画面で入力できます）。最初から聞き直さないでください。まだ伝えていなければ「${FORM_GUIDE}」と一度だけ伝え、そのあとは同じ案内をくり返さずに、お客様が送信されるか話しかけられるまで待ってください。`;
 /** 確認画面の「ご確認のうえ、送信ボタンを押してください」の案内（声の AI はひらがなの「そうしん」でも話す） */
 const FORM_ANNOUNCE = /(?:ご確認|ご覧|確かめ).{0,60}(?:送信|そうしん)|(?:送信|そうしん)(?:ボタン)?.{0,12}(?:押して|お願い)/;
 /** AI が確認画面の案内をくり返したときの知らせ */
 const FORM_HUSH_NOTICE =
-  "確認画面の案内は、もうお伝えしています。同じ案内（画面の内容をご確認ください・送信ボタンを押してください）をくり返さないでください。お客様が送信されるか、話しかけられるまで、黙って待ってください。";
+  "確認画面の案内は、もうお伝えしています。同じ案内（画面の内容をご確認ください・間違いは『修正』ボタン・チェックボックスにチェックを入れて送信ボタン）をくり返さないでください。お客様が送信されるか、話しかけられるまで、黙って待ってください。";
 /**
  * 送信が済んだら、AI がお礼と「これで声の相談を終えます」を伝えたあとで通話を切る（一畳屋様のご要望 2026-11-02「送信後には音声相談を
  * 切る旨を伝えて切る」）。AI の話し終わりを待って知らせを渡すまでの最長・話し始めを待つ時間（過ぎたら一度だけ渡し直す）・
@@ -263,6 +265,8 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
   const userTextRef = useRef<Map<string, string>>(new Map());
   const lastUserRef = useRef<{ id: string; endedAt: number } | null>(null);
   const lastAiRef = useRef<{ id: string; text: string; endedAt: number } | null>(null);
+  // 声の AI に「桁の数はそろっている」と知らせたお電話番号（同じ番号は一度だけ）
+  const notedPhoneRef = useRef("");
 
   useEffect(() => {
     warmUpVoices();
@@ -518,6 +522,12 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       // ご相談内容は担当者が読む文なので、声のためにひらがなにした言葉・金額を、漢字と数字に戻す（受付一覧に「しょうじ6枚」と入っていた）
       const summary = args.summary ? captionWords(yenDigits(args.summary), readingsRef.current) : args.summary;
       const heard = normalizeDraft({ name: args.name, address: args.address, phone: args.phone, dates: args.preferred_dates, summary });
+      // 委任先がお電話番号を渡さなかった・桁が合わない：会話のいちばん新しい番号（お客様がおっしゃった番号・AI の復唱）を入れる
+      // （一畳屋様のご指摘 2026-11-10「音声では正しく電話番号を聞き取っているのに送信確認画面に表示されていない」）
+      if (!heard.phone || !isLikelyPhone(heard.phone)) {
+        const talk = latestPhone(hostRef.current.getConversation());
+        if (talk) heard.phone = talk;
+      }
       const cur = hostRef.current.getIntake();
       // 2 回聞き直しても聞き取れなかった項目：確認画面で「修正」から入力していただく（お客様がもう直した項目は除く）
       const unsure = intakeFields(args.unsure_fields).filter((f) => !cur.touched?.includes(f));
@@ -537,11 +547,12 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       const fix = unsure.length
         ? `${unsure.map((f) => FIELD_LABEL[f]).join("・")}は正確に聞き取れなかったため、画面の${unsure.map((f) => `${FIELD_LABEL[f]}の「修正」ボタン`).join("・")}を押して、正確な内容を入力していただくよう、お願いしてください。`
         : "";
+      // 確認画面の案内：内容の確認 → 間違いは「修正」ボタン → チェックボックスにチェックを入れて送信（一畳屋様のご要望 2026-11-10）
       return JSON.stringify({
         ok: true,
         message: missing.length
-          ? `画面に確認画面を表示しました。${missing.join("・")}はまだ伺えていないので、お客様に伺うか、画面で入力していただくよう短く案内してください。${fix}この案内は一度だけにして、くり返さないでください。`
-          : `画面に確認画面を表示しました。${fix}お客様に、内容を確認して（修正があれば直して）送信ボタンを押すよう、一度だけ短く案内してください。日程は確定ではなく、担当者よりお電話でご相談して決めることも伝えてください。案内のあとは、くり返さずに、お客様が送信されるか話しかけられるまで待ってください。`,
+          ? `画面に確認画面を表示しました。${missing.join("・")}はまだ伺えていないので、画面の入力欄に入力していただくよう短く案内してください。${fix}続けて「${FORM_GUIDE}」と伝えてください。この案内は一度だけにして、くり返さないでください。`
+          : `画面に確認画面を表示しました。${fix}お客様に「${FORM_GUIDE}」と一度だけ伝えてください。お名前・ご住所・お電話番号を声で聞き直さないでください（直すところは、お客様が画面の『修正』ボタンで直せます）。案内のあとは、くり返さずに、お客様が送信されるか話しかけられるまで待ってください。`,
       });
     }
     return JSON.stringify({ error: `unknown tool: ${name}` });
@@ -845,9 +856,34 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     if (reaskRef.current >= REASK_LIMIT) setHearingTrouble(true);
   }
 
-  /** お客様の発言：「通じない」「何回も言っている」とおっしゃったら、画面に「文字で入力する」の案内を出す */
+  /** お客様の発言：「通じない」「何回も言っている」とおっしゃったら、画面に「文字で入力する」の案内を出す。お電話番号なら notePhone */
   function noteUserTurn(text: string) {
     if (CUSTOMER_STUCK.test(text.normalize("NFKC"))) setHearingTrouble(true);
+    notePhone(text);
+  }
+
+  /**
+   * お客様がお電話番号をおっしゃった（桁の数がそろった番号）：確認画面に入れる下書きにすぐ入れ（委任先の AI が番号を渡さなくても
+   * 確認画面に出るように）、AI がお電話番号を伺っていたなら、声の AI に「桁の数はそろっている」と一度だけ知らせる（声の AI が桁を
+   * 数え違えて、正しい番号を何度も聞き直していた）。一畳屋様のご指摘 2026-11-10
+   */
+  function notePhone(text: string) {
+    const h = hostRef.current;
+    if (h.getEstimateState().submittedId) return;
+    const phone = phoneIn(text);
+    if (!phone) return;
+    const cur = h.getIntake();
+    if (!cur.touched?.includes("phone") && cur.draft.phone !== phone) h.setIntake({ ...cur, draft: { ...cur.draft, phone } });
+    // 同じ番号は一度だけ知らせる（「はい」で吹き出しがつながると、同じ発言をもう一度見るため）
+    if (notedPhoneRef.current === phone) return;
+    const lastAi = [...h.getConversation()].reverse().find((m) => m.role === "assistant")?.content ?? "";
+    if (!/電話|番号/.test(lastAi)) return;
+    notedPhoneRef.current = phone;
+    const digits = phone.replace(/\D/g, "");
+    const spoken = phone.includes("-") ? phone.replace(/-/g, "、") : digits;
+    contextNote(
+      `お客様のお電話番号は「${spoken}」と聞き取れています（${digits.length}桁で、桁の数はそろっています）。桁の数を数え直して聞き直さず、区切って一度だけ復唱して確かめてください。お客様が違うとおっしゃったときだけ、伺い直してください。`,
+    );
   }
 
   /** AI の発言の吹き出しを確定する（お客様が話している間の相づちだけなら残さない） */
@@ -1201,6 +1237,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       reaskRef.current = 0;
     }
     staffLinkRef.current = false;
+    notedPhoneRef.current = "";
     if (conversationId) conversationIdRef.current = conversationId;
     lastBargeRef.current = -1e9;
     setError("");

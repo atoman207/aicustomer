@@ -66,6 +66,40 @@ export function yenReading(n: number): string {
   return `${man ? `${under10000(man)}まん` : ""}${rest ? under10000(rest) : ""}`;
 }
 
+/**
+ * ご住所の丁目・番地・号の読み（「2丁目2」→「にちょうめ、に」、「3丁目5の8」→「さんちょうめ、ごの、はち」、「443の2」→
+ * 「よんひゃくよんじゅうさんの、に」、「816番地」→「はっぴゃくじゅうろくばんち」）。読めない書き方（建物の名前・部屋番号など）が
+ * あれば空を返す（数字のまま話す）。一畳屋様のご指摘 2026-11-10「番地も含め表記通りに読まないことがある」：金額と同じく、
+ * 声の AI は数字を自分の判断で読むので、読みをひらがなで渡す
+ */
+export function banchiReading(tail: string): string {
+  const s = tail
+    .normalize("NFKC")
+    .replace(/\s+/g, "")
+    .replace(/[‐－―−ｰ]/g, "-")
+    .replace(/[一二三四五六七八九十]+(?=丁目)/g, (k) => String(parseKanjiNumber(k) ?? k));
+  if (!s || !/\d/.test(s)) return "";
+  const re = /(\d+)(丁目|番地|番|号)?([-の]|ー(?=\d))?/y;
+  const parts: string[] = [];
+  let i = 0;
+  while (i < s.length) {
+    re.lastIndex = i;
+    const m = re.exec(s);
+    if (!m || !m[0]) return "";
+    const n = Number(m[1]);
+    if (!Number.isFinite(n) || n >= 1e8) return "";
+    let r = n === 0 ? "ぜろ" : yenReading(n);
+    const unit = m[2] ?? "";
+    // 1丁目＝いっちょうめ、8丁目＝はっちょうめ、10丁目＝じゅっちょうめ
+    if (unit === "丁目") r = r.replace(/いち$/, "いっ").replace(/はち$/, "はっ").replace(/じゅう$/, "じゅっ");
+    r += { 丁目: "ちょうめ", 番地: "ばんち", 番: "ばん", 号: "ごう", "": "" }[unit] ?? "";
+    if (m[3]) r += "の";
+    parts.push(r);
+    i += m[0].length;
+  }
+  return parts.join("、");
+}
+
 const KANA_DIGIT: [string, number][] = [
   ["きゅう", 9],
   ["はち", 8],

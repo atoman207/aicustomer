@@ -5,7 +5,7 @@
 //   一覧は新しい町名・字の名前をすべては含まないため、正しく入力された町名を別の町名に直してしまうことがあった）
 import { env } from "./env";
 import { logError } from "./errorlog";
-import { PLACE_CITIES, formatCities, formatTowns, kanaSimilarity, lookupAddress, replaceTown } from "./gazetteer";
+import { PLACE_CITIES, addressTailDigits, formatCities, formatTowns, kanaSimilarity, lookupAddress, replaceTown } from "./gazetteer";
 import { chatCompletionJson } from "./openai";
 import type { ChatMessage } from "./types";
 import { truncate } from "./utils";
@@ -106,10 +106,13 @@ address には、市区町村をその漢字にしたご住所の全体（町名
 export async function fixAddress(address: string | undefined, messages: ChatMessage[], opts: { spoken: boolean }): Promise<FixedAddress | null> {
   if (!address?.trim()) return null;
   if (!opts.spoken || outsideArea(address)) return { address, unsure: false };
-  let current = address;
+  // 番地の漢数字（音声認識の「二丁目二」）は数字に（受付一覧の書き方をそろえる）
+  let current = addressTailDigits(address);
   let l = lookupAddress(current);
   // 「玉名市中央区坪井」→「熊本市中央区坪井」（区があるのは熊本市だけ）
   if (l.corrected) current = l.corrected.address;
+  // 「熊本市東区えず2丁目」→「熊本市東区江津2丁目」（ひらがなの町名に、読みのぴったり合う町名が 1 つだけ）
+  if (l.fixedTown) current = l.fixedTown.address;
   const changed = () => (current !== address ? { from: address } : {});
   if (l.status === "ok" || l.status === "empty") return { address: current, unsure: false, ...changed() };
   if (!env.hasOpenAI) return { address: current, unsure: true, ...changed() };
@@ -120,6 +123,7 @@ export async function fixAddress(address: string | undefined, messages: ChatMess
       current = fixed;
       l = lookupAddress(current);
       if (l.corrected) current = l.corrected.address;
+      if (l.fixedTown) current = l.fixedTown.address;
       if (l.status !== "town_unknown") return { address: current, unsure: l.status !== "ok", ...changed() };
     }
     const city = l.cities.map((c) => c.name).join("・");

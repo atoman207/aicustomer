@@ -36,7 +36,7 @@ export function validateEstimateInput(input: Partial<EstimateInput>): string[] {
   if (!input.name?.trim()) errors.push("お名前を入力してください");
   if (!input.address?.trim()) errors.push("ご住所を入力してください");
   if (!input.phone?.trim()) errors.push("お電話番号を入力してください");
-  else if (!isLikelyPhone(input.phone)) errors.push("お電話番号は市外局番から10〜11桁で入力してください");
+  else if (!isLikelyPhone(input.phone)) errors.push("お電話番号の桁の数をご確認ください（携帯電話は11桁、固定電話は市外局番から10桁）");
   if (!input.summary?.trim()) errors.push("ご相談内容を入力してください");
   const dates = (input.preferredDates ?? []).filter((d) => d && d.trim());
   if (dates.length === 0) errors.push("見積希望日を1つ以上入力してください");

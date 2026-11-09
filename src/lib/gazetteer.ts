@@ -4,6 +4,7 @@
 //   ・lookupAddress：住所の市区町村と町名が一覧にあるか。なければ、その市区町村の町名を読みの近い順に返す
 //   ・placeHintForLive：声の AI（GPT-Live）の指示に入れる市町村と旧町名の読み方（短い一覧）
 import places from "../../database/places.json";
+import { banchiReading, parseKanjiNumber } from "./jnum";
 
 export interface PlaceCity {
   pref: string;
@@ -26,12 +27,22 @@ function norm(s: string): string {
   return s.normalize("NFKC").replace(/\s+/g, "").replace(/[ヶヵケ]/g, "ケ");
 }
 
+/**
+ * 「づ」と「ず」、「ぢ」と「じ」は同じ音（一畳屋様のご指摘 2026-11-10：「東区えず2丁目」と伝えても「えず東2丁目」と確かめた。
+ * 江津の読みは一覧では「えづ」で、お客様の「えず」と合わず、頭の音が同じ画図東（えずひがし）のほうが近いとしていた）
+ */
+const sameSound = (s: string) => s.replace(/づ/g, "ず").replace(/ぢ/g, "じ");
+const hiragana = (s: string) => s.normalize("NFKC").replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
+
+/** 読みがぴったり同じか比べる形（濁点は区別する。「づ」「ず」は同じ・長音と区切りを除く） */
+function readingKey(s: string): string {
+  return sameSound(hiragana(s)).replace(/[ー\s・、。]/g, "");
+}
+
 /** 読みを比べるための形（ひらがな・小さい字と濁点を区別しない・長音を除く） */
 const SMALL: Record<string, string> = { ぁ: "あ", ぃ: "い", ぅ: "う", ぇ: "え", ぉ: "お", っ: "つ", ゃ: "や", ゅ: "ゆ", ょ: "よ", ゎ: "わ" };
 export function kanaKey(s: string): string {
-  return s
-    .normalize("NFKC")
-    .replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60))
+  return sameSound(hiragana(s))
     .normalize("NFD")
     .replace(/[゙゚]/g, "")
     .normalize("NFC")
@@ -132,7 +143,15 @@ export interface AddressLookup {
   corrected?: { address: string; fromCity: string };
   /** 町名が一覧になかったとき：その町名がある、ほかの市区町村（市区町村の聞き違いの手がかり） */
   elsewhere?: AddressCandidate[];
+  /**
+   * 町名がひらがな・カタカナ（「えず2丁目」）か、一覧の町名の頭の部分だけ（「画図2丁目」）で、読みのぴったり合う町名が 1 つだけあった
+   * （→ 江津）：その町名にした住所と、もとの町名
+   */
+  fixedTown?: { address: string; from: string };
 }
+
+/** 町名の部分が、ひらがな・カタカナだけ（音声認識が漢字にできなかった町名） */
+const KANA_HEAD = /^[ぁ-ゖァ-ヺー]{2,}$/;
 
 /** 熊本市の区（「玉名市中央区」のように、ほかの市の後ろに区が付いたら、熊本市の区の聞き違い） */
 const KUMAMOTO_WARD = /^(中央|東|西|南|北)区/;
@@ -216,11 +235,30 @@ export function lookupAddress(address: string, reading = "", limit = 250): Addre
   if (town) {
     const t = norm(town.town);
     const tail = rest.startsWith(t) ? rest.slice(t.length) : splitHead(rest)[1];
-    return { ...empty, status: "ok", cities: ck.cities, cityText: ck.key, town, head: rest.slice(0, rest.length - tail.length), tail };
+    const found: AddressLookup = { ...empty, status: "ok", cities: ck.cities, cityText: ck.key, town, head: rest.slice(0, rest.length - tail.length), tail };
+    // 一覧の町名の頭の部分だけだった（「画図2丁目」：画図東・画図町… の「画図」）。読みのぴったり合う町名がほかに 1 つだけあれば、
+    // その町名（江津＝えづ）。お客様の「えず」を音声認識が「画図」と書いた（2026-11-10 の試験。一畳屋様のご指摘「東区えず2丁目」）
+    if (!list.some((x) => x.town === town.town)) {
+      const same = list.filter((x) => readingKey(x.kana) === readingKey(town.kana));
+      if (same.length === 1) {
+        const real: AddressLookup = { ...found, town: same[0] };
+        return { ...real, fixedTown: { address: replaceTown(real, same[0].town), from: found.head } };
+      }
+    }
+    return found;
   }
   const [head, tail] = splitHead(rest);
   // 町名なしで番地だけ（「合志市3415」）は確かめようがないのでそのまま
   if (!head) return { ...empty, status: "ok", cities: ck.cities, cityText: ck.key, tail };
+  // 町名がひらがな（「熊本市東区えず2丁目」）：その市区町村に読みのぴったり合う町名が 1 つだけなら、その町名（江津）の漢字にする
+  if (KANA_HEAD.test(head)) {
+    const key = readingKey(head);
+    const same = list.filter((t) => readingKey(t.kana) === key);
+    if (same.length === 1) {
+      const found: AddressLookup = { ...empty, status: "ok", cities: ck.cities, cityText: ck.key, town: same[0], head, tail };
+      return { ...found, fixedTown: { address: replaceTown(found, same[0].town), from: head } };
+    }
+  }
   const others = townsOf(PLACE_CITIES.filter((c) => !ck.cities.includes(c)));
   const elsewhere = others.filter((t) => norm(t.town) === head).slice(0, 5);
   return {
@@ -265,7 +303,43 @@ function readAloud(l: AddressLookup, town?: AddressCandidate): string {
   const city = (town && l.cities.find((c) => c.name === town.city)) || (l.cities.length === 1 ? l.cities[0] : undefined);
   const cityKana = city?.kana ?? (l.cities.length ? commonPrefix(l.cities.map((c) => c.kana)) : "");
   const head = `${PREF_KANA[l.pref] ?? l.pref}${cityKana}`;
-  return [head, pick?.kana ?? l.head, l.tail].filter(Boolean).join("、");
+  // 「づ」「ぢ」は、お客様の言う音のとおり「ず」「じ」で読む（江津＝えず）
+  return [head, pick?.kana ? sameSound(pick.kana) : l.head, tailReading(l.tail) || l.tail].filter(Boolean).join("、");
+}
+
+/**
+ * 丁目・番地の読み（「2丁目2」→「にちょうめ、に」）。一畳屋様のご指摘 2026-11-10「番地も含め表記通りに読まないことがある」。
+ * 「2」だけのような短い読み（「に」）は、字幕で数字に戻せない（ほかの「に」も変わる）ので、数字のまま
+ */
+function tailReading(tail: string): string {
+  const r = banchiReading(tailDigits(tail));
+  return r.replace(/、/g, "").length >= 4 ? r : "";
+}
+
+const KANJI_RUN = /[〇一二三四五六七八九十百千]+/g;
+const KANJI_ONE: Record<string, string> = { 〇: "0", 一: "1", 二: "2", 三: "3", 四: "4", 五: "5", 六: "6", 七: "7", 八: "8", 九: "9" };
+
+/**
+ * 番地の漢数字を数字にする（音声認識が「江津、二丁目、二」と書いた → 「2丁目2」。確認画面・受付一覧は数字で）。
+ * 丁目・番地・号・「の」・「-」だけの書き方のときだけ（建物の名前などがあれば、そのまま）
+ */
+export function tailDigits(tail: string): string {
+  if (!/[〇一二三四五六七八九十百千]/.test(tail)) return tail;
+  const t = tail.replace(KANJI_RUN, (k) => {
+    const n = parseKanjiNumber(k);
+    if (n !== null) return String(n);
+    return /^[〇一二三四五六七八九]+$/.test(k) ? [...k].map((c) => KANJI_ONE[c]).join("") : k;
+  });
+  return banchiReading(t) ? t : tail;
+}
+
+/** ご住所の番地の漢数字を数字にした住所（声で伺ったご住所。確認画面に入れる前） */
+export function addressTailDigits(address: string): string {
+  const l = lookupAddress(address);
+  const d = tailDigits(l.tail);
+  if (!l.tail || d === l.tail) return address;
+  const a = norm(address);
+  return a.endsWith(l.tail) ? `${a.slice(0, a.length - l.tail.length)}${d}` : address;
 }
 
 /** 字幕で漢字に戻す読み（声で読む住所の、市区町村・町名）。[言葉, 読み] */
@@ -280,7 +354,11 @@ function addressWords(l: AddressLookup, towns: (AddressCandidate | undefined)[])
     }
   }
   if (PREF_KANA[l.pref]) out.push([l.pref, PREF_KANA[l.pref]]);
-  for (const t of towns) if (t) out.push([t.town, t.kana]);
+  for (const t of towns) if (t) out.push([t.town, t.kana], ...(sameSound(t.kana) !== t.kana ? [[t.town, sameSound(t.kana)] as [string, string]] : []));
+  // 丁目・番地の読み（区切りの「、」を書かないこともある）
+  const tail = tailReading(l.tail);
+  const written = tailDigits(l.tail);
+  if (tail) out.push([written, tail], [written, tail.replace(/、/g, "")]);
   return out;
 }
 
@@ -295,7 +373,9 @@ export function checkAddress(address: string, reading = ""): AddressCheck {
   const fixedCity = l.corrected
     ? `市区町村を「${l.cities.map((c) => c.name).join("・")}」に直しました（${l.corrected.fromCity ? `「${l.corrected.fromCity}」に区はなく、` : ""}区があるのは熊本市だけのため）。`
     : "";
-  const shown = l.corrected?.address ?? address;
+  // 町名がひらがなだった（「えず」）：読みの合う一覧の町名（江津）の漢字にした住所。番地の漢数字（「二丁目二」）は数字に
+  const shown = addressTailDigits(l.fixedTown?.address ?? l.corrected?.address ?? address);
+  const fixedTown = l.fixedTown && l.town ? `町名「${l.fixedTown.from}」は、一覧の「${l.town.town}（${l.town.kana}）」です。確認画面に入れるご住所は「${shown}」。` : "";
   if (l.status === "ok") {
     return {
       status: "ok",
@@ -304,7 +384,7 @@ export function checkAddress(address: string, reading = ""): AddressCheck {
       ...(l.town ? { town: `${l.town.town}（${l.town.kana}）` } : {}),
       read_aloud: readAloud(l),
       caption_words: addressWords(l, [l.town]),
-      note: `${fixedCity}町名は熊本県・大牟田市の町名の一覧にあります。復唱は read_aloud のとおり、ひらがなのまま読んでください（漢字を渡すと、別の読みで読むことがあります）。`,
+      note: `${fixedCity}${fixedTown}町名は熊本県・大牟田市の町名の一覧にあります。復唱は read_aloud のとおり、ひらがなのまま読んでください（漢字・数字を渡すと、別の読みで読むことがあります。丁目・番地の読みも変えない）。`,
     };
   }
   if (l.status === "town_unknown") {
@@ -312,10 +392,12 @@ export function checkAddress(address: string, reading = ""): AddressCheck {
       ? `なお「${l.head}」という町名は${l.elsewhere.map((t) => t.city).join("・")}にあります。市区町村の聞き違いかもしれないので、「${l.elsewhere[0].city}${l.elsewhere[0].town}でしょうか」とお客様に確かめてください。`
       : "";
     // 読みがとても近い町名（「こうやまち」→ 紺屋町）。読みの難しい町名は、文字起こしで別の漢字になりやすい（一畳屋様のご指摘 2026-11-02）
-    // いちばん近い読みとほとんど同じ近さのものだけ（読みがぴったりの町名があれば、それだけを確かめる）
+    // いちばん近い読みとほとんど同じ近さのものだけ（読みがぴったりの町名があれば、それだけを確かめる。「えず」は江津（えづ）だけで、
+    // 頭の音が同じ画図東（えずひがし）は出さない。一畳屋様のご指摘 2026-11-10）
     const scored = reading ? l.candidates.map((t) => ({ t, s: readingSimilarity(reading, t.kana) })) : [];
     const best = Math.max(0, ...scored.map((x) => x.s));
-    const likely = scored.filter((x) => x.s >= Math.max(LIKELY_SIMILARITY, best - 0.1)).slice(0, 3).map((x) => x.t);
+    const floor = best >= 0.999 ? best - 0.001 : Math.max(LIKELY_SIMILARITY, best - 0.1);
+    const likely = scored.filter((x) => x.s >= floor).slice(0, 3).map((x) => x.t);
     const likelyNote = likely.length
       ? `お客様の言った音に近いのは ${formatTowns(likely, l.cities.length > 1)} です。合えば、likely_read_aloud のとおり、ひらがなのまま「${readAloud(l, likely[0])}でしょうか」と確かめてください（漢字を渡さない。文字起こしの漢字の読みで言い直さない）。`
       : "";

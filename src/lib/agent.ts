@@ -11,7 +11,7 @@ import { createEstimate } from "./estimates";
 import { BYE, INTENT_ESTIMATE, fallbackTurn } from "./fallback";
 import { AGREES, AI_REASK, ASKS_CALLBACK, ASKS_PERSON, CUSTOMER_STUCK, REASK_LIMIT, reaskStreak } from "./handoff";
 import { japanNow, resolvePhoneRouting } from "./hours";
-import { acceptsOffer, normalizeDraft } from "./intake";
+import { acceptsOffer, formatPhone, normalizeDraft } from "./intake";
 import { getKnowledge } from "./knowledge";
 import { OFFER_NOT_YET, OFFER_NOW, offerDue, offerTooEarly } from "./offer";
 import { canRetryWithChatModel, chatCompletionJson } from "./openai";
@@ -64,8 +64,9 @@ export async function greetingFor(channel: Channel): Promise<string> {
 
 /** HP の声の相談：伺った内容は画面の確認画面に表示し、お客様が確認して送信する */
 const FORM_READY_REPLY =
-  "ありがとうございます。お名前・ご住所・お電話番号・訪問のご希望日をまとめて確認画面に表示しましたので、内容をご確認ください。修正があれば直して、送信ボタンを押してください。訪問の日程は、担当者よりお電話でご相談のうえ確定いたします。";
-const FORM_REMIND_REPLY = "画面の確認画面で「この内容で送信する」を押していただくと、受付が完了します。修正したい項目は、画面の「修正」から直せます。";
+  "ありがとうございます。お名前・ご住所・お電話番号・訪問のご希望日をまとめて確認画面に表示しましたので、内容をご確認ください。お電話番号やご住所などに間違いがあれば、その項目の「修正」ボタンを押して直してください。間違いがなければ、チェックボックスにチェックを入れてから、送信ボタンを押してください。訪問の日程は、担当者よりお電話でご相談のうえ確定いたします。";
+const FORM_REMIND_REPLY =
+  "画面の確認画面で、チェックボックスにチェックを入れてから「この内容で送信する」を押していただくと、受付が完了します。修正したい項目は、画面の「修正」から直せます。";
 
 function draftComplete(d: IntakeDraft): boolean {
   return Boolean(d.name && d.address && d.phone && d.dates.length > 0);
@@ -162,7 +163,8 @@ async function openaiTurn(session: AgentSession, company: string, context: strin
   const draft: IntakeDraft = fillAnsweredField(session, {
     name: out.draft.name?.trim() || prev.name,
     address: out.draft.address?.trim() || prev.address,
-    phone: out.draft.phone?.trim() || prev.phone,
+    // 「〇九〇…」「ゼロキュウゼロ…」のような読みの番号も数字にする（数字にならないと、おっしゃった番号ではなく発信者番号で受け付けてしまう）
+    phone: out.draft.phone?.trim() ? formatPhone(out.draft.phone) || out.draft.phone.trim() : prev.phone,
     dates: dates.length > 0 ? dates : prev.dates,
     summary: out.draft.summary?.trim() || prev.summary,
   });

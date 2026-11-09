@@ -4,7 +4,7 @@
 //     ここの規則は電話番号・日付の整形と、OpenAI を使えないときの読み取りに使う
 //   ・日程は AI が確定しない（ご希望を伺うだけ。担当者がお電話で調整して確定する）
 import type { ChatMessage, EstimateRequest, IntakeDraft } from "./types";
-import { isLikelyPhone, normalizePhone, truncate } from "./utils";
+import { isLikelyPhone, normalizePhone, phoneDigitsOk, truncate } from "./utils";
 
 export type IntakeField = "name" | "address" | "phone" | "dates";
 export type DraftField = IntakeField | "summary";
@@ -128,6 +128,14 @@ export function saysFormShown(text: string): boolean {
 export function asksForForm(text: string): boolean {
   return /(?:確認画面|入力画面|画面|フォーム).{0,6}(?:出して|だして|見せて|表示して|開いて|出ない|出てこない|出ません)/.test(text.normalize("NFKC"));
 }
+
+/**
+ * 確認画面を表示したときの声の案内（声の AI が一度だけ話す。prompts.ts の指示と、確認画面を開いたときの知らせで使う）。
+ * 一畳屋様のご要望 2026-11-10「チェックボタンにチェックをいれて送信とアナウンス」「送信画面を表示したときに、電話番号や住所が
+ * 間違っていたら修正ボタンを押して修正を促すアナウンスいれる」
+ */
+export const FORM_GUIDE =
+  "お名前・ご住所・お電話番号・訪問のご希望日をまとめましたので、画面の内容をご確認ください。お電話番号やご住所などに間違いがあれば、その項目の『修正』ボタンを押して直してください。間違いがなければ、下のチェックボックスにチェックを入れてから、送信ボタンを押してください";
 
 // ---------------- 見積依頼を送信したあと ----------------
 // 一畳屋様のご要望 2026-11-02「送信後には音声相談を切る旨を伝えて切る。送信後に再度音声やテキストで修正（内容や日程）などを
@@ -417,6 +425,11 @@ const COMPANY_PHONES = ["0120158108"];
 export function formatPhone(raw: string): string {
   const p = normalizePhone(raw).replace(/^\+81-?/, "0");
   const digits = p.replace(/\D/g, "");
+  // 声の文字起こし・AI の復唱の読み（「ゼロキュウゼロ、…」「〇九〇の…」）は数字にする
+  if (digits.length < 10) {
+    const spoken = spokenPhone(raw);
+    if (spoken) return formatPhone(spoken.value);
+  }
   if (p.includes("-")) return p;
   if (/^0[789]0\d{8}$/.test(digits)) return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
   if (/^0120\d{6}$/.test(digits)) return `${digits.slice(0, 4)}-${digits.slice(4, 7)}-${digits.slice(7)}`;
@@ -425,6 +438,84 @@ export function formatPhone(raw: string): string {
 
 const PHONE_FIND = /(?:\+81|0)[\d\-‐－―ー−\s()]{8,16}\d/g;
 
+// ---- 声の電話番号（一畳屋様のご指摘 2026-11-10「音声では正しく電話番号を聞き取っているのに送信確認画面に表示されていない」）----
+// 声の文字起こしと AI の復唱では、電話番号が「090、1343、6444」「090の1343の6444」「ゼロキュウゼロ、イチサンヨンサン…」「〇九〇…」に
+// なる。区切りが「、」「の」のとき・読みや漢字の数字のときは、上の PHONE_FIND では読めず、委任先の AI が番号を渡さなかったときに
+// 確認画面の電話番号が空になった。数字の読みを 1 つずつ数字にして、0 で始まる 10〜11 桁を探す
+
+/** 数字の読み（ひらがなにしてから当てる。長いものから） */
+const DIGIT_WORD = /きゅう|きゅー|ぜろ|れい|まる|しち|なな|はち|ろく|よん|さん|いち|にい|にー|ごー|きゅ|[0-9〇○◯零一二三四五六七八九]|に|し|ご|く/y;
+const DIGIT_VALUE: Record<string, string> = {
+  ぜろ: "0", れい: "0", まる: "0", 〇: "0", "○": "0", "◯": "0", 零: "0",
+  いち: "1", 一: "1",
+  にい: "2", にー: "2", に: "2", 二: "2",
+  さん: "3", 三: "3",
+  よん: "4", し: "4", 四: "4",
+  ごー: "5", ご: "5", 五: "5",
+  ろく: "6", 六: "6",
+  なな: "7", しち: "7", 七: "7",
+  はち: "8", 八: "8",
+  きゅう: "9", きゅー: "9", きゅ: "9", く: "9", 九: "9",
+};
+/** 数字の区切り（「090、1343」「090の1343」「090-1343」「090 1343」） */
+const DIGIT_SEP = /[、,，・\s\-‐－―ー−の]{1,3}/y;
+/** 1 文字の読み（「に」「し」「く」「ご」）。ふつうの言葉の中にも出るので、番号の終わりのすぐあとに続いてもよい（「…6444にお願いします」） */
+const SINGLE_KANA = /^[にしくご]$/;
+
+const toHiragana = (s: string) => s.replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
+
+/** 0 で始まる 10〜11 桁が電話番号の形か（携帯・IP 電話は 11 桁、固定電話は 10 桁、0120 は 10 桁） */
+const phoneShape = phoneDigitsOk;
+
+/** 文中の、読み・漢字・区切りの混じった電話番号（「ゼロキュウゼロ、イチサンヨンサン、ロクヨンヨンヨン」→ 090-1343-6444） */
+export function spokenPhone(text: string, nfkc = true): { value: string; at: number; end: number } | null {
+  // nfkc=false：文字の位置を変えない（全角の数字だけ半角にする。字幕の書き換えに使う）
+  const s = toHiragana(nfkc ? text.normalize("NFKC") : text.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0)));
+  // 数字の読みと区切りの並び（数字の読みごとに、その値と文字の位置）
+  type Tok = { d: string | null; at: number; end: number; single: boolean };
+  let i = 0;
+  let run: Tok[] = [];
+  const runs: Tok[][] = [];
+  while (i <= s.length) {
+    DIGIT_WORD.lastIndex = i;
+    const w = i < s.length ? DIGIT_WORD.exec(s) : null;
+    if (w) {
+      run.push({ d: DIGIT_VALUE[w[0]] ?? w[0], at: i, end: i + w[0].length, single: SINGLE_KANA.test(w[0]) });
+      i += w[0].length;
+      continue;
+    }
+    DIGIT_SEP.lastIndex = i;
+    const sep = run.length && i < s.length ? DIGIT_SEP.exec(s) : null;
+    if (sep) {
+      run.push({ d: null, at: i, end: i + sep[0].length, single: false });
+      i += sep[0].length;
+      continue;
+    }
+    if (run.length) runs.push(run);
+    run = [];
+    i += 1;
+  }
+  for (const r of runs) {
+    for (let a = 0; a < r.length; a++) {
+      // 番号の始まり：0 で、前が区切り・並びの始まり・1 文字の読み（「よろしく、090…」の「く」）
+      if (r[a].d !== "0" || (a > 0 && r[a - 1].d !== null && !r[a - 1].single)) continue;
+      let digits = "";
+      let best: { value: string; at: number; end: number } | null = null;
+      for (let b = a; b < r.length; b++) {
+        if (r[b].d === null) continue;
+        digits += r[b].d;
+        if (digits.length > 11) break;
+        // 番号の終わり：あとが区切り・並びの終わり・1 文字の読み（「…6444に」）
+        const next = r[b + 1];
+        const closed = !next || next.d === null || next.single;
+        if (closed && digits.length >= 10 && phoneShape(digits)) best = { value: digits, at: r[a].at, end: r[b].end };
+      }
+      if (best && !COMPANY_PHONES.includes(best.value)) return best;
+    }
+  }
+  return null;
+}
+
 /** 文中の電話番号（見つかった文字の位置も返す） */
 function findPhone(s: string): { value: string; at: number; end: number } | null {
   for (const m of s.matchAll(PHONE_FIND)) {
@@ -432,7 +523,48 @@ function findPhone(s: string): { value: string; at: number; end: number } | null
     const digits = p.replace(/\D/g, "");
     if (isLikelyPhone(p) && !COMPANY_PHONES.includes(digits)) return { value: p, at: m.index ?? 0, end: (m.index ?? 0) + m[0].length };
   }
-  return null;
+  const spoken = spokenPhone(s);
+  return spoken ? { ...spoken, value: formatPhone(spoken.value) } : null;
+}
+
+/** 発言の中の電話番号（なければ空） */
+export function phoneIn(text: string): string {
+  return findPhone(text.normalize("NFKC"))?.value ?? "";
+}
+
+/**
+ * 字幕・会話の記録：読みで書かれた電話番号（「ゼロきゅうゼロ、いちさんよんさん、ろくよんよんよん」）を数字（090-1343-6444）にする。
+ * 数字で書かれた番号はそのまま（文字の位置が変わる書き方の文は変えない）
+ */
+export function phoneCaption(text: string): string {
+  if (!/[ぁ-んァ-ン〇○◯零一二三四五六七八九]/.test(text)) return text;
+  const sp = spokenPhone(text, false);
+  if (!sp || !/[ぁ-んァ-ン〇○◯零一二三四五六七八九]/.test(text.slice(sp.at, sp.end).replace(/の/g, ""))) return text;
+  return `${text.slice(0, sp.at)}${formatPhone(sp.value)}${text.slice(sp.end)}`;
+}
+
+/** 例としての番号（AI の案内「例：090-1234-5678」）はお客様の番号として拾わない */
+const EXAMPLE_PHONES = ["09012345678", "09041832276"];
+/** AI の復唱へのお客様の「違います」 */
+const REJECT = /^(?:いいえ|いや|いえ|違|ちが|そうじゃ|そうでは)/;
+
+/**
+ * 会話のいちばん新しいお電話番号（お客様がおっしゃった番号・AI の復唱）。声の相談で、委任先の AI が確認画面に番号を渡さなかった
+ * ときに使う。お客様が「違います」と答えた復唱の番号・案内の例の番号は使わない
+ */
+export function latestPhone(messages: { role: string; content: string }[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    const p = phoneIn(m.content);
+    if (!p || EXAMPLE_PHONES.includes(p.replace(/\D/g, ""))) continue;
+    if (m.role === "assistant") {
+      const reply = messages.slice(i + 1).find((x) => x.role === "user");
+      if (reply && REJECT.test(reply.content.normalize("NFKC").trim())) continue;
+    }
+    return p;
+  }
+  return "";
 }
 
 // 熊本県内・営業範囲の市町村（区切りのない「山田花子熊本市…」でもご住所の始まりがわかるように）
@@ -529,11 +661,12 @@ export function extractIntake(text: string, asked: IntakeField[] = [], today: Ym
   let past: string[] = [];
   let appendDates = false;
   const leftovers: string[] = [];
+  // 声で区切って話した番号（「090、1343、6444」「ゼロキュウゼロ、イチサン…」）は、「、」で区切る前に「090-1343-6444」の形にしておく
+  const t0 = text.normalize("NFKC");
+  const ph0 = findPhone(t0);
+  const t1 = ph0 ? `${t0.slice(0, ph0.at)}${ph0.value}${t0.slice(ph0.end)}` : t0;
   // 「名前は〜、住所は〜」の見出しごとに区切ってから読む
-  const s = text
-    .normalize("NFKC")
-    .replace(new RegExp(`(${NAME_LABEL.source}|${ADDRESS_LABEL.source}|${PHONE_LABEL.source}|${DATE_LABEL.source})`, "g"), "\n$1")
-    .trim();
+  const s = t1.replace(new RegExp(`(${NAME_LABEL.source}|${ADDRESS_LABEL.source}|${PHONE_LABEL.source}|${DATE_LABEL.source})`, "g"), "\n$1").trim();
   const chunks = s.split(CHUNK_SPLIT).map((c) => c.trim()).filter(Boolean);
   const dateChunks: string[] = [];
   for (const chunk0 of chunks) {
@@ -721,7 +854,7 @@ export function intakeQuestion(
 export function intakeReadyText(draft: IntakeDraft, job?: string | null): string {
   const what = job?.trim() ? `${job.trim().replace(/(?:の)?(?:お見積り|お見積もり|見積)$/, "")}のお見積りですね。` : "";
   const more = draft.dates.length < 3 && draft.dates[0] !== "指定なし" ? "第2・第3希望があれば、確認画面で追加できます。\n" : "";
-  return `ありがとうございます。${what}お名前・ご住所・お電話番号・訪問のご希望日をまとめましたので、内容をご確認ください。\nよろしければ、確認画面の送信ボタンを押してください（修正もできます）。\n${more}※訪問の日程は確定ではありません。担当者よりお電話でご相談のうえ決定いたします。`;
+  return `ありがとうございます。${what}お名前・ご住所・お電話番号・訪問のご希望日をまとめましたので、確認画面の内容をご確認ください。\nお電話番号やご住所などに間違いがあれば、その項目の「修正」から直せます。間違いがなければ、チェックボックスにチェックを入れて、送信ボタンを押してください。\n${more}※訪問の日程は確定ではありません。担当者よりお電話でご相談のうえ決定いたします。`;
 }
 
 export const INTAKE_CANCEL_TEXT =
