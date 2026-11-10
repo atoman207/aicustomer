@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { env } from "./env";
 import { requestOrigin } from "./origin";
 import { speakableYen } from "./jnum";
+import { type AskKind, hintsFor } from "./phone-ask";
 
 export function escapeXml(s: string): string {
   return s
@@ -22,9 +23,6 @@ export function say(text: string, voice: string): string {
   return `<Say voice="${escapeXml(voice)}" language="ja-JP">${escapeXml(speakableYen(text))}</Say>`;
 }
 
-const SPEECH_HINTS =
-  "一畳屋,畳,襖,ふすま,障子,網戸,アミ戸,見積,表替え,新調,張替え,琉球畳,へり無し,古都,さくら,やすらぎ,きずな,なごみ,めぐみ,極み,熊本市,合志市,菊池市,菊陽町,大津町,山鹿市,玉名市,阿蘇,午前,午後,はい,いいえ";
-
 /**
  * 話し終わってから音声認識を締めるまでの秒数。
  * Twilio は speechModel を指定したとき speechTimeout="auto" を使えない（警告 13335 が出て、
@@ -32,13 +30,40 @@ const SPEECH_HINTS =
  * 50〜70代の方が文の途中で息をつく間（1 秒ほど）では締めない長さ
  */
 export const SPEECH_TIMEOUT_SECONDS = 2;
+/** ご住所・お電話番号の問い：数字や番地の区切りで間が空いても締めない長さ */
+export const LONG_SPEECH_TIMEOUT_SECONDS = 3;
 
-export function gather(text: string, actionUrl: string, voice: string, opts: { timeout?: number; speechTimeout?: number } = {}): string {
-  // speechModel="phone_call"：電話の音声（8kHz）向けのモデル。日本語（ja-JP）に対応（Twilio の Gather の資料）
+export interface GatherOptions {
+  timeout?: number;
+  speechTimeout?: number;
+  /** AI が伺ったこと（phone-ask.ts の askKind）。お電話番号の問いは電話のボタンでも受ける */
+  kind?: AskKind;
+  /** 音声認識のヒント（phone-ask.ts の hintsFor）。省略時はご相談の問いのヒント */
+  hints?: string[];
+}
+
+/**
+ * 電話の音声認識のモデル（TWILIO_SPEECH_MODEL）。既定の phone_call は電話の音声（8kHz）向けで、Twilio の資料に日本語（ja-JP）の対応が明記されている。
+ * deepgram_nova-3・googlev2_telephony_short は、試験通話で日本語を受けることを確かめてから切り替える（調査「AI電話の音声認識サービス選定」）
+ */
+function speechModel(): string {
+  return env.twilioSpeechModel;
+}
+
+export function gather(text: string, actionUrl: string, voice: string, opts: GatherOptions = {}): string {
+  const kind = opts.kind ?? "consult";
+  const model = speechModel();
+  const longer = kind === "address" || kind === "phone";
+  // Deepgram はヒント（keyterms）が少ないほうがよい
+  const hints = (opts.hints ?? hintsFor(kind, undefined)).slice(0, /^deepgram/.test(model) ? 100 : 500);
+  // お電話番号：話しても、電話のボタンで押してもよい（最後の「#」で締める。押し終わって 8 秒待っても締める）
+  const input = kind === "phone" ? ` input="dtmf speech" finishOnKey="#"` : ` input="speech"`;
   return (
-    `<Gather input="speech" language="ja-JP" action="${escapeXml(actionUrl)}" method="POST"` +
-    ` speechTimeout="${opts.speechTimeout ?? SPEECH_TIMEOUT_SECONDS}" timeout="${opts.timeout ?? 6}"` +
-    ` actionOnEmptyResult="true" speechModel="phone_call" hints="${escapeXml(SPEECH_HINTS)}">` +
+    `<Gather${input} language="ja-JP" action="${escapeXml(actionUrl)}" method="POST"` +
+    ` speechTimeout="${opts.speechTimeout ?? (longer ? LONG_SPEECH_TIMEOUT_SECONDS : SPEECH_TIMEOUT_SECONDS)}" timeout="${opts.timeout ?? (kind === "phone" ? 8 : 6)}"` +
+    // profanityFilter：既定（true）では、引っかかった言葉が「*」に置き換わる（お名前・ご住所が欠けないように）
+    ` actionOnEmptyResult="true" speechModel="${escapeXml(model)}" profanityFilter="false"` +
+    `${hints.length ? ` hints="${escapeXml(hints.join(","))}"` : ""}>` +
     `${say(text, voice)}</Gather>`
   );
 }

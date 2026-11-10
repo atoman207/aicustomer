@@ -238,7 +238,7 @@ export function storageInfo(): StorageInfo {
 // ---------- 設定 ----------
 
 /** 設定の版。これより古い保存値は、以前の既定値のままなら新しい既定値に移行する */
-const SETTINGS_REV = 2;
+const SETTINGS_REV = 3;
 /** 以前の既定の挨拶（スタッフが書き換えていなければ新しい既定に置き換える） */
 const LEGACY_GREETINGS = [
   "お電話ありがとうございます。{company}のAI受付です。畳・襖・障子・網戸・リフォームに関するご質問や、お見積りのご依頼を承ります。ご用件をどうぞ。",
@@ -253,12 +253,12 @@ export function defaultSettings(): AppSettings {
     knowledgeSheetUrl: "",
     greeting:
       "お電話ありがとうございます。畳の{company}、AI受付です。畳・襖・障子・網戸から住まいのリフォームまで、ご相談や無料お見積りのご依頼を承ります。ご用件をどうぞ。",
-    // 営業時間 8:00〜17:00・土日定休。休業日（年末年始・GW・お盆など）と時間外は AI が受付
+    // 営業時間 8:00〜18:00・土日定休。休業日（年末年始・GW・お盆など）と時間外は AI が受付
     phone: {
       mode: "ai_off_hours",
       businessDays: [1, 2, 3, 4, 5],
       openTime: "08:00",
-      closeTime: "17:00",
+      closeTime: "18:00",
       holidays: [],
       forwardNumber: env.staffForwardNumber,
     },
@@ -267,9 +267,11 @@ export function defaultSettings(): AppSettings {
   };
 }
 
-/** 以前の既定の営業時間（月〜土 8:00/9:00〜18:00）のまま保存されているか */
+/** 以前の既定の営業時間のまま保存されているか（月〜土〜18:00、または月〜金 8:00〜17:00） */
 function isLegacyHours(p: AppSettings["phone"]): boolean {
-  return p.businessDays.join(",") === "1,2,3,4,5,6" && (p.openTime === "08:00" || p.openTime === "09:00") && p.closeTime === "18:00";
+  const days = p.businessDays.join(",");
+  if (days === "1,2,3,4,5,6" && (p.openTime === "08:00" || p.openTime === "09:00") && p.closeTime === "18:00") return true;
+  return days === "1,2,3,4,5" && p.openTime === "08:00" && p.closeTime === "17:00";
 }
 
 export async function getSettings(): Promise<AppSettings> {

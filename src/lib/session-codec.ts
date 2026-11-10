@@ -82,6 +82,9 @@ interface CompactSession {
   /** この通話で担当者へつないだが出なかった（つなぎ直さない）・続けて起きた問題の回数 */
   k?: string;
   z?: string;
+  /** 最後の問いの種類（phone-ask.ts）・電話のボタンでの入力をご案内した */
+  a?: string;
+  b?: string;
 }
 
 /** Cookie に入れる会話：短い会話はすべて、長い会話は最初のご相談（あいさつのあとの 2 件）と直近の 6 件 */
@@ -121,6 +124,8 @@ export function encodeCallCookie(s: AgentSession): string {
     w: holds > 0 ? holds : undefined,
     k: s.meta?.staffUnanswered || undefined,
     z: s.meta?.turnErrors || undefined,
+    a: s.meta?.ask && s.meta.ask !== "consult" ? s.meta.ask : undefined,
+    b: s.meta?.keypadHinted || undefined,
   };
   const pack = () => b64url(deflateRawSync(Buffer.from(JSON.stringify(compact), "utf8")));
   let payload = pack();
@@ -161,6 +166,8 @@ export function decodeCallCookie(value: string | null, expectId: string): AgentS
         ...(typeof c.w === "number" && c.w > 0 ? { holds: String(c.w) } : {}),
         ...(c.k ? { staffUnanswered: c.k } : {}),
         ...(c.z ? { turnErrors: c.z } : {}),
+        ...(c.a ? { ask: c.a } : {}),
+        ...(c.b ? { keypadHinted: c.b } : {}),
       },
     };
   } catch {

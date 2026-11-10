@@ -56,6 +56,19 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
   const [channel, setChannel] = useState("");
   const [status, setStatus] = useState("");
   const [open, setOpen] = useState<string | null>(null);
+  const [conv, setConv] = useState<{ title: string; log: ConversationLog | null; loading: boolean } | null>(null);
+
+  /** 受付の会話（AI電話の通話の会話・HP の相談の会話）を開く */
+  async function openConversation(e: EstimateRequest) {
+    setConv({ title: `${e.name} 様の会話（${CHANNEL_LABEL[e.channel]}・受付番号 ${e.id}）`, log: null, loading: true });
+    try {
+      const qs = new URLSearchParams({ estimate: e.id, ...(e.sessionId ? { session: e.sessionId } : {}) });
+      const j = await api<{ conversation: ConversationLog | null }>(`/api/conversations?${qs.toString()}`);
+      setConv((c) => (c ? { ...c, log: j.conversation, loading: false } : c));
+    } catch {
+      setConv((c) => (c ? { ...c, loading: false } : c));
+    }
+  }
 
   // 「連絡済を隠す」（ボタン一つで、未連絡の受付だけにする。一畳屋様のご要望 2026-10-30）。この端末で前に選んだ状態を覚えておく
   useEffect(() => {
@@ -220,7 +233,14 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
         ) : null}
         {!loading && filtered.length === 0 ? <li className="py-10 text-center text-sm text-sumi-400">受付はまだありません</li> : null}
         {filtered.map((e) => (
-          <ReceptionCard key={e.id} e={e} open={open === e.id} onToggle={() => setOpen(open === e.id ? null : e.id)} onStatus={(s) => changeStatus(e.id, s)} />
+          <ReceptionCard
+            key={e.id}
+            e={e}
+            open={open === e.id}
+            onToggle={() => setOpen(open === e.id ? null : e.id)}
+            onStatus={(s) => changeStatus(e.id, s)}
+            onConversation={() => openConversation(e)}
+          />
         ))}
       </ul>
       <div className="hidden max-h-[70vh] overflow-auto md:block">
@@ -252,12 +272,110 @@ export function ReceptionsTab({ storage }: { storage: IntegrationStatus["storage
               </tr>
             ) : null}
             {filtered.map((e) => (
-              <ReceptionRow key={e.id} e={e} open={open === e.id} onToggle={() => setOpen(open === e.id ? null : e.id)} onStatus={(s) => changeStatus(e.id, s)} />
+              <ReceptionRow
+                key={e.id}
+                e={e}
+                open={open === e.id}
+                onToggle={() => setOpen(open === e.id ? null : e.id)}
+                onStatus={(s) => changeStatus(e.id, s)}
+                onConversation={() => openConversation(e)}
+              />
             ))}
           </tbody>
         </table>
       </div>
+      <Modal open={!!conv} onClose={() => setConv(null)} title={conv?.title ?? ""} wide>
+        {conv?.loading ? (
+          <Spinner className="mx-auto h-5 w-5" />
+        ) : conv?.log ? (
+          <ConversationDetail log={conv.log} />
+        ) : conv ? (
+          <p className="text-sm text-sumi-500" data-conversation-missing>
+            この受付の会話の記録が見つかりませんでした。
+            {storage.persistent
+              ? "古い会話は、件数の上限を超えると古いものから消えます。"
+              : "Redis（データの保存先）が未設定のため、会話の記録は一時的な保存で、サーバーの再起動などで消えます。"}
+          </p>
+        ) : null}
+      </Modal>
     </div>
+  );
+}
+
+/** 会話の記録の項目名（管理画面の表示用。中の仕組みの項目は表示しない） */
+const META_LABEL: Record<string, string> = {
+  callerNumber: "発信者番号",
+  calledNumber: "着信した番号",
+  forwardedFrom: "転送元の番号",
+  routing: "振り分け",
+  callStatus: "通話の状態",
+  callDuration: "通話時間（秒）",
+  handoff: "折り返し・転送",
+  staffUnanswered: "担当者",
+  stage: "受付の段階",
+  mode: "応答",
+  answer: "最後の回答の出どころ",
+  lastError: "直近のエラー",
+  channels: "使った窓口",
+  test: "テスト",
+  simulated: "シミュレーター",
+};
+const META_VALUE: Record<string, Record<string, string>> = {
+  handoff: {
+    transfer: "担当者へ転送",
+    unheard: "聞き取れず折り返しの受付",
+    stuck: "お話が伺えず折り返しの受付",
+    person: "担当者とのお話をご希望（折り返し）",
+    hangup: "途中で切れた（折り返しの受付）",
+  },
+  staffUnanswered: { "1": "出られなかった（AIが代わりに受付）" },
+  stage: { consult: "ご相談", collecting: "お見積りの聞き取り中", confirming: "復唱・確認中", completed: "受付完了" },
+  mode: { openai: "AI", demo: "デモ（AIなし）" },
+  callStatus: { completed: "終了", "in-progress": "通話中", busy: "話し中", "no-answer": "応答なし", failed: "失敗", canceled: "取り消し" },
+};
+
+/** 会話の記録 1 件（通話の情報と、お客様と AI のやりとり） */
+function ConversationDetail({ log }: { log: ConversationLog }) {
+  const meta = Object.entries(log.meta ?? {}).filter(([k, v]) => META_LABEL[k] && v);
+  return (
+    <div className="space-y-2" data-conversation={log.id}>
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-sumi-500">
+        <span>開始：{formatJst(log.startedAt)}</span>
+        {log.estimateId ? <span>受付番号：{log.estimateId}</span> : null}
+        {meta.map(([k, v]) => (
+          <span key={k}>
+            {META_LABEL[k]}：{META_VALUE[k]?.[v] ?? v}
+          </span>
+        ))}
+      </div>
+      <div className="max-h-[60vh] space-y-2 overflow-y-auto rounded-xl bg-white p-3">
+        {log.messages.map((m, i) => (
+          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`bubble max-w-[85%] rounded-2xl px-3 py-2 text-sm ${m.role === "user" ? "bg-ai-600 text-white" : "border border-washi-200 bg-washi-50 text-sumi-800"}`}>
+              {m.content}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 受付の会話を開くボタン */
+function ConversationButton({ onClick, className }: { onClick: () => void; className: string }) {
+  return (
+    <button
+      type="button"
+      className={`btn-secondary ${className}`}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        onClick();
+      }}
+      data-open-conversation
+    >
+      <MessageSquareText className="h-3.5 w-3.5" />
+      会話を見る
+    </button>
   );
 }
 
@@ -342,7 +460,15 @@ function LineShareButton({ e, className }: { e: EstimateRequest; className: stri
 }
 
 /** スマホ用：受付 1 件のカード（タップで詳細。電話番号はそのまま発信できる） */
-function ReceptionCard({ e, open, onToggle, onStatus }: { e: EstimateRequest; open: boolean; onToggle: () => void; onStatus: (s: EstimateStatus) => void }) {
+interface ReceptionProps {
+  e: EstimateRequest;
+  open: boolean;
+  onToggle: () => void;
+  onStatus: (s: EstimateStatus) => void;
+  onConversation: () => void;
+}
+
+function ReceptionCard({ e, open, onToggle, onStatus, onConversation }: ReceptionProps) {
   return (
     <li className="px-4 py-3" data-reception={e.id}>
       <button type="button" className="w-full text-left" onClick={onToggle} aria-expanded={open}>
@@ -394,13 +520,14 @@ function ReceptionCard({ e, open, onToggle, onStatus }: { e: EstimateRequest; op
             </p>
           ) : null}
           {e.syncError ? <p className="text-shu-600">同期エラー：{e.syncError}</p> : null}
+          <ConversationButton onClick={onConversation} className="mt-1 px-3 py-1.5 text-xs" />
         </div>
       ) : null}
     </li>
   );
 }
 
-function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; open: boolean; onToggle: () => void; onStatus: (s: EstimateStatus) => void }) {
+function ReceptionRow({ e, open, onToggle, onStatus, onConversation }: ReceptionProps) {
   return (
     <>
       <tr className="cursor-pointer hover:bg-washi-50" onClick={onToggle}>
@@ -467,6 +594,9 @@ function ReceptionRow({ e, open, onToggle, onStatus }: { e: EstimateRequest; ope
                 </div>
               ) : null}
               {e.syncError ? <div className="text-shu-600 sm:col-span-3">同期エラー：{e.syncError}</div> : null}
+              <div className="sm:col-span-3">
+                <ConversationButton onClick={onConversation} className="px-3 py-1 text-xs" />
+              </div>
             </div>
           </td>
         </tr>
@@ -564,7 +694,10 @@ export function ConversationsTab() {
                     {c.meta?.test ? <Badge tone="amber">テスト</Badge> : null}
                   </td>
                   <td>{c.messages.length}</td>
-                  <td className="text-xs">{c.meta?.mode ?? "—"}</td>
+                  <td className="text-xs">
+                    {META_VALUE.mode[c.meta?.mode ?? ""] ?? c.meta?.mode ?? "—"}
+                    {c.channel === "phone" && c.meta?.callerNumber ? <span className="block font-mono text-sumi-400">{c.meta.callerNumber}</span> : null}
+                  </td>
                   <td className="max-w-[420px]">{truncate(firstUser, 70) || "—"}</td>
                   <td className="font-mono text-xs">{c.estimateId ?? "—"}</td>
                 </tr>
@@ -574,28 +707,7 @@ export function ConversationsTab() {
         </table>
       </div>
       <Modal open={!!view} onClose={() => setView(null)} title={view ? `${CHANNEL_LABEL[view.channel]}｜${formatJst(view.startedAt)}` : ""} wide>
-        {view ? (
-          <div className="space-y-2">
-            <div className="flex flex-wrap gap-2 text-xs text-sumi-500">
-              <span>ID: {view.id}</span>
-              {view.estimateId ? <span>受付番号: {view.estimateId}</span> : null}
-              {Object.entries(view.meta ?? {}).map(([k, v]) => (
-                <span key={k}>
-                  {k}: {v}
-                </span>
-              ))}
-            </div>
-            <div className="max-h-[60vh] space-y-2 overflow-y-auto rounded-xl bg-white p-3">
-              {view.messages.map((m, i) => (
-                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <div className={`bubble max-w-[85%] rounded-2xl px-3 py-2 text-sm ${m.role === "user" ? "bg-ai-600 text-white" : "border border-washi-200 bg-washi-50 text-sumi-800"}`}>
-                    {m.content}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
+        {view ? <ConversationDetail log={view} /> : null}
       </Modal>
     </div>
   );
@@ -603,19 +715,34 @@ export function ConversationsTab() {
 
 // ---------------- 電話・営業時間 ----------------
 
+interface Routing {
+  handler: string;
+  reason: string;
+  action?: "ai" | "dial" | "ai_after_staff" | "closed";
+}
+
+const ROUTING_LABEL: Record<NonNullable<Routing["action"]>, string> = {
+  ai: "AI受付が対応中",
+  dial: "スタッフへおつなぎ中",
+  ai_after_staff: "スタッフ対応中（出られなかったお電話はAIが受付）",
+  closed: "スタッフ対応中（AI停止）",
+};
+
 export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSettings }) {
   const [s, setS] = useState<AppSettings>(initialSettings);
   const [holidaysText, setHolidaysText] = useState(initialSettings.phone.holidays.join("\n"));
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
-  const [routing, setRouting] = useState<{ handler: string; reason: string } | null>(null);
+  const [routing, setRouting] = useState<Routing | null>(null);
   const [now, setNow] = useState("");
+  const [persistent, setPersistent] = useState(true);
 
   const refreshRouting = useCallback(async () => {
     try {
-      const j = await api<{ routing: { handler: string; reason: string }; now: string }>("/api/settings");
+      const j = await api<{ routing: Routing; now: string; persistent?: boolean }>("/api/settings");
       setRouting(j.routing);
       setNow(j.now);
+      setPersistent(j.persistent !== false);
     } catch {
       // noop
     }
@@ -635,14 +762,19 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
         .split(/\n|,|、/)
         .map((h) => h.trim())
         .filter(Boolean);
-      const j = await api<{ settings: AppSettings; routing: { handler: string; reason: string }; now: string }>("/api/settings", {
+      const j = await api<{ settings: AppSettings; routing: Routing; now: string; persistent?: boolean }>("/api/settings", {
         method: "PUT",
         body: JSON.stringify({ ...s, phone: { ...s.phone, holidays } }),
       });
       setS(j.settings);
       setRouting(j.routing);
       setNow(j.now);
-      setMsg("保存しました。電話シミュレーター／Twilio 着信に即時反映されます。");
+      setPersistent(j.persistent !== false);
+      setMsg(
+        j.persistent === false
+          ? "保存しましたが、Redis が未設定のため一時的な保存です（サーバーの再起動や別のサーバーでは元の設定に戻ります）。「接続状況」の保存先をご確認ください。"
+          : "保存しました。電話シミュレーター／AI電話の着信に、すぐに反映されます。",
+      );
     } catch (e) {
       setMsg(`保存に失敗しました：${(e as Error).message}`);
     } finally {
@@ -651,14 +783,28 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
   }
 
   const modes: { key: PhoneMode; label: string; desc: string }[] = [
-    { key: "ai_off_hours", label: "休日・営業時間外のみAI対応", desc: "営業時間内はスタッフの電話へ転送し、それ以外はAIが受付します（推奨）" },
-    { key: "ai_always", label: "常時AI対応", desc: "営業時間に関係なく、すべての着信をAIが受付します" },
-    { key: "human_always", label: "常にスタッフ対応（AI停止）", desc: "すべての着信を転送先の電話につなぎます" },
+    {
+      key: "ai_off_hours",
+      label: "休日・営業時間外のみAI対応",
+      desc: "休日と営業時間外はAIが受付します。営業時間内はスタッフが出て、出られなかったお電話だけAIが代わりに受付します（推奨）",
+    },
+    { key: "ai_always", label: "常時AI対応", desc: "営業時間に関係なく、AIの番号に届いたお電話はすべてAIが受付します" },
+    {
+      key: "human_always",
+      label: "常にスタッフ対応（AI停止）",
+      desc: "AIは受付をしません。AIの番号に届いたお電話は、転送先の電話へおつなぎし、出られなければ「改めておかけ直しください」とご案内します",
+    },
   ];
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
       <div className="card space-y-6 p-5">
+        {!persistent ? (
+          <p className="rounded-xl border border-shu-200 bg-shu-50 px-3 py-2 text-xs leading-relaxed text-shu-700" data-settings-warning>
+            Redis（データの保存先）が未設定のため、ここで保存した設定は一時的です。サーバーの再起動や別のサーバーでは、元の設定（環境変数の値）に戻ります。
+            AI・スタッフの切替を確実に効かせるには、Vercel の Storage で Upstash Redis をつないでください（接続状況の「アプリ内データの保存先」）。
+          </p>
+        ) : null}
         <div>
           <p className="font-serif text-base font-bold text-sumi-800">AI・スタッフの電話対応切替</p>
           <div className="mt-3 grid gap-2">
@@ -719,7 +865,11 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
           <div>
             <label className="label">スタッフ転送先の電話番号</label>
             <input className="input" value={s.phone.forwardNumber} onChange={(e) => setS({ ...s, phone: { ...s.phone, forwardNumber: e.target.value } })} placeholder="例：+8196XXXXXXX" />
-            <p className="mt-1 text-xs text-sumi-400">「096-123-4567」のような書き方でも、国際形式（+81…）でも入力できます（つなぐときに国際形式に直します）。担当者が出なかったときは、AI が代わりにご用件を伺います。</p>
+            <p className="mt-1 text-xs text-sumi-400">
+              0120 のお電話がお店の電話に先に鳴り、出られなかったお電話をNTTの転送（ボイスワープ）でAIの番号へ回す使い方では、
+              <strong className="font-semibold text-sumi-600">空のまま</strong>
+              にしてください（お店の電話をここに入れると、お店とAIの間で転送がくり返されます）。AIの番号が先に受けてスタッフへつなぐ使い方では、スタッフの携帯電話など、AIの番号へ転送していない番号を入れます（「096-123-4567」の書き方でも可）。
+            </p>
           </div>
         </div>
 
@@ -756,8 +906,8 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
           <p className="text-xs font-semibold uppercase tracking-widest text-sumi-400">現在の判定</p>
           <p className="mt-2 text-sm text-sumi-500">{now || "—"}</p>
           {routing ? (
-            <div className={`mt-2 rounded-xl px-3 py-2 text-sm font-semibold ${routing.handler === "ai" ? "bg-tatami-50 text-tatami-700" : "bg-ai-50 text-ai-700"}`}>
-              {routing.handler === "ai" ? "AI受付が対応中" : "スタッフへ転送中"}
+            <div className={`mt-2 rounded-xl px-3 py-2 text-sm font-semibold ${routing.handler === "ai" ? "bg-tatami-50 text-tatami-700" : "bg-ai-50 text-ai-700"}`} data-routing={routing.action ?? routing.handler}>
+              {ROUTING_LABEL[routing.action ?? (routing.handler === "ai" ? "ai" : "dial")]}
               <span className="block text-xs font-normal opacity-80">{routing.reason}</span>
             </div>
           ) : null}
@@ -776,7 +926,8 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
         <div className="card p-5 text-xs text-sumi-500">
           <p className="font-semibold text-sumi-700">専門知識なしで運用できるポイント</p>
           <ul className="mt-2 list-disc space-y-1 pl-4">
-            <li>AI／スタッフの切替はこの画面のラジオボタンだけ</li>
+            <li>AI／スタッフの切替はこの画面のラジオボタンだけ（お店の電話のNTTの転送は「無応答時・話中時」のままで構いません）</li>
+            <li>呼び出し音を鳴らさずにすぐAIへつなぎたい日は、お店の電話の転送を「無条件転送」に（NTTの142で切り替え）</li>
             <li>年末年始・GW・お盆休みなどの休業日は日付を書き足すだけ</li>
             <li>ナレッジの更新はスプレッドシートを編集するだけ（約1分で反映）</li>
           </ul>
@@ -889,11 +1040,16 @@ export function StatusTab({ initialStatus }: { initialStatus: IntegrationStatus 
           <CopyRow value={status.twilio.fallbackUrl} />
           <p className="text-xs text-sumi-400">通話の状態のお知らせ（Call status changes・HTTP POST）：</p>
           <CopyRow value={status.twilio.statusUrl} />
+          {status.twilio.speechModel ? <p className="text-xs text-sumi-400">音声認識のモデル：{status.twilio.speechModel}（TWILIO_SPEECH_MODEL）</p> : null}
           {!status.storage.persistent ? (
-            <p className="text-xs text-amber-700">Redis が未設定のため、途中で切れた電話の折り返しの受付は、記録できないことがあります（通話の終わりのお知らせが、会話を覚えていないサーバーに届くため）。</p>
+            <p className="text-xs text-amber-700">
+              Redis が未設定のため、「電話・営業時間」の設定（AI・スタッフの切替）と会話履歴は一時的な保存です。途中で切れた電話の折り返しの受付も、記録できないことがあります（通話の終わりのお知らせが、会話を覚えていないサーバーに届くため）。
+            </p>
           ) : null}
           {status.twilio.configured && !status.twilio.forwardOk ? (
-            <p className="text-xs text-amber-700">担当者へつなぐ電話番号が未設定、または電話番号として読めないため、営業時間内も AI が受けます（「電話・営業時間」で設定）。</p>
+            <p className="text-xs text-sumi-500">
+              転送先の番号は未設定です：お店の電話が先に鳴り、出られなかったお電話がAIの番号に転送されてくる使い方（NTTのボイスワープ）では、このままで正しい設定です。営業時間内にAIの番号に届いたお電話は、AIが「担当者が出られないため」と添えてお受けします。
+            </p>
           ) : null}
         </Card>
         <Card title="LINE Messaging API" ok={status.line.configured}>

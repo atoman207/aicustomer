@@ -149,7 +149,7 @@ export interface PhoneSettings {
   mode: PhoneMode;
   businessDays: number[]; // 0=日 ... 6=土
   openTime: string; // "08:00"
-  closeTime: string; // "17:00"
+  closeTime: string; // "18:00"
   holidays: string[]; // "YYYY-MM-DD"
   forwardNumber: string;
 }
@@ -219,7 +219,7 @@ export interface IntegrationStatus {
   knowledge: { source: KnowledgeSource; label: string; entries: number; fetchedAt: string; warning?: string };
   reception: { sink: "gas" | "sheets_api" | "local"; label: string };
   sheet: { configured: boolean; serviceAccount: string; sheetId: string };
-  twilio: { configured: boolean; number: string; webhookUrl: string; statusUrl: string; fallbackUrl: string; forwardOk: boolean };
+  twilio: { configured: boolean; number: string; webhookUrl: string; statusUrl: string; fallbackUrl: string; forwardOk: boolean; speechModel?: string };
   line: { configured: boolean; webhookUrl: string; addFriendUrl: string };
   admin: { protected: boolean };
 }

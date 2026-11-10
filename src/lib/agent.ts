@@ -15,6 +15,7 @@ import { acceptsOffer, formatPhone, normalizeDraft } from "./intake";
 import { getKnowledge } from "./knowledge";
 import { OFFER_NOT_YET, OFFER_NOW, offerDue, offerTooEarly } from "./offer";
 import { canRetryWithChatModel, chatCompletionJson } from "./openai";
+import { replaceAddressText } from "./phone-ask";
 import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt, isFullDocumentContext } from "./prompts";
 import { SALES_DECLINE, SalesPitchError } from "./sales";
 import { getSession, getSettings, saveSession, upsertConversation } from "./store";
@@ -503,6 +504,19 @@ export async function runTurn(
       result.stage = "collecting";
       result.reply = missingPrompt(result.draft);
       result.done = false;
+    }
+  }
+
+  // 電話：伺ったご住所の町名が熊本県・大牟田市の町名の一覧にない（「岱明町」が「大名町」と聞こえた など）→ 復唱の前に、
+  // 会話から読みの合う町名に直して、直した町名で復唱する（受付のときに直すだけだと、お客様は聞き違えた町名の復唱に「はい」と答えてしまう）
+  if (session.channel === "phone" && env.hasOpenAI && !result.estimate) {
+    const heard = result.draft.address?.trim();
+    if (heard && heard !== session.draft.address?.trim()) {
+      const fixed = await fixAddress(heard, session.messages, { spoken: true }).catch(() => null);
+      if (fixed && !fixed.unsure && fixed.address !== heard) {
+        result.reply = replaceAddressText(result.reply, heard, fixed.address);
+        result.draft = { ...result.draft, dates: [...result.draft.dates], address: fixed.address };
+      }
     }
   }
 

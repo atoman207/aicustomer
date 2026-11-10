@@ -1,4 +1,5 @@
 import type { PhoneSettings } from "./types";
+import { e164Japan } from "./utils";
 
 export interface JapanNow {
   date: string; // YYYY-MM-DD
@@ -52,26 +53,66 @@ export function isBusinessHours(settings: PhoneSettings, at: Date = new Date()):
   return now.minutes >= open && now.minutes < close;
 }
 
+/**
+ * AI の電話番号（Twilio）に届いた着信をどうするか：
+ *   ai：AI が受ける ／ dial：転送先（スタッフ）へつなぐ（出なければ AI か「おかけ直しください」）／
+ *   ai_after_staff：スタッフ対応の時間だが、転送先がない・転送先から転送されてきた
+ *     ＝お店の電話（0120 の着信先）が先に鳴り、出られなかったお電話（NTT のボイスワープの無応答時・話中時転送）→ AI が代わりに受ける ／
+ *   closed：AI 停止中（常にスタッフ対応）で、つなぐ先がない →「おかけ直しください」とご案内して終える
+ */
+export type CallAction = "ai" | "dial" | "ai_after_staff" | "closed";
+
 export interface PhoneRouting {
   handler: "ai" | "human";
   inBusinessHours: boolean;
   reason: string;
+  action: CallAction;
 }
 
-/** 現在の設定・時刻からAI対応か人間（転送）対応かを判定 */
-export function resolvePhoneRouting(settings: PhoneSettings, at: Date = new Date()): PhoneRouting {
+export interface RoutingOptions {
+  /** この着信が転送先の番号から転送されてきた（つなぎ返すと、転送がぐるぐる回る） */
+  fromForwardLine?: boolean;
+}
+
+/** 現在の設定・時刻から、AI 対応かスタッフ対応か・AI の番号に届いた着信をどうするかを判定 */
+export function resolvePhoneRouting(settings: PhoneSettings, at: Date = new Date(), opts: RoutingOptions = {}): PhoneRouting {
   const inHours = isBusinessHours(settings, at);
-  switch (settings.mode) {
-    case "ai_always":
-      return { handler: "ai", inBusinessHours: inHours, reason: "設定：常時AI対応" };
-    case "human_always":
-      return { handler: "human", inBusinessHours: inHours, reason: "設定：常にスタッフ対応（転送）" };
-    case "ai_off_hours":
-    default:
-      return inHours
-        ? { handler: "human", inBusinessHours: true, reason: "営業時間内のためスタッフ対応（転送）" }
-        : { handler: "ai", inBusinessHours: false, reason: "休日・営業時間外のためAI対応" };
+  const handler: PhoneRouting["handler"] =
+    settings.mode === "ai_always" ? "ai" : settings.mode === "human_always" ? "human" : inHours ? "human" : "ai";
+  const canDial = Boolean(e164Japan(settings.forwardNumber)) && !opts.fromForwardLine;
+  if (handler === "ai") {
+    const reason = settings.mode === "ai_always" ? "設定：常時AI対応" : "休日・営業時間外のためAI対応";
+    return { handler, inBusinessHours: inHours, reason, action: "ai" };
   }
+  const why = settings.mode === "human_always" ? "設定：常にスタッフ対応（AI停止）" : "営業時間内のためスタッフ対応";
+  if (canDial) {
+    const after = settings.mode === "human_always" ? "出られなければ、おかけ直しのご案内" : "出られなければAIが代わりに受付";
+    return { handler, inBusinessHours: inHours, reason: `${why}。転送先の電話へおつなぎ（${after}）`, action: "dial" };
+  }
+  if (settings.mode === "human_always") {
+    return { handler, inBusinessHours: inHours, reason: `${why}。AIの番号に届いたお電話は、おかけ直しのご案内`, action: "closed" };
+  }
+  return {
+    handler,
+    inBusinessHours: inHours,
+    reason: `${why}。お店の電話が先に鳴り、出られなかったお電話（転送されてきたお電話）はAIが代わりに受付`,
+    action: "ai_after_staff",
+  };
+}
+
+/** 営業時間の読み上げ（「平日の、午前8時から午後6時まで」） */
+export function spokenBusinessHours(settings: PhoneSettings): string {
+  const days = settings.businessDays.slice().sort();
+  const dayText =
+    days.join(",") === "1,2,3,4,5" ? "平日" : days.join(",") === "1,2,3,4,5,6" ? "月曜日から土曜日" : days.map((d) => `${DAY_LABEL[d]}曜日`).join("、");
+  const clock = (hhmm: string) => {
+    const m = toMinutes(hhmm);
+    const h = Math.floor(m / 60) % 24;
+    const min = m % 60;
+    if (h === 12 && !min) return "正午";
+    return `${h < 12 ? "午前" : "午後"}${h % 12}時${min ? `${min}分` : ""}`;
+  };
+  return `${dayText ? `${dayText}の、` : ""}${clock(settings.openTime)}から${clock(settings.closeTime)}まで`;
 }
 
 export function describeBusinessHours(settings: PhoneSettings): string {

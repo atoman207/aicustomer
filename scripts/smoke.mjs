@@ -126,7 +126,7 @@ await check("POST /api/chat（料金：AI があれば資料の全文から・�
 await check("POST /api/knowledge/answer（営業時間はスプレッドシートの内容で回答）", async () => {
   const { res, body } = await json("/api/knowledge/answer", { method: "POST", body: JSON.stringify({ question: "営業時間を教えてください" }) });
   const reply = String(body.reply ?? "").normalize("NFKC");
-  if (!res.ok || !/(8:00|8時)/.test(reply) || !/(17:00|17時|5時)/.test(reply)) throw new Error(`${body.mode} ${String(body.reply).slice(0, 80)}`);
+  if (!res.ok || !/(8:00|8時)/.test(reply) || !/(18:00|18時|6時)/.test(reply)) throw new Error(`${body.mode} ${String(body.reply).slice(0, 80)}`);
   return `${body.mode}/${body.kind}: ${body.reply.slice(0, 30)}…`;
 });
 await check("POST /api/knowledge/answer（料金表・シートにない質問）", async () => {

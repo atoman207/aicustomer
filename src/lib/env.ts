@@ -263,6 +263,14 @@ export const env = {
   get twilioVoice() {
     return str("TWILIO_TTS_VOICE", "Polly.Kazuha-Neural");
   },
+  /**
+   * 電話の音声認識のモデル（Twilio の <Gather speechModel>）。既定の phone_call は電話の音声向けで、日本語の対応が Twilio の資料に明記されている。
+   * deepgram_nova-3・googlev2_telephony_short などに切り替えられる（試験通話で日本語を受けることを確かめてから。すぐ phone_call に戻せる）
+   */
+  get twilioSpeechModel() {
+    const v = str("TWILIO_SPEECH_MODEL", "phone_call");
+    return /^[A-Za-z0-9_.-]{2,60}$/.test(v) ? v : "phone_call";
+  },
   get hasTwilio() {
     return this.twilioAccountSid !== "" && this.twilioAuthToken !== "";
   },

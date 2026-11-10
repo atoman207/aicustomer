@@ -12,6 +12,14 @@ export async function GET(req: Request) {
   const denied = await requireAdmin();
   if (denied) return denied;
   const url = new URL(req.url);
+  // 受付一覧の「会話を見る」：受付番号（と会話の ID）から、その受付の会話を 1 件
+  const estimate = (url.searchParams.get("estimate") ?? "").trim().slice(0, 40);
+  const session = (url.searchParams.get("session") ?? "").trim().slice(0, 80);
+  if (estimate || session) {
+    const direct = session ? await getConversation(session) : null;
+    const found = direct ?? (estimate ? (await listConversations(300)).find((c) => c.estimateId === estimate) ?? null : null);
+    return json({ ok: true, conversation: found });
+  }
   const limit = Math.min(300, Math.max(1, Number(url.searchParams.get("limit") ?? 100) || 100));
   return json({ ok: true, conversations: await listConversations(limit) });
 }

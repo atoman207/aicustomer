@@ -6,8 +6,8 @@ export const BRAND = {
   legalName: "株式会社一畳屋",
   freeDial: "0120-158-108",
   freeDialTel: "0120158108",
-  hours: "8:00 - 17:00",
-  hoursNote: "土日の工事もOK！（3週間前までに要予約）",
+  hours: "8:00 - 18:00",
+  hoursNote: "土・祝日の工事もOK！（ご予約が必要です）",
   /** 電話ボタンに添える一言（営業時間外・土日は AI が電話を受け付ける） */
   phoneAiNote: "営業時間外・土日はAIが受付",
   copyright: "© ICHIJOYA. All Rights Reserved.",

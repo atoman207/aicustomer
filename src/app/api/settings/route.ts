@@ -2,7 +2,7 @@ import { describeBusinessHours, japanNow, resolvePhoneRouting } from "@/lib/hour
 import { error, json, readJson, requireAdmin } from "@/lib/http";
 import { invalidateKnowledgeCache } from "@/lib/knowledge";
 import { parseSheetLink } from "@/lib/sheet-link";
-import { getSettings, saveSettings } from "@/lib/store";
+import { getSettings, saveSettings, storageInfo } from "@/lib/store";
 import type { AppSettings, PhoneMode, PhoneSettings } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -21,6 +21,8 @@ async function describe() {
     routing: resolvePhoneRouting(settings.phone),
     now: japanNow().display,
     hoursLabel: describeBusinessHours(settings.phone),
+    // 設定の保存先（Redis がないサーバーレスでは、保存した設定が再起動・別のサーバーで元に戻る）
+    persistent: storageInfo().persistent,
   };
 }
 

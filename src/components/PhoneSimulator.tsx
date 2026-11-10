@@ -42,6 +42,20 @@ interface Routing {
   handler: "ai" | "human";
   inBusinessHours: boolean;
   reason: string;
+  /** 実際の着信での動き（hours.ts の CallAction） */
+  action?: "ai" | "dial" | "ai_after_staff" | "closed";
+}
+
+/** スタッフ対応の時間・AI 停止中に、実際のお電話がどうなるか（シミュレーターの説明） */
+function staffNote(routing: Routing | null, forwardNumber: string | undefined): string {
+  switch (routing?.action) {
+    case "ai_after_staff":
+      return "実際のお電話は、いまの時間帯はまずお店の電話が鳴り、出られなかったお電話だけがAI受付に転送されます（AIは「担当者が出られないため、代わりに伺います」とお受けします）。";
+    case "closed":
+      return "AI停止中です。実際のお電話は、AIの番号に届くと「改めておかけ直しください」とご案内して終わります（転送先があれば、先におつなぎします）。";
+    default:
+      return `実際のお電話は、いまの時間帯はスタッフにおつなぎします（転送先：${forwardNumber || "管理画面で設定"}）。出られなければAI受付が代わりにお受けします。`;
+  }
 }
 interface StartResp {
   ok: boolean;
@@ -288,7 +302,7 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
       case "ringing":
         return "呼び出し中…";
       case "transfer":
-        return "営業時間内のためスタッフへ転送中…";
+        return routing?.action === "closed" ? "AI停止中（常にスタッフ対応）" : "スタッフ対応の時間です";
       case "live":
         return speaking ? "AI受付が話しています" : listening || interim ? "聞き取り中…" : "お話しください";
       case "ended":
@@ -346,9 +360,7 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
                 <div className="mx-auto mt-6 max-w-[92%] rounded-2xl bg-white/95 p-4 text-center text-xs leading-relaxed text-sumi-700">
                   <PhoneForwarded className="mx-auto mb-1 h-5 w-5 text-ai-600" />
                   <p className="font-bold text-sumi-800">{routing?.reason}</p>
-                  <p className="mt-1">
-                    実際のお電話は、いまの時間帯はスタッフに転送されます（転送先：{info?.forwardNumber || "管理画面で設定"}）。
-                  </p>
+                  <p className="mt-1">{staffNote(routing, info?.forwardNumber)}</p>
                   <p className="mt-1">このシミュレーターでは、休日・時間外と同じAI受付をそのままお試しいただけます。</p>
                   <button type="button" className="btn-accent mt-3 w-full py-2 text-sm" onClick={() => startCall(true)}>
                     AI受付で試す
@@ -413,7 +425,13 @@ export default function PhoneSimulator({ companyPhone, initialMode }: { companyP
         <div className="card p-5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="font-serif text-base font-bold text-sumi-800">対応ルーティング（AI／スタッフ切替）</p>
-            {routing ? <Badge tone={routing.handler === "ai" ? "green" : "blue"}>{routing.handler === "ai" ? "AI受付が対応" : "スタッフへ転送"}</Badge> : <Badge>発信すると判定します</Badge>}
+            {routing ? (
+              <Badge tone={routing.handler === "ai" ? "green" : "blue"}>
+                {routing.handler === "ai" ? "AI受付が対応" : routing.action === "closed" ? "スタッフ対応（AI停止）" : "スタッフ対応（出られなければAI）"}
+              </Badge>
+            ) : (
+              <Badge>発信すると判定します</Badge>
+            )}
           </div>
           <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
             <div className="rounded-xl bg-washi-100 px-3 py-2">

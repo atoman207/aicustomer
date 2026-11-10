@@ -44,6 +44,7 @@ export async function getIntegrationStatus(baseUrl: string, check = false): Prom
       fallbackUrl: `${baseUrl}/api/twilio/fallback`,
       // 担当者へつなぐ番号が国際形式にできるか（できなければ、営業時間内も AI が受ける）
       forwardOk: e164Japan((await getSettings()).phone.forwardNumber) !== "",
+      speechModel: env.twilioSpeechModel,
     },
     line: {
       configured: env.hasLine,

@@ -10,7 +10,7 @@ export function infoPhoto(name: string) {
 }
 
 export const BUSINESS = {
-  hours: "8:00〜17:00",
+  hours: "8:00〜18:00",
   closed: "土曜・日曜",
   otherHolidays: "年末年始・GW・お盆休み",
   holidayNote: "祝日は営業している日も多いため、事前にご確認ください。",

@@ -8,13 +8,15 @@ import { after } from "next/server";
 import { TRANSFER_FAILED, TRANSFER_FAILED_RETRY, createSession, greetingFor, handOffTurn, runTurn } from "./agent";
 import { env } from "./env";
 import { logError } from "./errorlog";
-import { resolvePhoneRouting } from "./hours";
+import { resolvePhoneRouting, spokenBusinessHours } from "./hours";
 import { getCookie, xml } from "./http";
+import { formatPhone } from "./intake";
+import { type AskKind, KEYPAD_HINT, askKind, hintsFor, townsToKana } from "./phone-ask";
 import { CALL_COOKIE, callCookieHeader, decodeCallCookie } from "./session-codec";
 import { getSession, getSettings, saveSession } from "./store";
 import { dial, gather, hangup, redirect, say, twimlResponse } from "./twiml";
-import type { AgentSession } from "./types";
-import { uid } from "./utils";
+import type { AgentSession, AppSettings } from "./types";
+import { e164Japan, uid } from "./utils";
 
 /** この時間を過ぎても答えができなければ「少々お待ちください」を伝える（PHONE_HOLD_AFTER_MS で変えられる。試験用） */
 const holdAfterMs = () => Number(process.env.PHONE_HOLD_AFTER_MS) || 6000;
@@ -27,7 +29,23 @@ const HOLD_TEXT = ["ただいまお調べしております。少々お待ちく
 const SLOW_TEXT = "お待たせして申し訳ございません。ただいまお答えの準備に時間がかかっております。恐れ入りますが、もう一度お話しいただけますか？";
 const ERROR_RETRY = "申し訳ございません、うまくお話を伺えませんでした。恐れ入りますが、もう一度お話しいただけますか？";
 export const SYSTEM_DOWN = "申し訳ございません、ただいまAI受付がご利用いただけません。恐れ入りますが、営業時間内に改めてお電話ください。お電話ありがとうございました。";
+/** 担当者へつないだが出なかった（このお電話で「担当者におつなぎします」とお伝えしたあと） */
 const STAFF_AWAY_LEAD = "お待たせいたしました。ただいま担当者が電話に出られないため、AI受付が代わりにご用件を伺います。";
+/** お店の電話が先に鳴り、出られなかったお電話（ボイスワープで転送されてきた）：AI の最初のひと言 */
+const forwardedLead = (company: string) => `お電話ありがとうございます。畳の${company}です。ただいま担当者が電話に出られないため、AI受付が代わりにご用件を伺います。`;
+const STAFF_AWAY_ASK = "畳・襖・障子・網戸のご相談や、無料お見積りのご依頼を、どうぞお話しください。";
+
+/**
+ * AI 停止中（常にスタッフ対応）で、担当者が出られなかった・つなぐ先がない：おかけ直しのご案内（AI は伺わない）。
+ * greet：お電話を受けて最初のひと言（担当者へつなぐとお伝えしたあとでなければ、会社名から）
+ */
+export function closedReply(settings: AppSettings, inBusinessHours: boolean, greet: boolean): string {
+  const head = greet ? `お電話ありがとうございます。畳の${settings.companyName}です。` : "申し訳ございません。";
+  const body = inBusinessHours
+    ? "ただいま、担当者が電話に出られません。恐れ入りますが、しばらくしてから改めておかけ直しください。"
+    : `ただいま営業時間外です。営業時間は、${spokenBusinessHours(settings.phone)}です。恐れ入りますが、営業時間内に改めておかけ直しください。`;
+  return `${head}${body}お電話ありがとうございました。`;
+}
 
 interface CallReply {
   body: string;
@@ -100,6 +118,31 @@ export async function loadCallSession(req: Request, sessionId: string): Promise<
   return stored ?? fromCookie;
 }
 
+/** 前の問いの種類（聞き取れなかったときに、同じ聞き取り方で聞き直す） */
+function lastAsk(session: AgentSession): AskKind {
+  const k = session.meta?.ask as AskKind | undefined;
+  return k && ["consult", "name", "address", "phone", "dates", "confirm"].includes(k) ? k : "consult";
+}
+
+/**
+ * AI の発話を読み上げて、お客様の答えを聞く。問いの種類に合わせて聞き取り方を変える（phone-ask.ts）：
+ * お電話番号は電話のボタンでも受け（最初の 1 回はご案内を添える）、ご住所は市区町村・町名のヒント、復唱の町名は読み方のひらがなで読む
+ */
+async function askGather(session: AgentSession, reply: string, actionUrl: string): Promise<string> {
+  const kind = askKind(reply, session.stage);
+  let text = reply;
+  if (kind === "phone" && session.meta?.keypadHinted !== "1" && !/ボタン/.test(reply)) {
+    text = `${reply}\n${KEYPAD_HINT}`;
+    // 会話の記録にも、お伝えしたとおりに残す
+    const last = session.messages[session.messages.length - 1];
+    if (last?.role === "assistant" && last.content === reply) last.content = text;
+    session.meta = { ...(session.meta ?? {}), keypadHinted: "1" };
+  }
+  session.meta = { ...(session.meta ?? {}), ask: kind };
+  await saveSession(session).catch(() => undefined);
+  return gather(townsToKana(text, session.draft.address), actionUrl, env.twilioVoice, { kind, hints: hintsFor(kind, session.draft.address) });
+}
+
 /** お客様の発言（Twilio の音声認識の結果）への 1 ターン。問題が起きても TwiML を返す */
 async function computeReply(session: AgentSession, speech: string, base: string): Promise<CallReply> {
   const voice = env.twilioVoice;
@@ -115,7 +158,10 @@ async function computeReply(session: AgentSession, speech: string, base: string)
         const { result, session: updated } = await handOffTurn(session, "unheard");
         return { body: hangup(result.reply, voice), session: updated };
       }
-      return { body: gather("恐れ入ります、もう一度お話しください。", actionUrl, voice), session };
+      // 同じ問いの聞き取り方で聞き直す（お電話番号ならボタンでも受ける）
+      const kind = lastAsk(session);
+      const again = kind === "phone" ? `恐れ入ります、もう一度お話しください。${KEYPAD_HINT}` : "恐れ入ります、もう一度お話しください。";
+      return { body: gather(again, actionUrl, voice, { kind, hints: hintsFor(kind, session.draft.address) }), session };
     }
     session.emptyTurns = 0;
     const { result, session: updated } = await runTurn(session, speech);
@@ -125,15 +171,25 @@ async function computeReply(session: AgentSession, speech: string, base: string)
       const then = result.estimate ? "callback" : "retry";
       return { body: dial(result.transfer, result.reply, voice, { action: `${base}/api/twilio/dial?then=${then}`, callerId: env.twilioPhoneNumber || undefined }), session: updated };
     }
-    if (result.done) return { body: hangup(result.reply, voice), session: updated };
-    return { body: gather(result.reply, actionUrl, voice), session: updated };
+    if (result.done) return { body: hangup(townsToKana(result.reply, updated.draft.address), voice), session: updated };
+    return { body: await askGather(updated, result.reply, actionUrl), session: updated };
   } catch (e) {
     await logError("phone", "AI電話（お客様の発言への応答）", e).catch(() => undefined);
     const errors = Number(session.meta?.turnErrors ?? 0) + 1;
     session.meta = { ...(session.meta ?? {}), turnErrors: String(errors) };
     await saveSession(session).catch(() => undefined);
-    return errors >= 2 ? { body: hangup(SYSTEM_DOWN, voice), session } : { body: gather(ERROR_RETRY, actionUrl, voice), session };
+    const kind = lastAsk(session);
+    return errors >= 2
+      ? { body: hangup(SYSTEM_DOWN, voice), session }
+      : { body: gather(ERROR_RETRY, actionUrl, voice, { kind, hints: hintsFor(kind, session.draft.address) }), session };
   }
+}
+
+/** お客様が電話のボタンで押した番号（お電話番号の問い）を、発言として扱う */
+function keypadSpeech(digits: string | undefined): string {
+  const d = (digits ?? "").replace(/\D/g, "");
+  if (!d) return "";
+  return `${formatPhone(d) || d}（電話のボタンで入力）`;
 }
 
 function holdResponse(base: string, holds: number, cookieSession: AgentSession): Response {
@@ -150,7 +206,7 @@ export async function answerCall(req: Request, params: Record<string, string>, b
     (await loadCallSession(req, sessionId)) ?? (await createSession("phone", sessionId, { callSid, callerNumber: params.From ?? "" }));
   if (new URL(req.url).searchParams.get("resume") === "1") return resumeCall(req, session, callSid, base);
 
-  const speech = (params.SpeechResult ?? "").trim();
+  const speech = (params.SpeechResult ?? "").trim() || keypadSpeech(params.Digits);
   // 答えを作る前の状態（時間がかかったときの Cookie。別のインスタンスでも作り直せるように、お客様の発言も入れる）
   const before = withPending(session, speech, 1);
   const work = computeReply(session, speech, base);
@@ -179,28 +235,47 @@ async function resumeCall(req: Request, session: AgentSession, callSid: string, 
   if (holds >= MAX_HOLDS) {
     pending.delete(callSid);
     await logError("phone", "AI電話（答えに時間がかかり、もう一度お話しいただいた）", `${holds} 回お待たせしても答えができませんでした`).catch(() => undefined);
-    return respond({ body: gather(SLOW_TEXT, `${base}/api/twilio/gather`, env.twilioVoice), session: clearPending(cookie ?? session) });
+    const s = clearPending(cookie ?? session);
+    const kind = lastAsk(s);
+    return respond({ body: gather(SLOW_TEXT, `${base}/api/twilio/gather`, env.twilioVoice, { kind, hints: hintsFor(kind, s.draft.address) }), session: s });
   }
   return holdResponse(base, holds + 1, withPending(cookie ?? session, speech, holds + 1));
 }
 
 /**
- * AI が電話を受ける（着信・担当者が出なかったとき）。lead があれば、あいさつの代わりに使う（担当者が出なかったときのおわび）
+ * 発信者番号として使える番号か：AI の番号・転送先（お店の電話）の番号は、お客様の番号ではない
+ * （転送の仕方によっては、転送元の番号が届くことがある。その番号へ「折り返します」と言わないように。わからなければお客様に伺う）
  */
-export async function startAiCall(params: Record<string, string>, base: string, opts: { staffAway?: boolean } = {}): Promise<Response> {
+function callerOf(from: string | undefined, settings: AppSettings): string {
+  const n = e164Japan(from);
+  if (!n) return from ?? "";
+  if (n === e164Japan(env.twilioPhoneNumber) || n === e164Japan(settings.phone.forwardNumber)) return "";
+  return from ?? "";
+}
+
+/**
+ * AI が電話を受ける（着信・担当者が出なかったとき）。staffAway：担当者が出られなかったお電話
+ * （dial＝このお電話で担当者へつないだが出なかった・forwarded＝お店の電話が先に鳴り、出られずに転送されてきた）。
+ * そのときは、あいさつの代わりに「担当者が出られないため、AI受付が代わりに伺います」と伝える
+ */
+export async function startAiCall(params: Record<string, string>, base: string, opts: { staffAway?: "dial" | "forwarded" } = {}): Promise<Response> {
   const settings = await getSettings();
   const routing = resolvePhoneRouting(settings.phone);
   const callSid = params.CallSid || uid();
   const session = await createSession("phone", `tw_${callSid}`, {
     callSid,
-    callerNumber: params.From ?? "",
+    callerNumber: callerOf(params.From, settings),
     calledNumber: params.To ?? "",
+    ...(params.ForwardedFrom ? { forwardedFrom: params.ForwardedFrom } : {}),
     routing: routing.reason,
     ...(opts.staffAway ? { staffUnanswered: "1" } : {}),
   });
-  const greeting = opts.staffAway
-    ? `${STAFF_AWAY_LEAD}畳・襖・障子・網戸のご相談や、無料お見積りのご依頼を、どうぞお話しください。`
-    : await greetingFor("phone");
+  const greeting =
+    opts.staffAway === "dial"
+      ? `${STAFF_AWAY_LEAD}${STAFF_AWAY_ASK}`
+      : opts.staffAway === "forwarded"
+        ? `${forwardedLead(settings.companyName)}${STAFF_AWAY_ASK}`
+        : await greetingFor("phone");
   session.messages.push({ role: "assistant", content: greeting, at: new Date().toISOString() });
   await saveSession(session);
   return xml(twimlResponse(gather(greeting, `${base}/api/twilio/gather`, env.twilioVoice)), { "Set-Cookie": callCookieHeader(session) });
@@ -209,6 +284,7 @@ export async function startAiCall(params: Record<string, string>, base: string, 
 /**
  * POST /api/twilio/dial?then=…（担当者へつないだ結果。DialCallStatus）。出たら終わる。出なかったら：
  *   then=ai：着信を担当者へつないだが出なかった → AI が代わりに受ける
+ *   then=closed：同じ（AI 停止中＝常にスタッフ対応）→ おかけ直しのご案内（AI は伺わない）
  *   then=callback：AI の会話から担当者へつないだ（折り返しの受付を記録済み）→ 折り返しのご案内
  *   then=retry：同じ（記録できていない）→ AI が続けて伺う
  */
@@ -217,7 +293,11 @@ export async function afterDial(req: Request, params: Record<string, string>, ba
   if (status === "completed" || status === "answered") return xml(twimlResponse("<Hangup/>"));
   const then = new URL(req.url).searchParams.get("then") ?? "";
   const voice = env.twilioVoice;
-  if (then === "ai") return startAiCall(params, base, { staffAway: true });
+  if (then === "ai") return startAiCall(params, base, { staffAway: "dial" });
+  if (then === "closed") {
+    const settings = await getSettings();
+    return xml(twimlResponse(hangup(closedReply(settings, resolvePhoneRouting(settings.phone).inBusinessHours, false), voice)));
+  }
   if (then === "callback") return xml(twimlResponse(hangup(TRANSFER_FAILED, voice)));
   const callSid = params.CallSid || "unknown";
   const session = await loadCallSession(req, `tw_${callSid}`);
