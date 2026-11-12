@@ -1,9 +1,12 @@
-import { describeBusinessHours, japanNow, resolvePhoneRouting } from "@/lib/hours";
+import { env } from "@/lib/env";
+import { describeBusinessHours, japanNow, resolvePhoneRouting, spokenBusinessHours } from "@/lib/hours";
 import { error, json, readJson, requireAdmin } from "@/lib/http";
-import { invalidateKnowledgeCache } from "@/lib/knowledge";
+import { getKnowledge, invalidateKnowledgeCache } from "@/lib/knowledge";
+import { DEFAULT_STAFF_AWAY, fillGuide } from "@/lib/phone-guide";
 import { parseSheetLink } from "@/lib/sheet-link";
 import { getSettings, saveSettings, storageInfo } from "@/lib/store";
 import type { AppSettings, PhoneMode, PhoneSettings } from "@/lib/types";
+import { fillTemplate } from "@/lib/utils";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +15,26 @@ export const maxDuration = 60;
 const MODES: PhoneMode[] = ["ai_always", "ai_off_hours", "human_always"];
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+/** AI電話の案内文：いま読み上げる文と、スプレッドシート（「AI電話の案内文」のタブ）から読んだか */
+async function phoneGuideStatus(settings: AppSettings) {
+  const guide = (await getKnowledge().catch(() => null))?.phoneGuide;
+  const vars = { company: settings.companyName, hours: spokenBusinessHours(settings.phone) };
+  const scene = (label: string, sheet: string | undefined, fallback: string) => ({
+    label,
+    fromSheet: Boolean(sheet),
+    text: sheet ? fillGuide(sheet, vars) : fallback,
+  });
+  return {
+    tab: env.phoneGuideTab,
+    error: guide?.error ?? (env.phoneGuideTab && !env.hasServiceAccount ? "スプレッドシートに接続されていないため、既定の案内文を使います" : undefined),
+    scenes: [
+      scene("最初のガイダンス（休日・営業時間外）", guide?.offHours, fillTemplate(settings.greeting, { company: settings.companyName })),
+      scene("最初のガイダンス（営業時間内にスタッフが出られなかったとき）", guide?.staffAway, fillGuide(DEFAULT_STAFF_AWAY, vars)),
+      scene("AIを停止しているときの案内", guide?.aiStopped, "（時間帯に合わせた既定の文：営業時間内は「しばらくしてから改めておかけ直しください」、時間外は営業時間をご案内）"),
+    ],
+  };
+}
 
 async function describe() {
   const settings = await getSettings();
@@ -23,6 +46,7 @@ async function describe() {
     hoursLabel: describeBusinessHours(settings.phone),
     // 設定の保存先（Redis がないサーバーレスでは、保存した設定が再起動・別のサーバーで元に戻る）
     persistent: storageInfo().persistent,
+    phoneGuide: await phoneGuideStatus(settings),
   };
 }
 

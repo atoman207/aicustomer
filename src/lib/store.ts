@@ -238,11 +238,12 @@ export function storageInfo(): StorageInfo {
 // ---------- 設定 ----------
 
 /** 設定の版。これより古い保存値は、以前の既定値のままなら新しい既定値に移行する */
-const SETTINGS_REV = 3;
+const SETTINGS_REV = 4;
 /** 以前の既定の挨拶（スタッフが書き換えていなければ新しい既定に置き換える） */
 const LEGACY_GREETINGS = [
   "お電話ありがとうございます。{company}のAI受付です。畳・襖・障子・網戸・リフォームに関するご質問や、お見積りのご依頼を承ります。ご用件をどうぞ。",
   "お電話ありがとうございます。畳の{company}、AI受付です。畳・襖・障子・網戸のご相談や、無料お見積りのご依頼を承ります。ご用件をどうぞ。",
+  "お電話ありがとうございます。畳の{company}、AI受付です。畳・襖・障子・網戸から住まいのリフォームまで、ご相談や無料お見積りのご依頼を承ります。ご用件をどうぞ。",
 ];
 
 export function defaultSettings(): AppSettings {
@@ -251,8 +252,9 @@ export function defaultSettings(): AppSettings {
     companyPhone: env.companyPhone,
     lineAddFriendUrl: env.lineAddFriendUrl,
     knowledgeSheetUrl: "",
+    // 一畳屋様の文案（2026-11-10）。スプレッドシートの「AI電話の案内文」に最初のガイダンスがあれば、そちらを読み上げる
     greeting:
-      "お電話ありがとうございます。畳の{company}、AI受付です。畳・襖・障子・網戸から住まいのリフォームまで、ご相談や無料お見積りのご依頼を承ります。ご用件をどうぞ。",
+      "お電話ありがとうございます。{company}です。ただいまの時間は、AIがお電話を承っております。お見積もりのご予約はもちろん、商品についてのご質問やご相談にも、できる限りお答えいたします。本日はどのようなご用件でしょうか？",
     // 営業時間 8:00〜18:00・土日定休。休業日（年末年始・GW・お盆など）と時間外は AI が受付
     phone: {
       mode: "ai_off_hours",
@@ -288,7 +290,8 @@ export async function getSettings(): Promise<AppSettings> {
   if (!merged.lineAddFriendUrl) merged.lineAddFriendUrl = def.lineAddFriendUrl;
   if ((saved.rev ?? 0) < SETTINGS_REV) {
     if (LEGACY_GREETINGS.includes(merged.greeting) || /リフォームに関するご質問/.test(merged.greeting)) merged.greeting = def.greeting;
-    if (isLegacyHours(merged.phone)) {
+    // 営業時間の移行は版 3（8:00〜18:00）まで。版 3 のあとに保存した営業時間（17:00 を選び直した など）はそのまま
+    if ((saved.rev ?? 0) < 3 && isLegacyHours(merged.phone)) {
       merged.phone = { ...merged.phone, businessDays: def.phone.businessDays, openTime: def.phone.openTime, closeTime: def.phone.closeTime };
     }
     merged.rev = SETTINGS_REV;

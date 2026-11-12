@@ -235,6 +235,14 @@ export const env = {
     const v = str("STAFF_NOTES_TAB", "修正点など");
     return v.toLowerCase() === "off" ? "" : v;
   },
+  /**
+   * AI電話の決まった案内文（最初のガイダンス・AI停止中の案内）を書くタブ（回答用と同じスプレッドシート）。
+   * 書き換えると約 1 分で AI電話に反映する。「off」で使わない（管理画面の「電話の第一声」と既定の文）
+   */
+  get phoneGuideTab() {
+    const v = str("PHONE_GUIDE_TAB", "AI電話の案内文");
+    return v.toLowerCase() === "off" ? "" : v;
+  },
   get knowledgeCacheSeconds() {
     const n = Number(str("KNOWLEDGE_CACHE_SECONDS", "60"));
     return Number.isFinite(n) && n >= 5 ? n : 60;

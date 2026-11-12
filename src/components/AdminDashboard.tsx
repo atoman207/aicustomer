@@ -423,28 +423,73 @@ async function copyText(text: string): Promise<boolean> {
 
 /**
  * 受付を LINE で担当店舗・営業担当に引き継ぐ（スプレッドシートの「LINE共有」メニューと同じ文）。
- * スマホ：LINE を開いて送り先を選ぶだけ（LINE の共有のリンク。パソコン版の LINE では使えない）／パソコン：文をコピーして LINE に貼り付け
+ * スマホ：LINE を開いて送り先を選ぶだけ（LINE の共有のリンク。パソコン版の LINE では使えない）／パソコン：文をコピーして LINE に貼り付け。
+ * 共有したあと、未連絡の受付には「連絡済にする」を出す（スプレッドシートの「LINE共有」の画面の「連絡済にする」と同じ。
+ * 一畳屋様のご質問 2026-11-12「受付内容をLINEにコピペして連絡済にする設定」：シートの画面は Apps Script が入っているときだけ出るため、
+ * 管理画面でも同じ流れでできるようにした）
  */
-function LineShareButton({ e, className }: { e: EstimateRequest; className: string }) {
+function LineShareButton({
+  e,
+  className,
+  markClassName,
+  onContacted,
+}: {
+  e: EstimateRequest;
+  className: string;
+  /** 「連絡済にする」の見た目（スマホのカードでは 1 行を使う） */
+  markClassName?: string;
+  onContacted?: () => void;
+}) {
   const [phone, setPhone] = useState(false);
   const [done, setDone] = useState("");
+  const [shared, setShared] = useState(false);
+  const mark =
+    shared && onContacted && e.status === "new" ? (
+      <button
+        type="button"
+        className={`btn-primary ${markClassName ?? className}`}
+        onClick={() => {
+          onContacted();
+          setShared(false);
+        }}
+        title="LINE で引き継いだら、対応状況を「連絡済」にします（スプレッドシートの受付一覧も連絡済になります）"
+        data-mark-contacted={e.id}
+      >
+        <CheckCircle2 className="h-3.5 w-3.5" />
+        連絡済にする
+      </button>
+    ) : null;
   useEffect(() => {
     setPhone(/iPhone|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
   }, []);
   const label = `${e.name} さんの受付を LINE で共有`;
   if (phone) {
     return (
-      <a href={lineShareUrl(lineShareText(e))} target="_blank" rel="noopener noreferrer" className={`btn-secondary ${className}`} aria-label={label} data-line-share={e.id}>
-        <Send className="h-3.5 w-3.5" />
-        LINE共有
-      </a>
+      <>
+        <a
+          href={lineShareUrl(lineShareText(e))}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`btn-secondary ${className}`}
+          aria-label={label}
+          data-line-share={e.id}
+          onClick={() => setShared(true)}
+        >
+          <Send className="h-3.5 w-3.5" />
+          LINE共有
+        </a>
+        {mark}
+      </>
     );
   }
   async function copy() {
-    setDone((await copyText(lineShareText(e))) ? "コピー済み" : "コピー不可");
+    const ok = await copyText(lineShareText(e));
+    setDone(ok ? "コピー済み" : "コピー不可");
+    if (ok) setShared(true);
     setTimeout(() => setDone(""), 2500);
   }
   return (
+    <>
     <button
       type="button"
       className={`btn-secondary ${className}`}
@@ -456,6 +501,8 @@ function LineShareButton({ e, className }: { e: EstimateRequest; className: stri
       {done === "コピー済み" ? <CheckCircle2 className="h-3.5 w-3.5 text-tatami-500" /> : <Send className="h-3.5 w-3.5" />}
       {done || "LINE共有"}
     </button>
+    {mark}
+    </>
   );
 }
 
@@ -494,9 +541,14 @@ function ReceptionCard({ e, open, onToggle, onStatus, onConversation }: Receptio
           </p>
         ) : null}
       </div>
-      <div className="mt-2 flex items-center gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         <StatusSelect e={e} onStatus={onStatus} className="min-w-0 flex-1 py-1.5 text-sm" />
-        <LineShareButton e={e} className="shrink-0 px-3 py-1.5 text-sm" />
+        <LineShareButton
+          e={e}
+          className="shrink-0 px-3 py-1.5 text-sm"
+          markClassName="basis-full justify-center py-2 text-sm"
+          onContacted={() => onStatus("contacted")}
+        />
       </div>
       {open ? (
         <div className="mt-2 space-y-1 rounded-xl bg-washi-50 px-3 py-2 text-xs text-sumi-600">
@@ -534,7 +586,7 @@ function ReceptionRow({ e, open, onToggle, onStatus, onConversation }: Reception
         <td onClick={(ev) => ev.stopPropagation()}>
           <div className="flex w-[6.5rem] flex-col gap-1.5">
             <StatusSelect e={e} onStatus={onStatus} className="py-1 sm:text-xs" />
-            <LineShareButton e={e} className="w-full whitespace-nowrap px-2 py-1 text-xs" />
+            <LineShareButton e={e} className="w-full whitespace-nowrap px-2 py-1 text-xs" onContacted={() => onStatus("contacted")} />
           </div>
         </td>
         <td className="whitespace-nowrap">{formatJst(e.receivedAt)}</td>
@@ -721,6 +773,13 @@ interface Routing {
   action?: "ai" | "dial" | "ai_after_staff" | "closed";
 }
 
+/** AI電話の案内文（スプレッドシートの「AI電話の案内文」のタブ）の状況 */
+interface PhoneGuideStatus {
+  tab: string;
+  error?: string;
+  scenes: { label: string; fromSheet: boolean; text: string }[];
+}
+
 const ROUTING_LABEL: Record<NonNullable<Routing["action"]>, string> = {
   ai: "AI受付が対応中",
   dial: "スタッフへおつなぎ中",
@@ -736,13 +795,15 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
   const [routing, setRouting] = useState<Routing | null>(null);
   const [now, setNow] = useState("");
   const [persistent, setPersistent] = useState(true);
+  const [guide, setGuide] = useState<PhoneGuideStatus | null>(null);
 
   const refreshRouting = useCallback(async () => {
     try {
-      const j = await api<{ routing: Routing; now: string; persistent?: boolean }>("/api/settings");
+      const j = await api<{ routing: Routing; now: string; persistent?: boolean; phoneGuide?: PhoneGuideStatus }>("/api/settings");
       setRouting(j.routing);
       setNow(j.now);
       setPersistent(j.persistent !== false);
+      setGuide(j.phoneGuide ?? null);
     } catch {
       // noop
     }
@@ -762,7 +823,7 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
         .split(/\n|,|、/)
         .map((h) => h.trim())
         .filter(Boolean);
-      const j = await api<{ settings: AppSettings; routing: Routing; now: string; persistent?: boolean }>("/api/settings", {
+      const j = await api<{ settings: AppSettings; routing: Routing; now: string; persistent?: boolean; phoneGuide?: PhoneGuideStatus }>("/api/settings", {
         method: "PUT",
         body: JSON.stringify({ ...s, phone: { ...s.phone, holidays } }),
       });
@@ -770,6 +831,7 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
       setRouting(j.routing);
       setNow(j.now);
       setPersistent(j.persistent !== false);
+      setGuide(j.phoneGuide ?? null);
       setMsg(
         j.persistent === false
           ? "保存しましたが、Redis が未設定のため一時的な保存です（サーバーの再起動や別のサーバーでは元の設定に戻ります）。「接続状況」の保存先をご確認ください。"
@@ -889,6 +951,9 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
           <div className="sm:col-span-2">
             <label className="label">電話の第一声（{"{company}"} は会社名に置換）</label>
             <textarea className="input min-h-[80px]" value={s.greeting} onChange={(e) => setS({ ...s, greeting: e.target.value })} />
+            <p className="mt-1 text-xs text-sumi-400">
+              スプレッドシートの「{guide?.tab || "AI電話の案内文"}」のタブに「最初のガイダンス（休日・営業時間外）」があれば、そちらを読み上げます（シートを直すと約1分で反映）。
+            </p>
           </div>
         </div>
 
@@ -913,6 +978,26 @@ export function PhoneSettingsTab({ initialSettings }: { initialSettings: AppSett
           ) : null}
           <p className="mt-3 text-xs text-sumi-400">30秒ごとに自動更新。設定保存後すぐに反映されます。</p>
         </div>
+        {guide ? (
+          <div className="card p-5" data-phone-guide>
+            <p className="text-sm font-semibold text-sumi-800">AI電話の案内文</p>
+            <p className="mt-1 text-xs text-sumi-500">
+              スプレッドシートの「{guide.tab || "AI電話の案内文"}」のタブで書き換えられます（約1分で反映）。空欄の項目は既定の文を使います。
+            </p>
+            {guide.error ? <p className="mt-2 text-xs text-amber-700">{guide.error}</p> : null}
+            <ul className="mt-3 space-y-3">
+              {guide.scenes.map((sc) => (
+                <li key={sc.label} className="text-xs" data-guide-scene={sc.fromSheet ? "sheet" : "default"}>
+                  <span className="flex flex-wrap items-center gap-1.5 font-semibold text-sumi-700">
+                    {sc.label}
+                    <Badge tone={sc.fromSheet ? "green" : "neutral"}>{sc.fromSheet ? "シート" : "既定"}</Badge>
+                  </span>
+                  <span className="mt-1 block leading-relaxed text-sumi-600">{sc.text}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         <div className="card p-5">
           <p className="text-sm font-semibold text-sumi-800">AI電話受付をブラウザで試す</p>
           <p className="mt-1 text-xs text-sumi-500">

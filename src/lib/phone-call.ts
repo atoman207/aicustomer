@@ -11,11 +11,13 @@ import { logError } from "./errorlog";
 import { resolvePhoneRouting, spokenBusinessHours } from "./hours";
 import { getCookie, xml } from "./http";
 import { formatPhone } from "./intake";
+import { getKnowledge } from "./knowledge";
 import { type AskKind, KEYPAD_HINT, askKind, hintsFor, townsToKana } from "./phone-ask";
+import { DEFAULT_STAFF_AWAY, afterDialText, fillGuide, sorryText } from "./phone-guide";
 import { CALL_COOKIE, callCookieHeader, decodeCallCookie } from "./session-codec";
 import { getSession, getSettings, saveSession } from "./store";
 import { dial, gather, hangup, redirect, say, twimlResponse } from "./twiml";
-import type { AgentSession, AppSettings } from "./types";
+import type { AgentSession, AppSettings, PhoneGuide } from "./types";
 import { e164Japan, uid } from "./utils";
 
 /** この時間を過ぎても答えができなければ「少々お待ちください」を伝える（PHONE_HOLD_AFTER_MS で変えられる。試験用） */
@@ -29,21 +31,36 @@ const HOLD_TEXT = ["ただいまお調べしております。少々お待ちく
 const SLOW_TEXT = "お待たせして申し訳ございません。ただいまお答えの準備に時間がかかっております。恐れ入りますが、もう一度お話しいただけますか？";
 const ERROR_RETRY = "申し訳ございません、うまくお話を伺えませんでした。恐れ入りますが、もう一度お話しいただけますか？";
 export const SYSTEM_DOWN = "申し訳ございません、ただいまAI受付がご利用いただけません。恐れ入りますが、営業時間内に改めてお電話ください。お電話ありがとうございました。";
-/** 担当者へつないだが出なかった（このお電話で「担当者におつなぎします」とお伝えしたあと） */
-const STAFF_AWAY_LEAD = "お待たせいたしました。ただいま担当者が電話に出られないため、AI受付が代わりにご用件を伺います。";
-/** お店の電話が先に鳴り、出られなかったお電話（ボイスワープで転送されてきた）：AI の最初のひと言 */
-const forwardedLead = (company: string) => `お電話ありがとうございます。畳の${company}です。ただいま担当者が電話に出られないため、AI受付が代わりにご用件を伺います。`;
-const STAFF_AWAY_ASK = "畳・襖・障子・網戸のご相談や、無料お見積りのご依頼を、どうぞお話しください。";
+/** スプレッドシートの「AI電話の案内文」（読めなければ undefined＝既定の文） */
+async function phoneGuide(): Promise<PhoneGuide | undefined> {
+  return (await getKnowledge().catch(() => null))?.phoneGuide;
+}
+
+/**
+ * スタッフが出られなかったお電話の最初のガイダンス（シートの「営業時間内にスタッフが出られなかったとき」。空なら既定の文）。
+ * afterDial：このお電話で「担当者におつなぎします」とお伝えして出られなかった → あいさつの代わりに「お待たせいたしました。」
+ */
+async function staffAwayGreeting(settings: AppSettings, afterDial: boolean): Promise<string> {
+  const text = fillGuide((await phoneGuide())?.staffAway ?? DEFAULT_STAFF_AWAY, { company: settings.companyName, hours: spokenBusinessHours(settings.phone) });
+  return afterDial ? afterDialText(text) : text;
+}
 
 /**
  * AI 停止中（常にスタッフ対応）で、担当者が出られなかった・つなぐ先がない：おかけ直しのご案内（AI は伺わない）。
- * greet：お電話を受けて最初のひと言（担当者へつなぐとお伝えしたあとでなければ、会社名から）
+ * シートの「AIを停止しているときの案内」があればその文。なければ時間帯に合わせた既定の文。
+ * greet：お電話を受けて最初のひと言（担当者へつなぐとお伝えしたあとなら、あいさつの代わりに「申し訳ございません。」）
  */
-export function closedReply(settings: AppSettings, inBusinessHours: boolean, greet: boolean): string {
-  const head = greet ? `お電話ありがとうございます。畳の${settings.companyName}です。` : "申し訳ございません。";
+export async function closedReply(settings: AppSettings, inBusinessHours: boolean, greet: boolean): Promise<string> {
+  const hours = spokenBusinessHours(settings.phone);
+  const sheet = (await phoneGuide())?.aiStopped;
+  if (sheet) {
+    const text = fillGuide(sheet, { company: settings.companyName, hours });
+    return greet ? text : sorryText(text);
+  }
+  const head = greet ? `お電話ありがとうございます。${settings.companyName}です。` : "申し訳ございません。";
   const body = inBusinessHours
     ? "ただいま、担当者が電話に出られません。恐れ入りますが、しばらくしてから改めておかけ直しください。"
-    : `ただいま営業時間外です。営業時間は、${spokenBusinessHours(settings.phone)}です。恐れ入りますが、営業時間内に改めておかけ直しください。`;
+    : `ただいま営業時間外です。営業時間は、${hours}です。恐れ入りますが、営業時間内に改めておかけ直しください。`;
   return `${head}${body}お電話ありがとうございました。`;
 }
 
@@ -270,12 +287,8 @@ export async function startAiCall(params: Record<string, string>, base: string, 
     routing: routing.reason,
     ...(opts.staffAway ? { staffUnanswered: "1" } : {}),
   });
-  const greeting =
-    opts.staffAway === "dial"
-      ? `${STAFF_AWAY_LEAD}${STAFF_AWAY_ASK}`
-      : opts.staffAway === "forwarded"
-        ? `${forwardedLead(settings.companyName)}${STAFF_AWAY_ASK}`
-        : await greetingFor("phone");
+  // 最初のガイダンス（スプレッドシートの「AI電話の案内文」。空なら既定の文）
+  const greeting = opts.staffAway ? await staffAwayGreeting(settings, opts.staffAway === "dial") : await greetingFor("phone");
   session.messages.push({ role: "assistant", content: greeting, at: new Date().toISOString() });
   await saveSession(session);
   return xml(twimlResponse(gather(greeting, `${base}/api/twilio/gather`, env.twilioVoice)), { "Set-Cookie": callCookieHeader(session) });
@@ -296,7 +309,7 @@ export async function afterDial(req: Request, params: Record<string, string>, ba
   if (then === "ai") return startAiCall(params, base, { staffAway: "dial" });
   if (then === "closed") {
     const settings = await getSettings();
-    return xml(twimlResponse(hangup(closedReply(settings, resolvePhoneRouting(settings.phone).inBusinessHours, false), voice)));
+    return xml(twimlResponse(hangup(await closedReply(settings, resolvePhoneRouting(settings.phone).inBusinessHours, false), voice)));
   }
   if (then === "callback") return xml(twimlResponse(hangup(TRANSFER_FAILED, voice)));
   const callSid = params.CallSid || "unknown";

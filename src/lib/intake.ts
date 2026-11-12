@@ -3,6 +3,7 @@
 //   ・ここは規則だけの関数（ブラウザとサーバーの両方で使う）。OpenAI があれば intake-ai.ts が会話全体から読み取り、
 //     ここの規則は電話番号・日付の整形と、OpenAI を使えないときの読み取りに使う
 //   ・日程は AI が確定しない（ご希望を伺うだけ。担当者がお電話で調整して確定する）
+import type { JobChangeKind } from "./job-change";
 import type { ChatMessage, EstimateRequest, IntakeDraft } from "./types";
 import { isLikelyPhone, normalizePhone, phoneDigitsOk, truncate } from "./utils";
 
@@ -39,6 +40,14 @@ export interface IntakeState {
    * 確認画面で「修正」から入力していただくよう案内する（一畳屋様のご要望 2026-10-28）
    */
   unsure?: IntakeField[];
+  /**
+   * ご依頼済みの件の日程変更・キャンセル・仕様変更のお問い合わせ（Ai system 236 行目。job-change.ts）：
+   * お名前 → お電話番号 → ご住所 → お問い合わせの内容を伺う（訪問のご希望日は伺わない・無料見積の案内はしない）
+   */
+  purpose?: "change";
+  changeKind?: JobChangeKind;
+  /** お問い合わせの内容（変更後のご希望日など）を伺った */
+  detailAsked?: boolean;
 }
 
 const DRAFT_FIELDS: DraftField[] = ["name", "address", "phone", "dates", "summary"];
@@ -80,6 +89,13 @@ export function sanitizeIntake(raw: unknown): IntakeState {
     touched: fieldList(s.touched),
     aiFilled: fieldList(s.aiFilled),
     ...(unsure.length ? { unsure } : {}),
+    ...(s.purpose === "change"
+      ? {
+          purpose: "change" as const,
+          changeKind: s.changeKind === "cancel" || s.changeKind === "spec" ? s.changeKind : "schedule",
+          detailAsked: s.detailAsked === true,
+        }
+      : {}),
   };
 }
 

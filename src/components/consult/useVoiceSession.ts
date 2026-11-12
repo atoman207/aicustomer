@@ -14,6 +14,7 @@ import {
   FIELD_LABEL,
   FORM_GUIDE,
   afterSubmitChangeText,
+  askedFromText,
   asksChangeAfterSubmit,
   asksForForm,
   intakeFields,
@@ -27,6 +28,7 @@ import {
   type IntakeState,
 } from "@/lib/intake";
 import { AI_REASK, CUSTOMER_STUCK, REASK_LIMIT } from "@/lib/handoff";
+import { JOB_CHANGE_FORM_GUIDE, JOB_CHANGE_VOICE_NOTE, isJobChangeSummary, jobChangeKind } from "@/lib/job-change";
 import { yenDigits } from "@/lib/jnum";
 import { OFFER_AFTER_ANSWER, OFFER_NOT_YET_VOICE, offerDue, offerTooEarly } from "@/lib/offer";
 import {
@@ -114,7 +116,8 @@ const SENTENCE_END = /[。？！?!」]\s*$/;
  * 一度だけの知らせとして渡す（GPT-Live の session.instructions.append は、そのあともずっと指示として残るので、
  * 「送信ボタンを押してください」の案内を何度もくり返した。一畳屋様のご指摘 2026-10-30「このアナウンスが 10 回ぐらい繰り返された」）
  */
-const FORM_OPENED_NOTICE = `お客様の画面に確認画面を表示しました（会話から読み取った内容が入っています。足りない項目は、お客様が画面で入力できます）。最初から聞き直さないでください。まだ伝えていなければ「${FORM_GUIDE}」と一度だけ伝え、そのあとは同じ案内をくり返さずに、お客様が送信されるか話しかけられるまで待ってください。`;
+const formOpenedNotice = (guide: string) =>
+  `お客様の画面に確認画面を表示しました（会話から読み取った内容が入っています。足りない項目は、お客様が画面で入力できます）。最初から聞き直さないでください。まだ伝えていなければ「${guide}」と一度だけ伝え、そのあとは同じ案内をくり返さずに、お客様が送信されるか話しかけられるまで待ってください。`;
 /** 確認画面の「ご確認のうえ、送信ボタンを押してください」の案内（声の AI はひらがなの「そうしん」でも話す） */
 const FORM_ANNOUNCE = /(?:ご確認|ご覧|確かめ).{0,60}(?:送信|そうしん)|(?:送信|そうしん)(?:ボタン)?.{0,12}(?:押して|お願い)/;
 /** AI が確認画面の案内をくり返したときの知らせ */
@@ -471,8 +474,11 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
         const j = (await res.json()) as { answer?: string; hits?: { title: string; content: string; from?: string }[]; sources?: { title: string }[] };
         const hits = j.hits ?? [];
         hostRef.current.onSources((j.sources?.length ? j.sources : hits).map((h) => h.title));
-        // 2回目以降の答えで、まだ提案していなければ、答えのあとに無料の訪問見積もりを提案してもらう。最初の答えでは提案しない（offer.ts）
-        const offer = early ? { offer_note: OFFER_NOT_YET_VOICE } : due ? { after_answer: OFFER_AFTER_ANSWER } : {};
+        // 2回目以降の答えで、まだ提案していなければ、答えのあとに無料の訪問見積もりを提案してもらう。最初の答えでは提案しない（offer.ts）。
+        // ご依頼済みの件の日程変更・キャンセル・仕様変更のお問い合わせは、提案せずに、折り返しの旨とお名前などを伺ってもらう（236 行目）
+        const lastUser = [...conv].reverse().find((m) => m.role === "user")?.content ?? "";
+        const changing = !busy && Boolean(jobChangeKind(args.query ?? "") || jobChangeKind(lastUser));
+        const offer = changing ? { change_note: JOB_CHANGE_VOICE_NOTE } : early ? { offer_note: OFFER_NOT_YET_VOICE } : due ? { after_answer: OFFER_AFTER_ANSWER } : {};
         // answer（資料の全体を確かめて作った回答・料金表の計算など）があればそれを話す。なければ関係する資料だけを渡す
         return JSON.stringify(
           j.answer
@@ -480,7 +486,7 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
             : {
                 results: hits.map((h) => ({ from: h.from, title: h.title, content: h.content })),
                 note: hits.length === 0 ? "該当する資料がありません。推測せず、担当者からの折り返しを案内してください。" : undefined,
-                ...(hits.length ? offer : {}),
+                ...(hits.length || changing ? offer : {}),
               },
         );
       } catch (e) {
@@ -544,6 +550,8 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       }
       hostRef.current.openEstimate();
       const missing = missingFields(next.draft).map((f) => FIELD_LABEL[f]);
+      // ご依頼済みの件の変更・キャンセルのお問い合わせ（236 行目）は、「訪問のご希望日」を言わない案内
+      const guide = isJobChangeSummary(next.draft.summary) ? JOB_CHANGE_FORM_GUIDE : FORM_GUIDE;
       const fix = unsure.length
         ? `${unsure.map((f) => FIELD_LABEL[f]).join("・")}は正確に聞き取れなかったため、画面の${unsure.map((f) => `${FIELD_LABEL[f]}の「修正」ボタン`).join("・")}を押して、正確な内容を入力していただくよう、お願いしてください。`
         : "";
@@ -551,8 +559,8 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
       return JSON.stringify({
         ok: true,
         message: missing.length
-          ? `画面に確認画面を表示しました。${missing.join("・")}はまだ伺えていないので、画面の入力欄に入力していただくよう短く案内してください。${fix}続けて「${FORM_GUIDE}」と伝えてください。この案内は一度だけにして、くり返さないでください。`
-          : `画面に確認画面を表示しました。${fix}お客様に「${FORM_GUIDE}」と一度だけ伝えてください。お名前・ご住所・お電話番号を声で聞き直さないでください（直すところは、お客様が画面の『修正』ボタンで直せます）。案内のあとは、くり返さずに、お客様が送信されるか話しかけられるまで待ってください。`,
+          ? `画面に確認画面を表示しました。${missing.join("・")}はまだ伺えていないので、画面の入力欄に入力していただくよう短く案内してください。${fix}続けて「${guide}」と伝えてください。この案内は一度だけにして、くり返さないでください。`
+          : `画面に確認画面を表示しました。${fix}お客様に「${guide}」と一度だけ伝えてください。お名前・ご住所・お電話番号を声で聞き直さないでください（直すところは、お客様が画面の『修正』ボタンで直せます）。案内のあとは、くり返さずに、お客様が送信されるか話しかけられるまで待ってください。`,
       });
     }
     return JSON.stringify({ error: `unknown tool: ${name}` });
@@ -827,7 +835,9 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     if (performance.now() - lastProposeRef.current < 8000) return;
     lastProposeRef.current = performance.now();
     hostRef.current.openEstimate();
-    contextNote(FORM_OPENED_NOTICE);
+    // ご依頼済みの件の変更・キャンセルのお問い合わせ（236 行目）は、「訪問のご希望日」を言わない案内
+    const change = isJobChangeSummary(hostRef.current.getIntake().draft.summary) || hostRef.current.getConversation().some((m) => m.role === "user" && jobChangeKind(m.content));
+    contextNote(formOpenedNotice(change ? JOB_CHANGE_FORM_GUIDE : FORM_GUIDE));
   }
 
   /**
@@ -854,6 +864,26 @@ export function useVoiceSession(host: VoiceHost, initialMode: VoiceMode) {
     if (!text.trim()) return;
     reaskRef.current = AI_REASK.test(text.normalize("NFKC")) ? reaskRef.current + 1 : 0;
     if (reaskRef.current >= REASK_LIMIT) setHearingTrouble(true);
+    changeWrapUp(text);
+  }
+
+  /**
+   * ご依頼済みの件の日程変更・キャンセル・仕様変更のお問い合わせ（Ai system 236 行目）で、AI がお名前・お電話番号・ご住所を伺い終えたのに、
+   * 確認画面の表示を頼まずに「担当者からご連絡して調整いたします」のように話を締めた（2026-11-12 の声の試験で 2 回に 1 回）：
+   * アプリが確認画面を開く（伺った内容が受付一覧に届かないままにならないように）。AI がまだ何かを伺っている間は開かない
+   */
+  function changeWrapUp(text: string) {
+    const h = hostRef.current;
+    const est = h.getEstimateState();
+    if (est.open || est.submittedId || h.getIntake().ready) return;
+    const conv = h.getConversation();
+    if (!conv.some((m) => m.role === "user" && jobChangeKind(m.content))) return;
+    const asked = new Set(conv.filter((m) => m.role === "assistant").flatMap((m) => askedFromText(m.content)));
+    if (!asked.has("name") || !asked.has("phone") || !asked.has("address")) return;
+    const sentences = text.normalize("NFKC").trim().split(/(?<=[。？?！!])\s*/).filter(Boolean);
+    const lastOne = sentences[sentences.length - 1] ?? "";
+    if (/[?？]|ますか|でしょうか|ませんか|教えて|お聞かせ|お願いします|お願いいたします|いただけ|ございますか/.test(lastOne)) return;
+    openFormByApp();
   }
 
   /** お客様の発言：「通じない」「何回も言っている」とおっしゃったら、画面に「文字で入力する」の案内を出す。お電話番号なら notePhone */

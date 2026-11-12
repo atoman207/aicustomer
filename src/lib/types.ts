@@ -60,6 +60,25 @@ export interface KnowledgeSnapshot {
   staffNotes?: StaffNotes;
   /** スプレッドシートの読み方の一覧（「畳床（たたみどこ）　七島（しっとう）…」）。声の AI に渡す文をひらがなにする（voice-words.ts） */
   readings?: [string, string][];
+  /** 「AI電話の案内文」のタブに書いた、AI電話が決まった文言で伝える案内（phone-guide.ts） */
+  phoneGuide?: PhoneGuide;
+}
+
+/**
+ * AI電話の決まった案内文（スプレッドシートの「AI電話の案内文」のタブ。一畳屋様のご要望 2026-11-10：
+ * 最初のガイダンスなどを、運用しながらシートで微調整したい）。空の項目は既定の文を使う
+ */
+export interface PhoneGuide {
+  /** タブの名前 */
+  tab: string;
+  /** 最初のガイダンス（休日・営業時間外。常時AIのときも） */
+  offHours?: string;
+  /** 最初のガイダンス（営業時間内にスタッフが出られなかったとき） */
+  staffAway?: string;
+  /** AIを停止しているときの案内 */
+  aiStopped?: string;
+  /** 読めなかった理由（タブがない・共有されていない など） */
+  error?: string;
 }
 
 export interface StaffNotes {

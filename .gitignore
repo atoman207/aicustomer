@@ -16,3 +16,17 @@ data/runtime/
 /database/ichijoya-*.json
 *service-account*.json
 *-credentials.json
+
+# リポジトリには、一畳屋様のサイトを動かすのに必要なもの（プログラム・画像・ビルドに入る資料）だけを入れる（2026-11-12）
+# 圧縮ファイル（プロジェクトの丸ごとのコピーなど。.env や一畳屋様のデータが入る）
+*.rar
+*.zip
+*.7z
+*.tar
+*.tar.gz
+# 説明の文書（手元にだけ置く）
+/README.md
+/database/README.md
+/docs/
+# 一畳屋様のホームページの文（回答には使わない。npm run learn:site で手元に作る）
+/database/website.json

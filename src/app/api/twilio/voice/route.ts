@@ -56,7 +56,7 @@ export async function POST(req: Request) {
         ),
       );
     }
-    if (routing.action === "closed") return xml(twimlResponse(hangup(closedReply(settings, routing.inBusinessHours, true), env.twilioVoice)));
+    if (routing.action === "closed") return xml(twimlResponse(hangup(await closedReply(settings, routing.inBusinessHours, true), env.twilioVoice)));
     return await startAiCall(params, base, { staffAway: routing.action === "ai_after_staff" ? "forwarded" : undefined });
   } catch (e) {
     await logError("phone", "AI電話（着信）", e).catch(() => undefined);

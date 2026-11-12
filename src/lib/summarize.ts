@@ -6,7 +6,7 @@ import { SUMMARY_SYSTEM_PROMPT } from "./prompts";
 import type { ChatMessage } from "./types";
 import { truncate } from "./utils";
 
-export async function summarizeConversation(messages: ChatMessage[]): Promise<{ summary: string; mode: "openai" | "demo" }> {
+export async function summarizeConversation(messages: ChatMessage[], note = ""): Promise<{ summary: string; mode: "openai" | "demo" }> {
   const userTexts = messages
     .filter((m) => m.role === "user")
     .map((m) => m.content.trim())
@@ -25,7 +25,7 @@ export async function summarizeConversation(messages: ChatMessage[]): Promise<{ 
       model: env.intakeModel,
       reasoningEffort: env.intakeReasoning,
       messages: [
-        { role: "system", content: SUMMARY_SYSTEM_PROMPT },
+        { role: "system", content: note ? `${SUMMARY_SYSTEM_PROMPT}\n\n${note}` : SUMMARY_SYSTEM_PROMPT },
         { role: "user", content: `【会話ログ】\n${transcript}` },
       ],
       temperature: 0.2,

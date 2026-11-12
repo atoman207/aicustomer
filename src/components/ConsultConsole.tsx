@@ -42,6 +42,7 @@ import { CONSULT_EVENT, type ConsultCommand } from "@/lib/consult-events";
 import { clearConversation, loadConversation, saveConversation, type StoredMessage } from "@/lib/conversation-store";
 import { emptyDraft, keepTouched, mergeDraft, missingFields, phoneCaption, sanitizeIntake, unsureFromTalk, type IntakeField, type IntakeState } from "@/lib/intake";
 import { yenDigits } from "@/lib/jnum";
+import { formTitleFor, isJobChangeSummary } from "@/lib/job-change";
 import { receiptText } from "@/lib/receipt";
 import type { ChatMessage, EstimateRequest } from "@/lib/types";
 import { uid } from "@/lib/utils";
@@ -620,7 +621,11 @@ export default function ConsultConsole({
     setIntake((prev) => ({ active: false, draft: { name: prev.draft.name, address: prev.draft.address, phone: prev.draft.phone, dates: [] } }));
     // ご依頼の内容の控えを会話にも残す（確認画面を閉じたあとも、あとで確認できるように。一畳屋様のご要望 2026-10-30）
     const receipt = receiptText(est);
-    const thanks = `無料お見積りのご依頼を受け付けました。\n担当者より折り返しお電話し、お見積りに伺う日程を決めさせていただきます。ありがとうございました。\n\n${receipt}`;
+    // ご依頼済みの件の変更・キャンセルのお問い合わせ（Ai system 236 行目）は、お見積りのご依頼のお礼にしない
+    const change = isJobChangeSummary(est.summary);
+    const thanks = change
+      ? `お問い合わせを受け付けました。\n担当者より改めて折り返しご連絡いたします。ありがとうございました。\n\n${receipt}`
+      : `無料お見積りのご依頼を受け付けました。\n担当者より折り返しお電話し、お見積りに伺う日程を決めさせていただきます。ありがとうございました。\n\n${receipt}`;
     setMessages((prev) => [...prev, { id: uid(), role: "assistant", content: thanks, at: Date.now() }]);
     if (voice.live) {
       // 声で話している間：AI がお礼と、変更は日程の打ち合わせのお電話で伺うこと、声の相談を終えることを一度だけ伝えて、話し終えたら
@@ -632,8 +637,12 @@ export default function ConsultConsole({
       voice.sayThenHangUp(
         // 受付番号は読み上げない（画面の控えに出ている。一畳屋様のご指摘 2026-11-04「送信完了後の受付番号の読み上げは不要」）
         // 「切る旨を伝えて切る」（2026-11-02 の 35 行目）：AI が「では、失礼いたします」と言い換えて終了を伝えないことがあるので、最後の一言を決める
-        "見積依頼フォームが送信されました。受付番号は読み上げないでください。確認画面や送信ボタンの案内は、もうしないでください。お客様に短くお礼を伝え、担当者より折り返しお電話して日程を確定すること、ご依頼の内容や日程の変更はそのお電話の際にお伝えいただけることを、一度だけ伝えてください。最後に必ず「これで声のご相談を終了します」と言ってください。",
-        "見積依頼を受付しました。担当者より折り返しお電話し、日程を確定いたします。ご依頼の内容や日程の変更は、そのお電話の際にお伝えください。これで声のご相談を終了します。ありがとうございました。",
+        change
+          ? "お問い合わせのフォームが送信されました。受付番号は読み上げないでください。確認画面や送信ボタンの案内は、もうしないでください。お客様に短くお礼を伝え、担当者より改めて折り返しご連絡することを、一度だけ伝えてください。最後に必ず「これで声のご相談を終了します」と言ってください。"
+          : "見積依頼フォームが送信されました。受付番号は読み上げないでください。確認画面や送信ボタンの案内は、もうしないでください。お客様に短くお礼を伝え、担当者より折り返しお電話して日程を確定すること、ご依頼の内容や日程の変更はそのお電話の際にお伝えいただけることを、一度だけ伝えてください。最後に必ず「これで声のご相談を終了します」と言ってください。",
+        change
+          ? "お問い合わせを受付しました。担当者より改めて折り返しご連絡いたします。これで声のご相談を終了します。ありがとうございました。"
+          : "見積依頼を受付しました。担当者より折り返しお電話し、日程を確定いたします。ご依頼の内容や日程の変更は、そのお電話の際にお伝えください。これで声のご相談を終了します。ありがとうございました。",
         "見積依頼は、お客様が送信済みです。確認画面・送信ボタンの案内は、もうしないでください。",
         () =>
           setMessages((prev) => [
@@ -641,7 +650,9 @@ export default function ConsultConsole({
             {
               id: uid(),
               role: "assistant",
-              content: "声のご相談を終了しました。\nご依頼の内容やご希望日の変更は、一畳屋から日程の打ち合わせのお電話を差し上げた際に、担当者へお伝えください。",
+              content: change
+                ? "声のご相談を終了しました。\n担当者より改めて折り返しご連絡いたします。"
+                : "声のご相談を終了しました。\nご依頼の内容やご希望日の変更は、一畳屋から日程の打ち合わせのお電話を差し上げた際に、担当者へお伝えください。",
               at: Date.now(),
             },
           ]),
@@ -1183,7 +1194,7 @@ export default function ConsultConsole({
         <PhoneCompact />
       </aside>
 
-      <Modal open={estimateOpen} onClose={closeEstimate} title="無料お見積りのご依頼">
+      <Modal open={estimateOpen} onClose={closeEstimate} title={formTitleFor(intake.draft.summary)}>
         {formMuted && voice.live ? (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ai-200 bg-ai-50 px-4 py-2.5 text-sm text-ai-700" data-form-muted>
             <span className="flex items-center gap-1.5">

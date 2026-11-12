@@ -8,6 +8,7 @@ import { Check, CheckCircle2, Copy, ExternalLink, Loader2, LockKeyhole, PencilLi
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import SpriteIcon from "./SpriteIcon";
 import { FIELD_LABEL, type DraftField } from "@/lib/intake";
+import { isJobChangeSummary } from "@/lib/job-change";
 import { receiptText } from "@/lib/receipt";
 import type { Channel, EstimateRequest, IntakeDraft } from "@/lib/types";
 import { formatJst, isLikelyPhone } from "@/lib/utils";
@@ -564,7 +565,7 @@ export default function EstimateForm({
           {serverError ? <p className="rounded-xl border border-shu-200 bg-shu-50 p-3 text-sm text-shu-700">{serverError}</p> : null}
           <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-sumi-400">
             <LockKeyhole className="mt-0.5 h-3 w-3 shrink-0" />
-            ご入力いただいた情報は、お見積りのご連絡以外には使用しません。
+            ご入力いただいた情報は、{isJobChangeSummary(summary) ? "このお問い合わせのご連絡" : "お見積りのご連絡"}以外には使用しません。
           </p>
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
             {onCancel ? (
@@ -587,13 +588,13 @@ export default function EstimateForm({
           <span className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-ichi-cream">
             <CheckCircle2 className="h-9 w-9 text-ichi-green" />
           </span>
-          <h3 className="font-hand text-2xl text-ichi-theme">お見積りのご依頼を受付しました</h3>
+          <h3 className="font-hand text-2xl text-ichi-theme">{isJobChangeSummary(result.estimate.summary) ? "お問い合わせを受付しました" : "お見積りのご依頼を受付しました"}</h3>
           <div className="mx-auto w-fit rounded-xl border border-sumi-200 px-5 py-2.5">
             <p className="text-[11px] text-sumi-400">受付番号</p>
             <p className="font-mono text-lg font-bold tracking-wide text-sumi-800">{result.estimate.id}</p>
           </div>
           <p className="text-sm leading-relaxed text-sumi-600">
-            担当者より折り返しお電話し、お見積りに伺う日程を決めさせていただきます。
+            {isJobChangeSummary(result.estimate.summary) ? "担当者より改めて折り返しご連絡いたします。" : "担当者より折り返しお電話し、お見積りに伺う日程を決めさせていただきます。"}
             <br />
             <span className="text-xs text-sumi-400">受付日時：{formatJst(result.estimate.receivedAt)}</span>
           </p>

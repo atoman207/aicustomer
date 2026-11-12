@@ -5,6 +5,8 @@
 //   一畳屋様のご指摘 2026-10-30「曖昧な質問には、ある程度状況を聞き取りしたあとに無料見積をすすめる。初手で無料見積を
 //   案内するパターンがある」：最初の答えでは提案しない（日程・訪問を聞かれたときだけは別）。最初の答えはご状況を伺う質問で終える（offerTooEarly）
 
+import { jobChangeKind } from "./job-change";
+
 interface Turn {
   role: string;
   content: string;
@@ -42,6 +44,8 @@ export function offerDue(history: Turn[], question: string, busy = false): boole
   const answers = answersOf(history);
   const users = [...history.filter((m) => m.role === "user").slice(-5), { role: "user", content: question }];
   if (users.some((m) => DECLINED.test(m.content.normalize("NFKC")))) return false;
+  // ご依頼済みの件の日程変更・キャンセル・仕様変更のお問い合わせ：無料見積の案内はしない（Ai system 236 行目。job-change.ts）
+  if (users.some((m) => jobChangeKind(m.content))) return false;
   const q = question.normalize("NFKC");
   // 日程・訪問の話：最初の答えでも、直前に提案していても、この答えで提案する（訪問見積もりのときに日程も相談できるため）
   if (SCHEDULE.test(q)) return true;

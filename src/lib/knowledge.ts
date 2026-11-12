@@ -15,9 +15,10 @@ import { gasRequest, sheetsReadTab, sheetsReadTabByName } from "./google";
 import { kvConfigured, kvGet, kvSet } from "./kv";
 import { DEFAULT_MANUAL_RULES, gridToManual, type ManualRules, type PriceTable } from "./manual";
 import { labelTokens, normPrice } from "./price";
+import { parsePhoneGuide } from "./phone-guide";
 import { parseSheetLink, type SheetLink } from "./sheet-link";
 import { getSettings } from "./store";
-import type { KnowledgeEntry, KnowledgeSnapshot, KnowledgeSource, StaffNotes } from "./types";
+import type { KnowledgeEntry, KnowledgeSnapshot, KnowledgeSource, PhoneGuide, StaffNotes } from "./types";
 import { parseReadings } from "./voice-words";
 
 interface Cache {
@@ -441,6 +442,26 @@ async function loadStaffNotes(sheetUrl: string): Promise<StaffNotes | undefined>
   }
 }
 
+/**
+ * AI電話の決まった案内文（「AI電話の案内文」のタブ。回答用と同じスプレッドシート。一畳屋様のご要望 2026-11-10）。
+ * 読めなかったときは前に読んだ内容を使う（タブがなければ既定の文）
+ */
+async function loadPhoneGuide(sheetUrl: string): Promise<PhoneGuide | undefined> {
+  const tab = env.phoneGuideTab;
+  if (!tab || !env.hasServiceAccount) return undefined;
+  const link = parseSheetLink(sheetUrl);
+  const sheetId = (link?.kind === "csv" && link.sheetId) || env.knowledgeSheetId;
+  if (!sheetId) return undefined;
+  const previous = g.__knowledgeCache?.snapshot.phoneGuide;
+  try {
+    const rows = await sheetsReadTabByName(sheetId, tab);
+    if (!rows) return { tab, error: `スプレッドシートに「${tab}」のタブがありません（既定の案内文を使います）` };
+    return parsePhoneGuide(tab, rows);
+  } catch (e) {
+    return previous && !previous.error ? { ...previous, error: (e as Error).message } : { tab, error: (e as Error).message };
+  }
+}
+
 /** スプレッドシート（読めなければ保存版）とホームページから資料を作る */
 async function buildKnowledge(): Promise<KnowledgeSnapshot> {
   const now = Date.now();
@@ -448,7 +469,11 @@ async function buildKnowledge(): Promise<KnowledgeSnapshot> {
   // 1. Googleスプレッドシート（読めなければ同じシートの保存版 database/manual.json）
   const sheetUrl = (await getSettings().catch(() => null))?.knowledgeSheetUrl ?? "";
   const sheetConfigured = remoteKnowledgeConfigured(sheetUrl);
-  const [remote, staffNotes] = await Promise.all([sheetConfigured ? loadRemote(errors, sheetUrl) : null, loadStaffNotes(sheetUrl)]);
+  const [remote, staffNotes, phoneGuide] = await Promise.all([
+    sheetConfigured ? loadRemote(errors, sheetUrl) : null,
+    loadStaffNotes(sheetUrl),
+    loadPhoneGuide(sheetUrl),
+  ]);
   const manual = remote ?? bundledManual();
 
   // 2. ホームページは回答に使わない（回答の根拠は指定のスプレッドシートだけ。一畳屋様のご要望 2026-10-22・10-23）
@@ -495,6 +520,7 @@ async function buildKnowledge(): Promise<KnowledgeSnapshot> {
       url: sheetUrl,
     },
     ...(staffNotes ? { staffNotes } : {}),
+    ...(phoneGuide ? { phoneGuide } : {}),
     // 一畳屋様がスプレッドシート（資料・「修正点など」）に書いた読み方の一覧（声の AI の読み間違いを防ぐ）
     readings: parseReadings([...manual.entries.map((e) => e.content), ...manual.excluded, staffNotes?.text ?? ""].join("\n")),
   };

@@ -36,6 +36,17 @@ import {
   type IntakeField,
   type IntakeState,
 } from "./intake";
+import {
+  JOB_CHANGE_DATES,
+  JOB_CHANGE_SUMMARY_NOTE,
+  jobChangeDetailAsk,
+  jobChangeDetailGiven,
+  jobChangeKind,
+  jobChangeOpening,
+  jobChangeReadyText,
+  tagJobChange,
+  type JobChangeKind,
+} from "./job-change";
 import { getKnowledge } from "./knowledge";
 import { chatCompletionJson } from "./openai";
 import { INTAKE_JSON_SCHEMA, buildIntakeExtractPrompt } from "./prompts";
@@ -70,7 +81,7 @@ function transcript(messages: ChatMessage[]): string {
   return [...list.slice(0, HEAD).map(line), `（…途中の ${list.length - HEAD - TAIL} 件は省略…）`, ...list.slice(-TAIL).map(line)].join("\n");
 }
 
-async function readWithAi(messages: ChatMessage[], draft: IntakeDraft): Promise<AiIntake> {
+async function readWithAi(messages: ChatMessage[], draft: IntakeDraft, change = false): Promise<AiIntake> {
   const known = {
     name: draft.name ?? null,
     address: draft.address ?? null,
@@ -81,7 +92,7 @@ async function readWithAi(messages: ChatMessage[], draft: IntakeDraft): Promise<
     model: env.intakeModel,
     reasoningEffort: env.intakeReasoning,
     messages: [
-      { role: "system", content: buildIntakeExtractPrompt(japanNow().display) },
+      { role: "system", content: `${buildIntakeExtractPrompt(japanNow().display)}${change ? `\n\n${JOB_CHANGE_SUMMARY_NOTE}` : ""}` },
       { role: "user", content: `【これまでに読み取った内容】\n${JSON.stringify(known)}\n\n【会話】\n${transcript(messages)}` },
     ],
     jsonSchema: INTAKE_JSON_SCHEMA,
@@ -124,6 +135,30 @@ export interface ReadDraftResult {
  * spoken：ご住所を声で伺った（声の聞き違いの町名を直す。文字で入力されたご住所は書かれたとおり）
  */
 export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opts: { keepSummary?: boolean; spoken?: boolean } = {}): Promise<ReadDraftResult> {
+  // ご依頼済みの件の変更・キャンセルのお問い合わせ（236 行目）：訪問のご希望日は伺わない（「（折り返しの際にご相談）」）。
+  // 相談内容の頭に印を付け、変更後のご希望日時・変更の内容も相談内容に残す。文字・声の相談の確認画面で共通
+  const change = jobChangeConversation(messages);
+  const r = await readDraftCore(messages, draft, { ...opts, change });
+  if (!change) return r;
+  const keep = opts.keepSummary && draft.summary ? draft.summary : undefined;
+  return { ...r, past: [], draft: { ...r.draft, dates: [JOB_CHANGE_DATES], summary: keep ?? tagJobChange(r.draft.summary) } };
+}
+
+/** 会話が、ご依頼済みの件の変更・キャンセルのお問い合わせ（新しいお見積りのご依頼ではない） */
+export function jobChangeConversation(messages: { role: string; content: string }[]): boolean {
+  const users = messages.filter((m) => m.role === "user");
+  if (users.some((m) => wantsEstimate(m.content))) return false;
+  return messages.some((m, i) => {
+    if (m.role !== "user") return false;
+    const kind = jobChangeKind(m.content);
+    if (!kind) return false;
+    // お見積りの聞き取りの途中（AI がお名前などを伺った・見積を提案した直後）の「キャンセルしたい」は、お見積りのご依頼をやめること
+    const prevAi = [...messages.slice(0, i)].reverse().find((x) => x.role === "assistant")?.content ?? "";
+    return !(kind === "cancel" && (INTAKE_ASK.test(prevAi) || acceptsOffer("お願いします", prevAi)));
+  });
+}
+
+async function readDraftCore(messages: ChatMessage[], draft: IntakeDraft, opts: { keepSummary?: boolean; spoken?: boolean; change?: boolean } = {}): Promise<ReadDraftResult> {
   const today = todayJst();
   const rules = extractFromConversation(messages, today);
   const base = mergeDraft(rules.draft, draft);
@@ -137,7 +172,7 @@ export async function readDraft(messages: ChatMessage[], draft: IntakeDraft, opt
     return { draft: fallback, mode: "rules", question: false, cancel: false, past: [], ...(unknownTown ? { unsure: ["address" as IntakeField] } : {}) };
   }
   try {
-    const ai = await readWithAi(messages, base);
+    const ai = await readWithAi(messages, base, opts.change === true);
     const phone = ai.phone?.trim() ? formatPhone(ai.phone) : "";
     const read = (ai.dates ?? []).map((d) => normalizeDateText(d, today)).filter(Boolean);
     const past = read.filter((d) => isPastDate(d, today));
@@ -212,8 +247,12 @@ const CONSULT_TALK = new RegExp(
 const DURING_INTAKE = `# この答えについて
 お客様は、すでに無料のお見積りのご依頼中です（この答えのあとに、システムがお名前・ご住所などを伺います）。この答えでは、お見積りの提案・個人情報の質問・お客様への質問はしない。ご相談の内容（品物・数量・種類のご希望）を短く受け止めて、料金の目安などに答えるだけにする。`;
 
+/** ご依頼済みの件の変更・キャンセルのお問い合わせの途中のご質問への答えの決まり（236 行目：無料見積の案内はしない） */
+const DURING_CHANGE = `# この答えについて
+お客様は、ご依頼済みの件（すでに決まっている工事・納品など）の日程変更・キャンセル・内容の変更のお問い合わせ中です（この答えのあとに、システムがお名前などを伺い、担当者が改めて折り返しご連絡します）。この答えでは、無料の訪問見積もりの案内・個人情報の質問・お客様への質問はしない。ご質問に資料で答えられることだけを短く答え、資料にないこと（その方のご依頼の内容・費用・日程など）は「担当者が折り返しの際にご案内いたします」と伝える。`;
+
 /** 聞き取りの途中のご質問に答える（ふだんの相談と同じ回答のモデル・同じ指示で。同じ質問は学習済みの回答） */
-async function answerQuestion(question: string, fullHistory: ChatMessage[], company: string): Promise<{ text: string; sources: AnswerSource[] }> {
+async function answerQuestion(question: string, fullHistory: ChatMessage[], company: string, note = DURING_INTAKE): Promise<{ text: string; sources: AnswerSource[] }> {
   const history = consultHistory(fullHistory);
   const plan = await planAnswer(question, history, { channel: "web_text" });
   if (plan.mode !== "openai") return { text: plan.reply, sources: plan.sources };
@@ -222,7 +261,7 @@ async function answerQuestion(question: string, fullHistory: ChatMessage[], comp
       .filter((m) => m.role === "user" || m.role === "assistant")
       .slice(-6)
       .map((m) => ({ role: m.role as "user" | "assistant", content: truncate(m.content, 500) }));
-    const text = await composeAnswer(plan, company, [...recent, { role: "user", content: question }], "chat", DURING_INTAKE);
+    const text = await composeAnswer(plan, company, [...recent, { role: "user", content: question }], "chat", note);
     if (text.trim()) return { text: text.trim(), sources: plan.sources };
   } catch (e) {
     await logError("openai", "文字の相談（見積依頼の聞き取り中のご質問）", e);
@@ -237,6 +276,8 @@ async function answerQuestion(question: string, fullHistory: ChatMessage[], comp
  */
 export function intakeApplies(text: string, state: IntakeState, prevAi = ""): boolean {
   if (state.active || wantsEstimate(text) || acceptsOffer(text, prevAi)) return true;
+  // ご依頼済みの件の日程変更・キャンセル・仕様変更のお問い合わせ（236 行目）：折り返しの旨を伝えて、お名前などを伺う
+  if (!state.ready && jobChangeKind(text)) return true;
   if (!state.ready) return false;
   const x = extractIntake(text, [], todayJst());
   return x.found.length > 0 && !QUESTION_RE.test(x.leftover);
@@ -272,6 +313,10 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
   if (starting && (await isSalesPitch(messages.filter((m) => m.role === "user").map((m) => m.content).join("\n")))) {
     return { reply: SALES_DECLINE, state: { ...state, active: false, ready: false, asked: [] }, mode: "rules", sources: [] };
   }
+  // ご依頼済みの件の日程変更・キャンセル・仕様変更のお問い合わせ（236 行目）：お見積りの聞き取りとは別の流れで伺う
+  const changing = state.purpose === "change" && (state.active || state.ready);
+  const changeKind = changing ? (state.changeKind ?? "schedule") : starting && !state.ready && !offered && !wantsEstimate(last) ? jobChangeKind(last) : null;
+  if (changeKind) return changeTurn(messages, changing ? state : { ...state, active: false, ready: false, asked: [] }, changeKind, opts);
   // 確認画面の準備後の訂正（「電話番号は080-…でした」など）
   if (!state.active && state.ready && !wantsEstimate(last) && !offered) {
     const x = extractIntake(last, [], today);
@@ -405,3 +450,130 @@ export async function intakeTurn(messages: ChatMessage[], state: IntakeState, op
 
 /** AI がお名前を伺った文（intakeQuestion の「お名前を教えていただけますか？」など） */
 const NAME_ASK = /お名前を(?:教えて|お願い|もう一度|伺)/;
+
+// ---------------- ご依頼済みの件の変更・キャンセルのお問い合わせ（236 行目） ----------------
+
+/** お問い合わせそのものをやめる（「やっぱりいいです」。キャンセルのお問い合わせの「キャンセルです」は、やめるの意味ではない） */
+const CHANGE_GIVE_UP = /^(?:やっぱり|やはり|もう)?(?:いいです|大丈夫です|結構です|けっこうです|いらないです|必要ないです)[。!！]*$|(?:問い合わせ|連絡|折り返し)(?:は)?(?:やめ|いらない|結構|けっこう|不要)/;
+
+/**
+ * ご依頼済みの件の日程変更・キャンセル・仕様変更のお問い合わせの 1 ターン（文字の相談）。
+ * 折り返しの旨を伝えて、お名前 → お電話番号 → ご住所 → お問い合わせの内容（変更後のご希望など。キャンセルは不要）を伺い、
+ * そろったら確認画面へ（訪問のご希望日は「（折り返しの際にご相談）」・相談内容の頭に印）。無料見積の案内はしない
+ */
+async function changeTurn(messages: ChatMessage[], state: IntakeState, kind: JobChangeKind, opts: { company: string }): Promise<IntakeTurnResult> {
+  const today = todayJst();
+  const last = messages[messages.length - 1]?.content ?? "";
+  const history = messages.slice(0, -1);
+  const prevAi = [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+  const starting = !(state.purpose === "change" && (state.active || state.ready));
+  const asked: IntakeField[] = starting ? [] : state.asked?.length ? state.asked : askedFromText(prevAi);
+  const base = { purpose: "change" as const, changeKind: kind };
+
+  if (!starting && CHANGE_GIVE_UP.test(last.normalize("NFKC").trim())) {
+    return {
+      reply: "かしこまりました。ほかにご不明な点があれば、お気軽にどうぞ。",
+      state: { active: false, ready: false, asked: [], draft: state.draft },
+      mode: "rules",
+      sources: [],
+    };
+  }
+
+  // 1. 読み取り（規則：この発言から。OpenAI：会話全体から。訪問のご希望日は使わない）
+  const x = extractIntake(last, asked, today);
+  let address = x.draft.address;
+  if (!address && asked.includes("address") && state.draft.address && !addressComplete(state.draft.address) && /\d/.test(x.leftover) && !QUESTION_RE.test(x.leftover)) {
+    address = `${state.draft.address}${x.leftover.replace(/^(?:の|で)/, "")}`.trim();
+  }
+  let draft = mergeDraft(state.draft, { ...x.draft, address, dates: [] });
+  if (starting) draft = mergeDraft(extractFromConversation(history, today).draft, draft);
+  let mode: "openai" | "rules" = "rules";
+  let callName: string | undefined;
+  let unsure = state.unsure;
+  if (env.hasOpenAI) {
+    const r = await readDraft(messages, draft, { keepSummary: state.summaryEdited });
+    if (r.mode === "openai") {
+      const keepRules = Boolean(address && r.draft.address && r.draft.address.length < address.length && !r.addressFixedFrom);
+      draft = { ...r.draft, address: keepRules ? address : r.draft.address };
+      unsure = r.unsure;
+      callName = r.callName;
+      mode = "openai";
+    }
+  }
+  draft = keepTouched(draft, state.draft, state.touched);
+  const summary = state.summaryEdited && state.draft.summary ? state.draft.summary : tagJobChange(draft.summary || extractFromConversation(messages, today).summary);
+  draft = { ...draft, dates: [JOB_CHANGE_DATES], summary };
+  const carry = { summaryEdited: state.summaryEdited, touched: state.touched, aiFilled: state.aiFilled, ...(unsure?.length ? { unsure } : {}) };
+  const got = filledNow(state.draft, draft).filter((f) => f !== "dates");
+
+  // 確認画面の準備のあとの訂正（「電話番号は080-…でした」）：確認画面に入れ直す
+  if (state.ready && !state.active) {
+    return {
+      reply: `承知しました。${got.map((f) => FIELD_LABEL[f]).join("・") || "内容"}を確認画面に反映しました。\n下の「内容を確認して送信」ボタンから、ご確認のうえ送信してください。`,
+      state: { ...carry, ...base, active: false, ready: true, asked: [], draft, summaryAt: messages.length, detailAsked: true },
+      mode,
+      sources: [],
+    };
+  }
+
+  // 2. 途中のご質問（「キャンセル料はかかりますか？」）：資料で答えられることだけ答える（無料見積の案内はしない）
+  let answer = "";
+  let sources: AnswerSource[] = [];
+  if (!starting && !got.some((f) => asked.includes(f)) && x.leftover && QUESTION_RE.test(x.leftover)) {
+    const a = await answerQuestion(x.leftover, history, opts.company, DURING_CHANGE);
+    answer = a.text;
+    sources = a.sources;
+  }
+
+  // 3. 足りない項目を伺う（お名前 → お電話番号 → ご住所。お名前は 2 回まで）
+  let needs: IntakeField[] = intakeNeeds(draft, asked, state.draft).filter((f) => f !== "dates");
+  const nameAsks = history.filter((m) => m.role === "assistant" && NAME_ASK.test(m.content)).length;
+  const skipName = needs.includes("name") && nameAsks >= 2;
+  if (skipName) needs = needs.filter((f) => f !== "name");
+  const carried = skipName ? { ...carry, unsure: [...new Set([...(unsure ?? []), "name" as IntakeField])] } : carry;
+  const nameLater = skipName ? "お名前は、このあと表示される確認画面でご入力ください。" : "";
+  // お問い合わせの内容は、変更・キャンセルをおっしゃった発言から見る（お名前・ご住所などの答えは含めない）
+  const changeTexts = messages.filter((m) => m.role === "user" && jobChangeKind(m.content)).map((m) => m.content);
+  const detailAsk = jobChangeDetailAsk(kind);
+  const detailNeeded = Boolean(detailAsk) && !state.detailAsked && !jobChangeDetailGiven(kind, changeTexts);
+  const ack = got.includes("name") && draft.name ? `${callName || draft.name}様ですね。` : got.length ? "ありがとうございます。" : "";
+  const field = (["name", "phone", "address"] as IntakeField[]).find((f) => needs.includes(f));
+  if (field) {
+    const lastOne = needs.length === 1 && !detailNeeded;
+    const then = starting || !ack ? "" : lastOne ? "最後に、" : "続いて、";
+    const q =
+      field === "name"
+        ? "お名前を教えていただけますか？"
+        : field === "phone"
+          ? draft.phone
+            ? "恐れ入ります、お電話番号を市外局番から教えていただけますか？（例：090-1234-5678）"
+            : `${then}折り返しご連絡するお電話番号をお願いします。`
+          : draft.address && !addressComplete(draft.address)
+            ? `恐れ入ります、ご住所を「${draft.address}」のあとの番地まで教えていただけますか？（わからなければ「わからない」でもかまいません）`
+            : `${then}ご依頼いただいているご住所をお願いします。`;
+    const ask = starting ? `${jobChangeOpening(kind)}\n確認のため、${q}` : `${ack}${q}`;
+    return {
+      reply: [answer, nameLater, ask].filter(Boolean).join("\n\n"),
+      state: { ...carried, ...base, active: true, ready: false, asked: [field], draft, summaryAt: messages.length, detailAsked: state.detailAsked },
+      mode,
+      sources,
+    };
+  }
+  // 4. お問い合わせの内容（変更後のご希望日時・変更したい内容）を一度だけ伺う
+  if (detailNeeded && detailAsk) {
+    const ask = starting ? `${jobChangeOpening(kind)}\n${detailAsk.replace(/^最後に、/, "")}` : `${ack}${detailAsk}`;
+    return {
+      reply: [answer, nameLater, ask].filter(Boolean).join("\n\n"),
+      state: { ...carried, ...base, active: true, ready: false, asked: [], draft, summaryAt: messages.length, detailAsked: true },
+      mode,
+      sources,
+    };
+  }
+  // 5. そろった：確認画面へ
+  return {
+    reply: [answer, nameLater, starting ? jobChangeOpening(kind) : "", jobChangeReadyText()].filter(Boolean).join("\n\n"),
+    state: { ...carried, ...base, active: false, ready: true, asked: [], draft, summaryAt: messages.length, detailAsked: true },
+    mode,
+    sources,
+  };
+}

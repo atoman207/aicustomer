@@ -10,12 +10,14 @@ import { logError } from "./errorlog";
 import { createEstimate } from "./estimates";
 import { BYE, INTENT_ESTIMATE, fallbackTurn } from "./fallback";
 import { AGREES, AI_REASK, ASKS_CALLBACK, ASKS_PERSON, CUSTOMER_STUCK, REASK_LIMIT, reaskStreak } from "./handoff";
-import { japanNow, resolvePhoneRouting } from "./hours";
+import { japanNow, resolvePhoneRouting, spokenBusinessHours } from "./hours";
 import { acceptsOffer, formatPhone, normalizeDraft } from "./intake";
+import { JOB_CHANGE_DATES, JOB_CHANGE_RULE, JOB_CHANGE_SUMMARY_NOTE, JOB_CHANGE_TAG, jobChangeKind, jobChangeOpening, tagJobChange } from "./job-change";
 import { getKnowledge } from "./knowledge";
 import { OFFER_NOT_YET, OFFER_NOW, offerDue, offerTooEarly } from "./offer";
 import { canRetryWithChatModel, chatCompletionJson } from "./openai";
 import { replaceAddressText } from "./phone-ask";
+import { fillGuide } from "./phone-guide";
 import { AGENT_JSON_SCHEMA, buildAgentSystemPrompt, isFullDocumentContext } from "./prompts";
 import { SALES_DECLINE, SalesPitchError } from "./sales";
 import { getSession, getSettings, saveSession, upsertConversation } from "./store";
@@ -57,7 +59,11 @@ export async function getOrCreateSession(id: string, channel: Channel, meta?: Re
 export async function greetingFor(channel: Channel): Promise<string> {
   const settings = await getSettings();
   const company = settings.companyName;
-  if (channel === "phone") return fillTemplate(settings.greeting, { company });
+  if (channel === "phone") {
+    // スプレッドシートの「AI電話の案内文」の最初のガイダンス（休日・営業時間外）。空・タブがなければ管理画面の「電話の第一声」
+    const sheet = (await getKnowledge().catch(() => null))?.phoneGuide?.offHours;
+    return sheet ? fillGuide(sheet, { company, hours: spokenBusinessHours(settings.phone) }) : fillTemplate(settings.greeting, { company });
+  }
   if (channel === "line")
     return `畳の${company}の公式LINEにご登録ありがとうございます。\n畳・襖・障子・網戸から住まいのリフォームまで、ご相談や無料お見積りのご依頼を承ります。ご用件をメッセージでお送りください。\nホームページのAI相談でお見積りを受付済みの方は、受付番号（EST-から始まる番号）をお送りいただくと、ご依頼とこのLINEをおつなぎします。`;
   return `こんにちは。畳の${company}のAI相談員です。畳・襖・障子・網戸から住まいのリフォームまで、お気軽にご質問ください。無料お見積りのご依頼も承ります。`;
@@ -125,6 +131,11 @@ async function openaiTurn(session: AgentSession, company: string, context: strin
   const notes = (await getKnowledge().catch(() => null))?.staffNotes?.text;
   let system = buildAgentSystemPrompt(company, context, session.channel, now.display, notes);
   system += `\n\n# 現在の受付状態\nstage=${session.stage}\ndraft=${JSON.stringify(session.draft)}`;
+  // ご依頼済みの件の変更・キャンセルのお問い合わせ（236 行目）
+  const changing = session.meta?.purpose === "change";
+  if (changing) {
+    system += `\n\n# このお問い合わせ（必ず守る）\nご依頼済みの件の日程変更・キャンセル・内容の変更のお問い合わせです（新しいお見積りのご依頼ではありません）。${JOB_CHANGE_RULE}。draft.dates は ["${JOB_CHANGE_DATES}"] のまま変えない。draft.summary は「${JOB_CHANGE_TAG}」で始めて、お問い合わせの内容を1〜2文で。confirming の復唱では、お問い合わせの内容・お名前・お電話番号・ご住所を読み、ご希望日は読まない。completed では「受付いたしました。担当者より改めて折り返しご連絡いたします」と伝える（訪問日程・お見積りの話はしない）。`;
+  }
   if (session.channel === "phone") {
     const caller = domesticPhone(session.meta?.callerNumber);
     system += caller
@@ -166,8 +177,8 @@ async function openaiTurn(session: AgentSession, company: string, context: strin
     address: out.draft.address?.trim() || prev.address,
     // 「〇九〇…」「ゼロキュウゼロ…」のような読みの番号も数字にする（数字にならないと、おっしゃった番号ではなく発信者番号で受け付けてしまう）
     phone: out.draft.phone?.trim() ? formatPhone(out.draft.phone) || out.draft.phone.trim() : prev.phone,
-    dates: dates.length > 0 ? dates : prev.dates,
-    summary: out.draft.summary?.trim() || prev.summary,
+    dates: changing ? [JOB_CHANGE_DATES] : dates.length > 0 ? dates : prev.dates,
+    summary: changing ? tagJobChange(out.draft.summary?.trim() || prev.summary) : out.draft.summary?.trim() || prev.summary,
   });
   let stage: AgentStage = out.stage;
   if (out.stage === "completed" && !out.customer_confirmed) stage = "confirming";
@@ -387,6 +398,25 @@ export async function runTurn(
     }
   }
 
+  // ご依頼済みの件の日程変更・キャンセル・仕様変更のお問い合わせ（Ai system 236 行目。job-change.ts）：折り返しの旨を伝えて、
+  // お名前 → お電話番号 → ご住所 → お問い合わせの内容を伺い、復唱して受付一覧へ（訪問のご希望日は伺わない・無料見積の案内はしない）
+  const change =
+    (session.channel === "phone" || session.channel === "line") && session.stage === "consult" && !session.estimateId && !INTENT_ESTIMATE.test(text) ? jobChangeKind(text) : null;
+  if (change) {
+    session.meta = { ...(session.meta ?? {}), purpose: "change" };
+    const ask = session.channel === "phone" ? "確認のため、まず、お名前をお聞かせください。" : "確認のため、お名前を教えていただけますか？";
+    const opened: AgentTurnResult = {
+      reply: `${jobChangeOpening(change)}${session.channel === "phone" ? "" : "\n"}${ask}`,
+      stage: "collecting",
+      draft: { ...session.draft, dates: [JOB_CHANGE_DATES], summary: tagJobChange(appendSummary(session.draft.summary, text)) },
+      done: false,
+      mode: aiMode,
+      sources: [],
+      answeredBy: "local",
+    };
+    return { result: opened, session: await finishTurn(session, opened) };
+  }
+
   let result: AgentTurnResult;
   // 電話：AI の「ご都合のよい日にお伺いしましょうか？」への「はい」も見積のご希望。見積のご希望と一緒のご質問（「6枚お願いしたいんですが、
   // いくらぐらい？」）は、先に答えてからお名前を伺う（文字の相談と同じ。答えずに伺い始めると、資料を見ずに「お答えできかねます」になる）
@@ -462,7 +492,11 @@ export async function runTurn(
     if (draftComplete(result.draft)) {
       // ご相談内容は会話の全体（最初のご相談から）でまとめ直す（聞き取り中の AI は直近 12 件しか見ていないため）
       // 電話で伺ったご住所の町名の聞き違い（「岱明町」→「大名町」）は、熊本県・大牟田市の町名の一覧で直す（LINE は文字のまま）
-      const [whole, fixed] = await Promise.all([summarizeConversation(session.messages), fixAddress(result.draft.address, session.messages, { spoken: session.channel === "phone" })]);
+      const [whole, fixed] = await Promise.all([
+        // ご依頼済みの件の変更・キャンセル（236 行目）：変更後のご希望日時・変更の内容も要約に残す
+        summarizeConversation(session.messages, session.meta?.purpose === "change" ? JOB_CHANGE_SUMMARY_NOTE : ""),
+        fixAddress(result.draft.address, session.messages, { spoken: session.channel === "phone" }),
+      ]);
       let created: Awaited<ReturnType<typeof createEstimate>> | null = null;
       try {
         created = await createEstimate({
@@ -470,8 +504,11 @@ export async function runTurn(
           name: result.draft.name ?? "",
           address: fixed?.address ?? result.draft.address ?? "",
           phone: result.draft.phone ?? "",
-          summary: (whole.mode === "openai" && whole.summary) || result.draft.summary || summaryFromMessages(session),
-          preferredDates: result.draft.dates,
+          summary:
+            session.meta?.purpose === "change"
+              ? tagJobChange((whole.mode === "openai" && whole.summary) || result.draft.summary || summaryFromMessages(session))
+              : (whole.mode === "openai" && whole.summary) || result.draft.summary || summaryFromMessages(session),
+          preferredDates: session.meta?.purpose === "change" ? [JOB_CHANGE_DATES] : result.draft.dates,
           sessionId: session.id,
           confirmedByCustomer: true,
           // 電話は画面で確かめられない：お名前（漢字）・ご住所（と、発信者番号ではないお電話番号）は、日程の打ち合わせのお電話で確かめていただく
